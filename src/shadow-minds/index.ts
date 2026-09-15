@@ -79,7 +79,7 @@ import {
   MAX_PENDING_RESULTS,
   shadowNotificationResultIds,
   subscribeDeliveryLifecycle,
-  type DeliveryLifecycleSubscription,
+  type DeliverySettleForwarding,
   type ShadowDeliveryController,
 } from "./delivery";
 import { createCompletionGate, type ShadowCompletionGate } from "./gate";
@@ -630,17 +630,19 @@ export default function registerShadowMinds(
     },
   };
   resultStores.set(state, currentStore);
+  // ── Caller-forwarded delivery settles (odradekk/pi-square#369) ─────────
+  // The delivery subscription leaves `agent_settled` unwired: the completion
+  // gate below releases a parked settle through this handle, an unheld settle
+  // forwards at the settled event itself, and the headless shutdown drain
+  // forwards settles itself. Assigned once the delivery controller exists.
+  let deliverySettleForwarding: DeliverySettleForwarding | undefined;
+
   // ── Bounded completion gate (#160) ─────────────────────────────────
   // The gate never delays the parent answer: it only holds this extension's
   // settled handling for a bounded window after the answer has rendered. The
   // root reports parent run-state transitions below and at the Pi event
   // boundaries; which transition opens, re-evaluates, or closes the gate —
   // and with which reason — is derived inside the gate.
-  // Delivery settles are caller-forwarded here: the completion gate parks the
-  // settled event for its bounded window and releases it through this handle,
-  // and the headless drain forwards settles itself. Assigned once the
-  // delivery controller exists below.
-  let deliveryLifecycle: DeliveryLifecycleSubscription | undefined;
   state.gate = createCompletionGate({
     now: () => Date.now(),
     config: effectiveConfig,
@@ -653,7 +655,7 @@ export default function registerShadowMinds(
     // The gate calls this only when a settle is actually parked, so the
     // delivery flush needs no hold-state check of its own.
     forwardSettle: (_at) => {
-      deliveryLifecycle?.settle();
+      deliverySettleForwarding?.settle();
       refreshStatus();
     },
     onClose: (reason, cancelled) => {
@@ -768,7 +770,7 @@ export default function registerShadowMinds(
   // core. The settled event stays caller-forwarded: the completion gate above
   // parks it for its bounded window, the headless drain forwards settles
   // itself, and an unheld settle forwards at once.
-  deliveryLifecycle = subscribeDeliveryLifecycle(shadowDelivery, pi, { subscribeSettled: false });
+  deliverySettleForwarding = subscribeDeliveryLifecycle(shadowDelivery, pi, { subscribeSettled: false });
   const toolArgsById = new Map<string, { toolName: string; args: unknown }>();
   const TOOL_ARG_PAIRS_MAX = 64;
   const STREAMING_INPUT_PAIRS_MAX = 64;
@@ -838,7 +840,7 @@ export default function registerShadowMinds(
       refreshStatus();
       return;
     }
-    deliveryLifecycle?.settle();
+    deliverySettleForwarding?.settle();
   });
 
   pi.on("message_start", (event) => {
@@ -1043,7 +1045,7 @@ export default function registerShadowMinds(
         for (let batch = 0; batch < MAX_PENDING_RESULTS && Date.now() < deadline; batch += 1) {
           const before = state.delivery?.pendingCount() ?? 0;
           if (before === 0) break;
-          deliveryLifecycle?.settle();
+          deliverySettleForwarding?.settle();
           await new Promise((resolve) => setTimeout(resolve, 0));
           const confirmed = state.delivery?.confirmQuietDeliveries(
             quietDeliveryIdsFromBranch(ctx?.sessionManager),

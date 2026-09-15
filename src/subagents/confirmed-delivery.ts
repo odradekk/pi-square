@@ -17,11 +17,13 @@
  * here for the Subagent and Shadow Minds adapters.
  *
  * The core also owns its Pi lifecycle wiring: `subscribeDeliveryLifecycle`
- * hands the five delivery signals (agent start, turn end, agent end, agent
- * settled, message observation) to one event source in the fixed order below,
- * so registration roots cannot drop a result by wiring one signal to the
- * wrong event (odradekk/pi-square#369). Session start and shutdown resets
- * stay with the caller, whose own teardown ordering they interleave with.
+ * hands the delivery signals (agent start, turn end, agent end, message
+ * observation, and — unless the caller forwards settles itself — agent
+ * settled) to one event source under a fixed, complete signal-to-event
+ * mapping, so registration roots cannot drop a result by wiring one signal
+ * to the wrong event or omitting one (odradekk/pi-square#369). Session start
+ * and shutdown resets stay with the caller, whose own teardown ordering they
+ * interleave with.
  *
  * Scope is the current parent session. Nothing here persists across sessions.
  */
@@ -103,7 +105,7 @@ export interface ConfirmedDeliveryClaim<T> {
   release(keep: (value: T) => boolean): void;
 }
 
-export interface ConfirmedDeliveryCore<T> {
+export interface ConfirmedDeliveryCore<T> extends ConfirmedDeliveryLifecycle {
   /** Registers a finished result and delivers it when the consumer is idle. */
   enqueue(input: { id: string; value: T }): void;
   /** Drops a result, for example when its history is deleted. */
@@ -120,16 +122,6 @@ export interface ConfirmedDeliveryCore<T> {
   isClaimed(id: string): boolean;
   /** True while the stored result of this identity was sent but not confirmed. */
   isSent(id: string): boolean;
-  /** Offers one observed consumer message for confirmation. */
-  observeMessage(message: unknown): void;
-  /** Turn boundary of a running consumer; an aborted terminal message suppresses delivery. */
-  handleTurnEnd(message?: unknown): void;
-  /** A new consumer run started, so an earlier interruption no longer holds. */
-  handleAgentStart(): void;
-  /** Records whether the finished run ended through an interruption. */
-  handleAgentEnd(messages: unknown): void;
-  /** Consumer settled naturally: unconfirmed results are delivered again. */
-  handleAgentSettled(): void;
   /** True while the result of this identity is not confirmed. */
   isPending(id: string): boolean;
   /** Count of results the consumer has not confirmed. */
@@ -498,40 +490,58 @@ export interface DeliveryEventSource {
 
 export interface DeliveryLifecycleSubscribeOptions {
   /**
-   * Defaults to true. Set false when the caller owns settle forwarding — a
-   * completion gate may park the settled event for a bounded window and
-   * release it later; the core then leaves `agent_settled` unwired and the
-   * returned handle forwards one settled signal instead.
+   * Defaults to true: the core subscribes `agent_settled` itself and the
+   * call returns nothing. Set false only when the caller owns settle
+   * forwarding — a completion gate may park the settled event for a bounded
+   * window and release it later; the core then leaves `agent_settled`
+   * unwired and returns the forwarding handle.
    */
   subscribeSettled?: boolean;
 }
 
-/** Handle over the wiring `subscribeDeliveryLifecycle` installed. */
-export interface DeliveryLifecycleSubscription {
+/**
+ * Forwards consumer-settled signals on the caller's behalf, returned only by
+ * `subscribeDeliveryLifecycle(..., { subscribeSettled: false })`. Pi's event
+ * emitter offers no unsubscribe, so this is a forwarding handle over the
+ * subscribed lifecycle, not a disposable subscription.
+ */
+export interface DeliverySettleForwarding {
   /** Forwards one consumer-settled signal into the subscribed lifecycle. */
   settle(): void;
 }
 
 /**
  * Wires one delivery lifecycle to one event source. The core fixes the
- * signal-to-event mapping and its order, so the caller cannot drop a result
- * by wiring a signal to the wrong event or forgetting one: a running
- * consumer receives results at each turn boundary, a naturally settled
- * consumer at once, and an interrupted consumer stays silent until its next
- * run starts (ADR-0009).
+ * complete signal-to-event mapping, so the caller cannot drop a result by
+ * wiring a signal to the wrong event or omitting one: a running consumer
+ * receives results at each turn boundary, a naturally settled consumer at
+ * once, and an interrupted consumer stays silent until its next run starts
+ * (ADR-0009). The registrations observe distinct events, so the safety lies
+ * in the mapping, not in any registration order.
  */
 export function subscribeDeliveryLifecycle(
   lifecycle: ConfirmedDeliveryLifecycle,
   events: DeliveryEventSource,
+  options: { subscribeSettled: false },
+): DeliverySettleForwarding;
+export function subscribeDeliveryLifecycle(
+  lifecycle: ConfirmedDeliveryLifecycle,
+  events: DeliveryEventSource,
+  options?: { subscribeSettled?: true },
+): void;
+export function subscribeDeliveryLifecycle(
+  lifecycle: ConfirmedDeliveryLifecycle,
+  events: DeliveryEventSource,
   options?: DeliveryLifecycleSubscribeOptions,
-): DeliveryLifecycleSubscription {
+): DeliverySettleForwarding | void {
   events.on("agent_start", () => lifecycle.handleAgentStart());
   events.on("turn_end", (event) => lifecycle.handleTurnEnd(event?.message));
   events.on("agent_end", (event) => lifecycle.handleAgentEnd(event?.messages));
+  events.on("message_start", (event) => lifecycle.observeMessage(event?.message));
   if (options?.subscribeSettled !== false) {
     events.on("agent_settled", () => lifecycle.handleAgentSettled());
+    return undefined;
   }
-  events.on("message_start", (event) => lifecycle.observeMessage(event?.message));
   return {
     settle: () => lifecycle.handleAgentSettled(),
   };
