@@ -385,7 +385,3 @@ export function registerAbortSubagentTool(
   pi.registerTool(decorate ? decorate(definition) : definition);
 }
 
-export const __testables = {
-  normalizeAbortIds,
-  resolveAbortTarget,
-};
