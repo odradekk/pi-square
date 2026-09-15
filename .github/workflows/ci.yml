@@ -30,6 +30,22 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Install experiment sandbox
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap apparmor
+          # Ubuntu requires an application profile for unprivileged namespaces.
+          # Scope permission to bwrap in this disposable runner; keep global policy.
+          sudo tee /etc/apparmor.d/pi-square-bwrap >/dev/null <<'PROFILE'
+          abi <abi/4.0>,
+          include <tunables/global>
+          profile pi-square-bwrap /usr/bin/bwrap flags=(unconfined) {
+            userns,
+          }
+          PROFILE
+          sudo apparmor_parser -r /etc/apparmor.d/pi-square-bwrap
+          bwrap --unshare-all --ro-bind / / -- /usr/bin/true
+
       - name: Run tests
         run: npm test
 

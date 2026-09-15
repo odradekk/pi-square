@@ -615,43 +615,29 @@ npm run package:check
 npm run changeset:status
 ```
 
-Context Memory qualification is split across four commands. The deterministic
+Context Memory qualification has separate deterministic and real-model entry points. The deterministic
 corpus, `npm run qualify:context-memory`, runs every deterministic
 context-memory suite (controller seam, native AgentSession request exit,
 projection, wire, arbitration, lifecycle, and the offline instruments) as one
 zero-tolerance sweep; the pre-#319 corpus retired with its protocol.
-Real-model continuity qualification is a separate, credentialed command:
-`npm run qualify:continuity -- --real`. It requires a clean checkout and uses
-native Pi sessions with two concurrently started model queues: Grok 4.6
-(`cpa/grok-4.6`) and GLM 5.3 Flash (`cpa/glm-5.3-flash`) each run the same four
-scenarios at early, middle, and late placement
-(24 cells and 12 corresponding pairs), while cases and requests stay sequential
-inside each model queue. Grok requests thinking `high` and GLM Flash requests `max`;
-the separate cache experiment retains `low`. Both verify that every model
-supports its requested level and that Pi's session preserves it;
-an automatic adjustment to another level stops the experiment before its
-model queues start. Reports record both requested and effective settings.
-Every run is
-seeded with fixture-authored Memory at exactly half the budget so the required
-schedule — at least one append and two suffix rebuilds — is fixture-owned. A
-single final handoff file is scored after verified compression coverage;
-the final phase permits only Pi's observable native write route (with
-equivalent path spellings normalized) while earlier work retains its shell;
-missing coverage is inconclusive and a machine pass still requires human
-review. See the
-[qualification workflow](docs/context-memory.md#continuity-qualification).
-`npm run qualify:continuity -- --real --recovery-ab` separately runs the
-both-model source-recovery comparison with equivalent search-enabled and
-read-only cells; those 12 A/B cells never replace or count toward the main 24.
-After a real matrix, `npm run qualify:replay-check` summarizes the native
-session replay and journal-growth measurements recorded during each run,
-separately from parsing and storing the qualification artifacts. Historical
-reports without native replay measurements do not supply that evidence.
-The existing three-model cache command is
-`npm run experiment:provider-cache`. All credentialed commands require an
-explicit opt-in and are maintainer-run experiments, not normal validation.
-`npm test` exercises the same Pi session boundary with an offline provider,
-not real-model quality.
+The current real-model experiment is `npm run qualify:progressive -- --real --pilot`
+(#359). It compares isolated Memory and Pi native auto-compaction arms concurrently
+through eight progressively revealed coding stages. Hidden cumulative tests release
+random project facts, followed by stage compaction gates and final exact recall.
+Both arms use `cpa/deepseek-v4.1-flash`, thinking `max`, and a 500K context window;
+Memory has a 2% budget. Each arm has one total hour, with no request or tool-call
+count limit. Linux Bubblewrap isolation and a clean checkout are required.
+After reviewing the pilot, freeze its identity and run three fresh formal pairs as
+described in the [progressive workflow](docs/context-memory.md#progressive-qualification).
+A correct recall with insufficient append/rebuild coverage remains incomplete;
+no minimum retrieval count is required, and native success is not a prerequisite.
+
+The previous `qualify:continuity`, its recovery A/B, and `qualify:replay-check`
+remain available for historical reports. #341 was superseded, not passed; their
+results are not reclassified by this replacement. The existing three-model
+`experiment:provider-cache` command remains a separate experiment. Credentialed
+runs require explicit opt-in; `npm test` uses offline providers to verify the
+instruments and does not establish real-model quality.
 
 Run the optional, non-blocking deterministic CodeGraph retrieval comparison separately. It reports one semantic query against a fixed three-file fixture; it is not a model-quality benchmark and is not part of `npm test`:
 
