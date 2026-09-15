@@ -11,7 +11,8 @@ function safeMetrics(value) {
     const row = value.toolCategories?.[category];
     return [category, { count: finite(row?.count) ?? 0, bytes: finite(row?.bytes) ?? 0, elapsedMs: finite(row?.elapsedMs) ?? 0 }];
   }));
-  return { requests, tools: finite(value.tools) ?? 0,
+  return { providerErrors: finite(value.providerErrors), retryScheduled: finite(value.retryScheduled),
+    retryContinuations: finite(value.retryContinuations), retryRecovered: finite(value.retryRecovered), requests, tools: finite(value.tools) ?? 0,
     input: finite(value.input) ?? 0, output: finite(value.output) ?? 0,
     usageReportedRequests: finite(value.usageReportedRequests) ?? 0,
     cacheRead: requests > 0 && cacheReadReportedRequests === requests ? finite(value.cacheRead) : null,
@@ -63,6 +64,11 @@ export function reportMarkdown(report) {
   for (const pair of report.pairs) for (const name of ["memory", "native"]) {
     const arm = pair.arms[name], artifact = arm.evidence ?? {};
     lines.push(`| ${pair.id} | ${name} | ${arm.status} | ${arm.stagesPassed}/8 | ${artifact.sha256 ?? "unavailable"} | ${artifact.bytes ?? "—"} | ${artifact.records ?? "—"} |`);
+  }
+  lines.push("", "| Pair | Arm | Provider errors | Retries scheduled | Continuations started | Recoveries |", "| --- | --- | ---: | ---: | ---: | ---: |");
+  for (const pair of report.pairs) for (const name of ["memory", "native"]) {
+    const metrics = pair.arms[name].metrics;
+    lines.push(`| ${pair.id} | ${name} | ${metrics?.providerErrors ?? "unavailable"} | ${metrics?.retryScheduled ?? "unavailable"} | ${metrics?.retryContinuations ?? "unavailable"} | ${metrics?.retryRecovered ?? "unavailable"} |`);
   }
   return `${lines.join("\n")}\n`;
 }

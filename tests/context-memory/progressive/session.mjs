@@ -2,9 +2,11 @@ import { mkdirSync, writeFileSync, chmodSync, existsSync, createReadStream } fro
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { performance } from "node:perf_hooks";
+import { setTimeout as delay } from "node:timers/promises";
 import jiti from "jiti";
 import { Type } from "typebox";
 import { createAgentSession, DefaultResourceLoader, SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
+import { isContextOverflow, isRetryableAssistantError } from "@earendil-works/pi-ai";
 import { requireThinkingConfiguration, requireSessionThinking } from "../thinking.mjs";
 import { safeErrorDiagnostic, safeResponseDiagnostic } from "../qualification/diagnostics.mjs";
 import { createSandbox } from "./sandbox.mjs";
@@ -16,9 +18,12 @@ const { deriveCurrentMemory } = await load("../../../src/context-memory/derive.t
 const { MEMORY_SUMMARY_WRAPPER, MEMORY_BLOCK_SEPARATOR } = await load("../../../src/context-memory/format.ts");
 const MEMORY_TOOLS = ["compact_to_memory_block", "read_memory_source", "search_memory_source"];
 
-export const CONFIG = Object.freeze({ contextWindow: 500_000, thinkingLevel: "max", memoryBudgetPercent: 2, memoryCompressionThreshold: Object.freeze({ tokens: 10_001 }), timeoutMs: 3_600_000 });
+export const CONFIG = Object.freeze({ contextWindow: 500_000, thinkingLevel: "max", memoryBudgetPercent: 2, memoryCompressionThreshold: Object.freeze({ tokens: 10_001 }), timeoutMs: 3_600_000,
+  recovery: Object.freeze({ initialDelayMs: 1_000, maxDelayMs: 30_000 }) });
 const textOf = message => typeof message?.content === "string" ? message.content : (message?.content ?? []).filter(p => p.type === "text").map(p => p.text).join("\n");
 const resultOf = (data, isError = false) => ({ content: [{ type: "text", text: JSON.stringify(data) }], details: data, ...(isError ? { isError } : {}) });
+const WORK_CONTINUATION = "Continue implementing the current stage and call verify_stage. The next stage remains unavailable until verification passes.";
+const FINAL_RECALL = 'FINAL RECALL: Return only a JSON object mapping the stage numbers "1" through "8" to their exact released project identifiers. Include every stage. Do not explain. The workspace and verifier are now unavailable.';
 
 /** One clock owns all task, verifier, maintenance, and final-recall work. */
 export function armDeadline(clock = globalThis) {
@@ -56,7 +61,7 @@ const TOOL_CATEGORIES = Object.freeze({
   search_memory_source: "retrieval",
 });
 
-export async function runProgressiveSession({ directory, arm, task, model, modelRuntime, signal, clock, onEvent = () => {}, contextModifierFactory }) {
+export async function runProgressiveSession({ directory, arm, task, model, modelRuntime, signal, clock, retryDelay = delay, onEvent = () => {}, contextModifierFactory }) {
   if (!["native", "memory"].includes(arm)) throw new Error("unknown experiment arm");
   const { memoryCompressionThreshold } = CONFIG;
   const deadline = armDeadline(clock);
@@ -68,10 +73,14 @@ export async function runProgressiveSession({ directory, arm, task, model, model
   let stage = 1;
   let phase = "work";
   let providerFailed = false;
+  let providerFailure;
+  let terminalProviderError;
+  let consecutiveFailures = 0;
+  let recovering = false;
   let infrastructureError;
   let recall = null;
   const stages = [];
-  const metrics = { requests: 0, tools: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cacheReadReportedRequests: 0, cacheWriteReportedRequests: 0, usageReportedRequests: 0, nativeCompactions: 0, toolBytes: 0, toolCounts: {}, toolCategories: {}, costReportedRequests: 0, reportedCost: 0 };
+  const metrics = { requests: 0, tools: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cacheReadReportedRequests: 0, cacheWriteReportedRequests: 0, usageReportedRequests: 0, nativeCompactions: 0, toolBytes: 0, toolCounts: {}, toolCategories: {}, costReportedRequests: 0, reportedCost: 0, providerErrors: 0, retryScheduled: 0, retryContinuations: 0, retryRecovered: 0 };
   const usagePending = [];
   const flagCalls = new Map();
   const toolStartedAt = new Map();
@@ -81,7 +90,10 @@ export async function runProgressiveSession({ directory, arm, task, model, model
   let memoryAvailable = false;
   let verifying = false;
   const problems = { verificationFailures: 0, compactionRefusals: {}, applicationPending: false };
-  const emit = (kind, data) => { evidence.append(kind, { armElapsedMs: armElapsedMs(), ...data }); onEvent({ arm, stage, phase, kind }); };
+  const emit = (kind, data) => {
+    try { evidence.append(kind, { armElapsedMs: armElapsedMs(), ...data }); onEvent({ arm, stage, phase, kind }); }
+    catch (error) { infrastructureError = error; throw error; }
+  };
   const activeNames = () => {
     const reading = arm === "memory" && memoryAvailable ? MEMORY_TOOLS.slice(1) : [];
     if (phase === "work") return ["bash", "verify_stage", ...reading];
@@ -114,6 +126,9 @@ export async function runProgressiveSession({ directory, arm, task, model, model
     sandbox = createSandbox({ workspace: cwd });
     evidence = createEvidence(join(directory, "evidence"));
     writeFileSync(join(agentDir, "auth.json"), "{}\n", { mode: 0o600 });
+    // Native auto-retry deletes the failed assistant only from live state. A
+    // partial response then breaks Memory's alignment with persisted history.
+    // Ordinary continuation prompts preserve both sides of that boundary.
     writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ packages: [], quietStartup: true, compaction: { enabled: arm === "native" }, retry: { enabled: false, provider: { maxRetries: 0 } } }), { mode: 0o600 });
     const settingsManager = SettingsManager.create(cwd, agentDir);
     sessionManager = SessionManager.create(cwd, join(directory, "sessions"));
@@ -246,21 +261,46 @@ export async function runProgressiveSession({ directory, arm, task, model, model
         if (cache.readReported) { metrics.cacheRead += cache.cacheRead; metrics.cacheReadReportedRequests++; }
         if (cache.writeReported) { metrics.cacheWrite += cache.cacheWrite; metrics.cacheWriteReportedRequests++; }
         if (Number.isFinite(usage?.cost?.total)) { metrics.reportedCost += usage.cost.total; metrics.costReportedRequests++; }
-        if (message.stopReason === "error") providerFailed = true;
+        providerFailed = message.stopReason === "error";
+        providerFailure = providerFailed ? message : undefined;
+        if (providerFailed) { metrics.providerErrors++; consecutiveFailures++; }
+        else if (message.stopReason !== "aborted") {
+          consecutiveFailures = 0;
+          if (recovering) { metrics.retryRecovered++; recovering = false; emit("provider-recovered", { stage, phase, request }); }
+        }
         if (message.stopReason === "aborted" && !combined.aborted) infrastructureError = new Error("native-run-aborted");
         emit("response", { request, stage: requestStage, phase: requestPhase, elapsedMs: Math.max(0, monotonicNow() - requestStartedAt), stopReason: message.stopReason, diagnostic: safeResponseDiagnostic(message), usage: usage ? { input: usage.input, output: usage.output, cacheRead: cache.cacheRead, cacheWrite: cache.cacheWrite, cacheReadReported: cache.readReported, cacheWriteReported: cache.writeReported } : null });
       }).catch(error => { infrastructureError = error; abort(); }));
       return response;
     };
-    emit("configuration", { arm, config: CONFIG, memoryCompressionThreshold, model: { provider: model.provider, id: model.id, api: model.api, contextWindow: session.model.contextWindow, maxTokens: session.model.maxTokens }, thinking: { ...thinking, session: session.thinkingLevel }, compaction: settingsManager.getCompactionSettings(), session: digest(sessionManager.getSessionId()) });
+    emit("configuration", { arm, config: CONFIG, memoryCompressionThreshold, model: { provider: model.provider, id: model.id, api: model.api, contextWindow: session.model.contextWindow, maxTokens: session.model.maxTokens }, thinking: { ...thinking, session: session.thinkingLevel }, compaction: settingsManager.getCompactionSettings(), retry: settingsManager.getRetrySettings(), providerRetry: settingsManager.getProviderRetrySettings(), session: digest(sessionManager.getSessionId()) });
     const prompt = async text => {
-      combined.throwIfAborted();
-      session.setActiveToolsByName(activeNames());
-      await session.prompt(text, { source: "interactive", expandPromptTemplates: false });
-      await Promise.all(usagePending.splice(0));
-      combined.throwIfAborted();
-      if (infrastructureError) throw infrastructureError;
-      if (providerFailed) throw new Error("provider-response-error");
+      for (;;) {
+        combined.throwIfAborted();
+        providerFailed = false; providerFailure = undefined;
+        session.setActiveToolsByName(activeNames());
+        let promptError;
+        try { await session.prompt(text, { source: "interactive", expandPromptTemplates: false }); }
+        catch (error) { promptError = error; }
+        await Promise.all(usagePending.splice(0));
+        combined.throwIfAborted();
+        if (infrastructureError) throw infrastructureError;
+        if (!providerFailed) { if (promptError) throw promptError; return; }
+        if (!isRetryableAssistantError(providerFailure) || isContextOverflow(providerFailure, CONFIG.contextWindow)) {
+          terminalProviderError = promptError ?? new Error("provider-response-error");
+          throw terminalProviderError;
+        }
+        const delayMs = Math.min(CONFIG.recovery.maxDelayMs, CONFIG.recovery.initialDelayMs * 2 ** (consecutiveFailures - 1));
+        metrics.retryScheduled++;
+        emit("provider-retry", { stage, phase, request: metrics.requests, consecutiveFailures, delayMs, diagnostic: safeResponseDiagnostic(providerFailure) });
+        await retryDelay(delayMs, undefined, { signal: combined });
+        combined.throwIfAborted();
+        text = phase === "final" ? FINAL_RECALL : phase === "work" ? WORK_CONTINUATION
+          : phase === "passed" ? "The current stage is complete. Stop and wait for the next stage. Do not repeat completed tool operations."
+            : maintenanceContinuation();
+        metrics.retryContinuations++; recovering = true;
+        emit("provider-continue", { stage, phase });
+      }
     };
     while (stage <= 8) {
       phase = "work";
@@ -268,17 +308,17 @@ export async function runProgressiveSession({ directory, arm, task, model, model
       emit("stage-start", { stage });
       await prompt(`${stage === 1 ? task.openingPrompt + "\n\n" : ""}STAGE ${stage}\n${task.prompt(stage)}`);
       while (phase !== "passed") await prompt(phase === "work"
-        ? "Continue implementing the current stage and call verify_stage. The next stage remains unavailable until verification passes."
+        ? WORK_CONTINUATION
         : maintenanceContinuation());
       stage++;
     }
     phase = "final";
-    await prompt('FINAL RECALL: Return only a JSON object mapping the stage numbers "1" through "8" to their exact released project identifiers. Include every stage. Do not explain. The workspace and verifier are now unavailable.');
+    await prompt(FINAL_RECALL);
     recall = gradeRecall(textOf([...session.messages].reverse().find(message => message.role === "assistant")), task.flags);
     emit("recall", recall);
     chmodSync(sessionManager.getSessionFile(), 0o600);
   } catch (error) {
-    infrastructureError ??= error;
+    if (error !== terminalProviderError) infrastructureError ??= error;
     if (evidence) { try { emit("error", safeErrorDiagnostic(error, { repoRoot: directory })); } catch { /* the returned status records evidence failure */ } }
   } finally {
     deadline.close(); combined.removeEventListener("abort", abort);
@@ -310,7 +350,7 @@ export async function runProgressiveSession({ directory, arm, task, model, model
   }
   let manifest;
   try { manifest = evidence?.close(); } catch (error) { infrastructureError = error; }
-  const status = deadline.signal.aborted ? "timeout" : signal?.aborted ? "cancelled" : providerFailed ? "provider-error" : infrastructureError ? "infrastructure-error" : !recall?.complete ? "recall-error" : arm === "memory" && (coverage.stageGates !== 8 || coverage.appends < 1 || coverage.rebuilds < 2) ? "coverage-incomplete" : "passed";
+  const status = deadline.signal.aborted ? "timeout" : signal?.aborted ? "cancelled" : infrastructureError ? "infrastructure-error" : providerFailed ? "provider-error" : !recall?.complete ? "recall-error" : arm === "memory" && (coverage.stageGates !== 8 || coverage.appends < 1 || coverage.rebuilds < 2) ? "coverage-incomplete" : "passed";
   return { arm, status, stages, recall, coverage, metrics, problems, nativeReplay, terminal: { stage: Math.min(stage, 8), phase }, elapsedMs: armElapsedMs(), evidence: manifest,
-    ...(infrastructureError ? { diagnostic: safeErrorDiagnostic(infrastructureError, { repoRoot: directory }) } : {}) };
+    ...((infrastructureError ?? terminalProviderError) ? { diagnostic: safeErrorDiagnostic(infrastructureError ?? terminalProviderError, { repoRoot: directory }) } : {}) };
 }

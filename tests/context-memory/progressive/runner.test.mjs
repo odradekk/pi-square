@@ -16,7 +16,7 @@ assert.deepEqual(cacheUsageObservation({ cacheRead: 7, cacheWrite: 3, cacheRepor
 const deferred = () => { let resolve; const promise = new Promise(done => { resolve = done; }); return { promise, resolve }; };
 const completed = arm => ({ arm, status: "passed", stages: Array.from({ length: 8 }, (_, index) => ({ stage: index + 1, passed: true, startedAtMs: index * 100, passedAtMs: index * 100 + 50, ...(arm === "memory" ? { appliedAtMs: index * 100 + 75 } : {}) })),
   recall: { correct: 8, complete: true }, coverage: { stageGates: 8, appends: 1, rebuilds: 2 },
-  metrics: { requests: 9, tools: 16, input: 100, output: 20, usageReportedRequests: 9, cacheRead: 5, cacheWrite: 2, cacheReadReportedRequests: 9, cacheWriteReportedRequests: 9, toolBytes: 400,
+  metrics: { providerErrors: 3, retryScheduled: 3, retryContinuations: 3, retryRecovered: 2, requests: 9, tools: 16, input: 100, output: 20, usageReportedRequests: 9, cacheRead: 5, cacheWrite: 2, cacheReadReportedRequests: 9, cacheWriteReportedRequests: 9, toolBytes: 400,
     toolCategories: { compaction: { count: 3, bytes: 120, elapsedMs: 30 }, retrieval: { count: 2, bytes: 80, elapsedMs: 20 } } },
   elapsedMs: 1234, evidence: { sha256: `${arm}-sha`, bytes: 200, records: 10, file: `/private/${arm}` } });
 try {
@@ -65,6 +65,8 @@ try {
   assert.throws(() => freezePilot({ pilotReport, pins: { ...pins, commit: "changed" }, path: join(root, "drift") }), /pins/);
   assert.throws(() => requireFreeze(manifestPath, { ...pins, modelConfigurationSha256: "changed" }), /does not match/);
 
+  assert.throws(() => requireFreeze(manifestPath, { ...pins, config: { ...pins.config, recovery: { initialDelayMs: 1000, maxDelayMs: 30000 } } }), /does not match/);
+
   const report = createProgressiveReport({ kind: "formal", pairs: formal, manifest, pins });
   assert.equal(report.totals.result, "pass"); assert.equal(report.totals.memoryQualified, 3); assert.equal(report.totals.requests, 54);
   assert.equal(report.totals.cacheReadTokens, 30); assert.deepEqual(report.totals.cacheCoverage, { readReportedRequests: 54, writeReportedRequests: 54, requests: 54 });
@@ -74,6 +76,12 @@ try {
   assert.deepEqual(report.pairs[0].arms.memory.metrics.toolCategories.retrieval, { count: 2, bytes: 80, elapsedMs: 20 });
   assert.doesNotMatch(JSON.stringify(report), /\/private\/|flags|independent-test-project-fact/);
   assert.match(reportMarkdown(report), /native failures: 0/);
+  for (const key of ["providerErrors", "retryScheduled", "retryContinuations", "retryRecovered"]) {
+    assert.equal(report.pairs[0].arms.memory.metrics[key], completed("memory").metrics[key], "successful runs retain upstream failure and recovery counters");
+  }
+  assert.match(reportMarkdown(report), /Provider errors/);
+  const historical = completed("memory"); delete historical.metrics.providerErrors;
+  assert.equal(createProgressiveReport({ kind: "pilot", pairs: [{ ...pair, arms: { memory: historical } }], pins }).pairs[0].arms.memory.metrics.providerErrors, null, "missing historical counters remain unknown");
   const failedStage = completed("memory"); failedStage.stages[7] = { stage: 8, passed: false };
   const bad = createProgressiveReport({ kind: "formal", pairs: formal.map((value, index) => index ? value : { ...value, arms: { ...value.arms, memory: failedStage } }), manifest, pins });
   assert.equal(bad.totals.result, "incomplete");
