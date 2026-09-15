@@ -1,13 +1,16 @@
 /**
  * Strict bounded Markdown/frontmatter parser for Shadow definitions
- * (odradekk/pi-square#149, slice #153; validators split out by #365).
+ * (odradekk/pi-square#149, slice #153; validators split out by #365; the
+ * YAML-subset structure shared with subagent definitions lives in
+ * `../core/yaml-subset` since #370).
  *
  * A definition is one Markdown file: a YAML frontmatter block between two
- * `---` delimiter lines followed by the responsibility body. This module
- * parses a deliberately tiny YAML subset — plain, single- and double-quoted
- * scalars, nested maps by fixed two-space indentation, flow lists of
- * scalars — and rejects everything else (anchors, aliases, tags, merge keys,
- * complex keys, block scalars, trailing or inline comments, tabs, duplicate
+ * `---` delimiter lines followed by the responsibility body. The frontmatter
+ * is read through the shared subset reader; this module owns the Shadow
+ * subset's policy on top of it — the scalar rules (plain, single- and
+ * double-quoted scalars; typed null, boolean, and number spellings; no
+ * comments or `: ` inside plain scalars) and the named rejections (anchors,
+ * aliases, tags, merge keys, complex keys, block scalars, tabs, duplicate
  * keys; whole-line comments are skipped as author documentation). No runtime
  * dependency is added and no general YAML is supported.
  *
@@ -24,6 +27,7 @@ import {
   SHADOW_MINDS_RUN_TIMEOUT_HARD_MAX_SECONDS,
   SHADOW_MINDS_TOOL_CALLS_HARD_MAX,
 } from "../core/config";
+import { parseYamlSubset as readYamlSubset, type YamlSubsetEntry, type YamlSubsetFinding } from "../core/yaml-subset";
 import { SHADOW_DEFINITION_BOUNDS } from "./definition-bounds";
 import { validateOutputSchema, type ShadowOutputSchema } from "./output-schema";
 
@@ -259,232 +263,6 @@ export function parseShadowDefinitionFile(
 
 type YamlValue = string | number | boolean | null | YamlValue[] | { [key: string]: YamlValue };
 
-interface YamlLine {
-  indent: number;
-  text: string;
-  number: number;
-}
-
-function parseYamlSubset(source: string, lines: string[]): { value?: { [key: string]: YamlValue }; errors: string[] } {
-  const errors: string[] = [];
-  const prepared: YamlLine[] = [];
-  for (let index = 0; index < lines.length; index += 1) {
-    const raw = lines[index]!;
-    if (raw.includes("\t")) {
-      errors.push(`${source}: line ${index + 2}: tabs are not supported`);
-      continue;
-    }
-    const indentMatch = /^ */.exec(raw)![0].length;
-    const text = raw.slice(indentMatch);
-    if (text === "") continue;
-    // Full-line comments are author documentation for reference assets and
-    // hand-written definitions (#188): skip them at any indentation. A '#'
-    // inside or after a scalar value is still rejected by the scalar parser.
-    if (text.startsWith("#")) continue;
-    prepared.push({ indent: indentMatch, text, number: index + 2 });
-  }
-  if (errors.length > 0) return { errors };
-  if (prepared.length === 0) return { value: {}, errors: [] };
-  if (prepared[0]!.indent !== 0) {
-    return { errors: [`${source}: line ${prepared[0]!.number}: frontmatter must start at column zero`] };
-  }
-  const value = parseBlock(source, prepared, 0, prepared[0]!.indent, 0, errors);
-  if (errors.length > 0 || value === undefined) return { errors: errors.length > 0 ? errors : [`${source}: frontmatter is empty`] };
-  return { value: value as { [key: string]: YamlValue }, errors: [] };
-}
-
-// Frontmatter keys accept the same YAML-safe subset as output-schema property
-// names; the subset is owned by the shared definition bounds entry.
-const KEY_PATTERN = SHADOW_DEFINITION_BOUNDS.yamlKeys.pattern;
-
-/**
- * Parses consecutive map entries at `indent` starting from `start`. Returns
- * the parsed map and the index of the first unconsumed line, or undefined on
- * structural error (errors are pushed by the callee).
- */
-function parseBlock(
-  source: string,
-  lines: YamlLine[],
-  start: number,
-  indent: number,
-  depth: number,
-  errors: string[],
-): { [key: string]: YamlValue } | undefined {
-  // Bound map nesting generously above what a maximum-depth output schema
-  // needs (schema depth six consumes roughly twice that in YAML map levels).
-  if (depth > 16) {
-    errors.push(`${source}: line ${lines[start]!.number}: nesting exceeds the supported depth`);
-    return undefined;
-  }
-  const map: { [key: string]: YamlValue } = Object.create(null) as { [key: string]: YamlValue };
-  let index = start;
-  while (index < lines.length) {
-    const line = lines[index]!;
-    if (line.indent < indent) break;
-    if (line.indent > indent) {
-      errors.push(`${source}: line ${line.number}: unexpected indentation`);
-      return undefined;
-    }
-    if (line.text.startsWith("<<:")) {
-      errors.push(`${source}: line ${line.number}: merge keys are not supported`);
-      return undefined;
-    }
-    const match = /^([^:\s]+):(.*)$/.exec(line.text);
-    if (!match || !KEY_PATTERN.test(match[1]!)) {
-      errors.push(`${source}: line ${line.number}: unsupported or complex key '${line.text.slice(0, 40)}'`);
-      return undefined;
-    }
-    const key = match[1]!;
-    if (Object.hasOwn(map, key)) {
-      errors.push(`${source}: line ${line.number}: duplicate key '${key}'`);
-      return undefined;
-    }
-    const rest = match[2]!.trim();
-    if (rest === "{}") {
-      map[key] = Object.create(null) as { [key: string]: YamlValue };
-      index += 1;
-      continue;
-    }
-    if (rest === "") {
-      const child = lines[index + 1];
-      if (child && child.indent === indent + 2 && child.text.startsWith("- ")) {
-        const list = parseListBlock(source, lines, index + 1, child.indent, errors);
-        if (list === undefined) return undefined;
-        map[key] = list.value;
-        index = list.next;
-        continue;
-      }
-      if (child && child.indent > indent) {
-        if (child.indent !== indent + 2) {
-          errors.push(`${source}: line ${child.number}: nested blocks must indent exactly two spaces`);
-          return undefined;
-        }
-        const childMap = parseBlock(source, lines, index + 1, child.indent, depth + 1, errors);
-        if (childMap === undefined) return undefined;
-        map[key] = childMap;
-        index = blockEnd(lines, index + 1, child.indent);
-        continue;
-      }
-      map[key] = null;
-      index += 1;
-      continue;
-    }
-    if (rest.startsWith("|") || rest.startsWith(">")) {
-      errors.push(`${source}: line ${line.number}: block scalars are not supported`);
-      return undefined;
-    }
-    if (rest.startsWith("&")) {
-      errors.push(`${source}: line ${line.number}: anchors are not supported`);
-      return undefined;
-    }
-    if (rest.startsWith("*")) {
-      errors.push(`${source}: line ${line.number}: aliases are not supported`);
-      return undefined;
-    }
-    if (rest.startsWith("!")) {
-      errors.push(`${source}: line ${line.number}: tags are not supported`);
-      return undefined;
-    }
-    if (rest.startsWith("[")) {
-      const list = parseFlowList(rest);
-      if (typeof list === "string") {
-        errors.push(`${source}: line ${line.number}: ${list}`);
-        return undefined;
-      }
-      map[key] = list;
-      index += 1;
-      continue;
-    }
-    const scalar = parseScalar(rest);
-    const scalarFailure = asScalarError(scalar);
-    if (scalarFailure !== undefined) {
-      errors.push(`${source}: line ${line.number}: ${scalarFailure}`);
-      return undefined;
-    }
-    map[key] = scalar;
-    index += 1;
-  }
-  return map;
-}
-
-function parseListBlock(
-  source: string,
-  lines: YamlLine[],
-  start: number,
-  indent: number,
-  errors: string[],
-): { value: YamlValue[]; next: number } | undefined {
-  const items: YamlValue[] = [];
-  let index = start;
-  while (index < lines.length) {
-    const line = lines[index]!;
-    if (line.indent < indent) break;
-    if (line.indent !== indent || !line.text.startsWith("- ")) {
-      errors.push(`${source}: line ${line.number}: list items must be scalars on '- ' lines`);
-      return undefined;
-    }
-    const scalar = parseScalar(line.text.slice(2).trim());
-    const scalarFailure = asScalarError(scalar);
-    if (scalarFailure !== undefined) {
-      errors.push(`${source}: line ${line.number}: ${scalarFailure}`);
-      return undefined;
-    }
-    items.push(scalar);
-    index += 1;
-  }
-  return { value: items, next: index };
-}
-
-function blockEnd(lines: YamlLine[], start: number, indent: number): number {
-  let index = start;
-  while (index < lines.length && lines[index]!.indent >= indent) index += 1;
-  return index;
-}
-
-function parseFlowList(text: string): YamlValue[] | string {
-  if (!text.endsWith("]")) return "flow lists must close on one line";
-  const inner = text.slice(1, -1).trim();
-  if (inner === "") return [];
-  const parts = splitFlowItems(inner);
-  if (typeof parts === "string") return parts;
-  if (parts.some((part) => part.trim() === "")) return "flow lists cannot contain empty items";
-  const items: YamlValue[] = [];
-  for (const part of parts) {
-    const scalar = parseScalar(part.trim());
-    const scalarFailure = asScalarError(scalar);
-    if (scalarFailure !== undefined) return scalarFailure;
-    items.push(scalar);
-  }
-  return items;
-}
-
-function splitFlowItems(text: string): string[] | string {
-  const parts: string[] = [];
-  let current = "";
-  let quote: '"' | "'" | undefined;
-  for (const character of text) {
-    if (quote) {
-      current += character;
-      if (character === quote) quote = undefined;
-      continue;
-    }
-    if (character === '"' || character === "'") {
-      quote = character;
-      current += character;
-      continue;
-    }
-    if (character === ",") {
-      parts.push(current);
-      current = "";
-      continue;
-    }
-    current += character;
-  }
-  if (quote) return "flow lists contain an unterminated quoted scalar";
-  parts.push(current);
-  return parts.map((part) => part.trim());
-}
-
 const YAML_ERROR_PREFIX = "__yaml_error__:";
 
 /** Wraps an error a scalar parser wants to return instead of throwing. */
@@ -534,6 +312,154 @@ function parseScalar(text: string): YamlValue {
   if (/^-?\d+$/.test(text)) return Number.parseInt(text, 10);
   if (/^-?\d+\.\d+$/.test(text)) return Number.parseFloat(text);
   return text;
+}
+
+/**
+ * Maps one structural finding to the Shadow subset's named error, or
+ * undefined where the subset deliberately stays silent: blank lines inside a
+ * block list are skipped like any other blank line.
+ */
+function shadowFindingMessage(source: string, finding: YamlSubsetFinding): string | undefined {
+  const at = `${source}: line ${finding.line}: `;
+  switch (finding.code) {
+    case "blank-line-in-list":
+      return undefined;
+    case "tab":
+      return `${at}tabs are not supported`;
+    case "merge-key":
+      return `${at}merge keys are not supported`;
+    case "first-line-indent":
+      return `${at}frontmatter must start at column zero`;
+    case "unexpected-indent":
+      return `${at}unexpected indentation`;
+    case "indent-step":
+      return `${at}nested blocks must indent exactly two spaces`;
+    case "nesting-depth":
+      return `${at}nesting exceeds the supported depth`;
+    case "list-item-shape":
+      return `${at}list items must be scalars on '- ' lines`;
+    case "unbalanced-quote":
+      return `${at}flow lists contain an unterminated quoted scalar`;
+    case "list-item-indent":
+    case "unsupported-line":
+    case "key-shape":
+      return `${at}unsupported or complex key '${(finding.detail ?? "").slice(0, 40)}'`;
+  }
+}
+
+/** Applies the Shadow scalar policy to one raw scalar token. */
+function walkScalarToken(source: string, token: { raw: string; line: number }, errors: string[]): YamlValue | undefined {
+  if (token.raw.startsWith("|") || token.raw.startsWith(">")) {
+    errors.push(`${source}: line ${token.line}: block scalars are not supported`);
+    return undefined;
+  }
+  if (token.raw.startsWith("&")) {
+    errors.push(`${source}: line ${token.line}: anchors are not supported`);
+    return undefined;
+  }
+  if (token.raw.startsWith("*")) {
+    errors.push(`${source}: line ${token.line}: aliases are not supported`);
+    return undefined;
+  }
+  if (token.raw.startsWith("!")) {
+    errors.push(`${source}: line ${token.line}: tags are not supported`);
+    return undefined;
+  }
+  const scalar = parseScalar(token.raw);
+  const failure = asScalarError(scalar);
+  if (failure !== undefined) {
+    errors.push(`${source}: line ${token.line}: ${failure}`);
+    return undefined;
+  }
+  return scalar;
+}
+
+/** Converts one parsed entry into the field map with the Shadow scalar policy. */
+function walkEntryValue(source: string, entry: YamlSubsetEntry, errors: string[]): YamlValue | undefined {
+  const value = entry.value;
+  switch (value.kind) {
+    case "empty":
+      return null;
+    case "scalar":
+      // A bare `{}` rest is the empty map, exactly as the subset has always
+      // special-cased it; other flow mappings stay scalar rejections.
+      if (value.scalar.raw === "{}") {
+        return Object.create(null) as { [key: string]: YamlValue };
+      }
+      return walkScalarToken(source, value.scalar, errors);
+    case "block":
+      errors.push(`${source}: line ${entry.line}: block scalars are not supported`);
+      return undefined;
+    case "flow-list": {
+      if (!value.closed) {
+        errors.push(`${source}: line ${entry.line}: flow lists must close on one line`);
+        return undefined;
+      }
+      const items: YamlValue[] = [];
+      for (const item of value.items) {
+        if (item.raw === "") {
+          errors.push(`${source}: line ${entry.line}: flow lists cannot contain empty items`);
+          return undefined;
+        }
+        const parsed = walkScalarToken(source, item, errors);
+        if (parsed === undefined) return undefined;
+        items.push(parsed);
+      }
+      return items;
+    }
+    case "block-list": {
+      const items: YamlValue[] = [];
+      for (const item of value.items) {
+        const parsed = walkScalarToken(source, item, errors);
+        if (parsed === undefined) return undefined;
+        items.push(parsed);
+      }
+      return items;
+    }
+    case "map": {
+      const map: { [key: string]: YamlValue } = Object.create(null) as { [key: string]: YamlValue };
+      for (const child of value.entries) {
+        if (Object.hasOwn(map, child.key)) {
+          errors.push(`${source}: line ${child.line}: duplicate key '${child.key}'`);
+          return undefined;
+        }
+        const walked = walkEntryValue(source, child, errors);
+        if (walked === undefined) return undefined;
+        map[child.key] = walked;
+      }
+      return map;
+    }
+  }
+}
+
+/**
+ * Reads the frontmatter block through the shared subset reader and applies
+ * the Shadow subset's policy: every finding the subset names rejects the
+ * file, then each entry converts with the Shadow scalar rules. Returns the
+ * same field map `normalizeDefinitionFields` has always consumed.
+ */
+function parseYamlSubset(source: string, lines: string[]): { value?: { [key: string]: YamlValue }; errors: string[] } {
+  const document = readYamlSubset(lines.join("\n"), {
+    keyPattern: SHADOW_DEFINITION_BOUNDS.yamlKeys.pattern,
+    lineBase: 2,
+  });
+  const errors: string[] = [];
+  for (const finding of document.findings) {
+    const message = shadowFindingMessage(source, finding);
+    if (message !== undefined) errors.push(message);
+  }
+  if (errors.length > 0) return { errors };
+  const map: { [key: string]: YamlValue } = Object.create(null) as { [key: string]: YamlValue };
+  for (const entry of document.entries) {
+    if (Object.hasOwn(map, entry.key)) {
+      errors.push(`${source}: line ${entry.line}: duplicate key '${entry.key}'`);
+      return { errors };
+    }
+    const walked = walkEntryValue(source, entry, errors);
+    if (walked === undefined) return { errors };
+    map[entry.key] = walked;
+  }
+  return { value: map, errors: [] };
 }
 
 // ── Field normalization ──────────────────────────────────────────────
