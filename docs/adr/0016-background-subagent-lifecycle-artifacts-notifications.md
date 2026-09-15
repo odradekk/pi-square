@@ -163,6 +163,18 @@ status: accepted
 > third-party renderers, native image handling) is neither used nor promised —
 > with no new viewer behavior added by that slice.
 
+Since #367 the transcript the overlay renders is owned by one module,
+`src/subagents/transcript.ts`, whose interface answers exactly three questions —
+read a page of persisted history, read the live tail, and subscribe to changes —
+with `src/subagents/child-history.ts` and `src/subagents/live-events.ts` as its
+implementation files, no longer imported by the viewer. The occurrence
+reconciliation this note describes — the persisted record confirms its own live
+entry, whichever side arrived first — is the module's internal invariant, asserted
+at the module interface for every arrival order, and the viewer is a pure
+rendering-and-input surface over it. Nothing else in this record moves: the FIFO
+bounds, the flush budget, the generation isolation, and every reconciliation rule
+stay exactly as described above.
+
 pi-square completes the subagent contract change begun with the
 `delegate_subagent`/`resume_subagent` rename: delegation is background-only,
 every surface speaks one lifecycle, and the persisted and delivered protocols
