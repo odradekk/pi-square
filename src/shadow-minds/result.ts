@@ -17,7 +17,6 @@ import { Type } from "typebox";
 import { sanitizeDisplayLine } from "../display/sanitize";
 import { SHADOW_PAYLOAD_BOUNDS, validateShadowPayload } from "./payload";
 import type { ShadowOutputSchema } from "./output-schema";
-import type { ShadowDelivery, ShadowTrigger } from "./parser";
 
 export const SUBMIT_SHADOW_RESULT_TOOL = "submit_shadow_result";
 export const SUBMIT_SHADOW_RESULT_DESCRIPTION = "Submit the final Shadow result. The payload must be a JSON string matching the output schema. A valid submission completes the run; an invalid one returns the exact fields to fix.";
