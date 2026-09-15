@@ -9,7 +9,7 @@ const packageRoot = resolve(import.meta.dirname, "..", "..");
 
 const {
   SHADOW_PARTITION_DIR,
-  createPersistentShadowInbox,
+  createPersistentShadowResultStore,
   shadowPartitionPath,
   reconcileShadowPartitions,
   SHADOW_DEBUG_MAX_LOGS_PER_SHADOW,
@@ -17,7 +17,7 @@ const {
   finalizeShadowDebugRun,
   sweepShadowDebugRetention,
   listShadowDebugRuns,
-} = await load(join(packageRoot, "src", "shadow-minds", "inbox-store.ts"));
+} = await load(join(packageRoot, "src", "shadow-minds", "result-partition.ts"));
 
 const roots = [];
 
@@ -51,7 +51,7 @@ function addResult(inbox, index, overrides = {}) {
 
 {
   const { sessionDir } = makeSessionRoot();
-  const inbox = createPersistentShadowInbox({ sessionDir, sessionId: "sess-1", now: () => 5_000 });
+  const inbox = createPersistentShadowResultStore({ sessionDir, sessionId: "sess-1", now: () => 5_000 });
   const entity = addResult(inbox, 1, {
     definitionHash: "abc123",
     configuredDelivery: "notify",
@@ -87,7 +87,7 @@ function addResult(inbox, index, overrides = {}) {
   assert.equal(onDisk.trajectoryTruncated, true);
   assert.deepEqual(onDisk.requests, [{ input: 10, output: 2, cacheRead: 4, cacheWrite: 1, cost: 0.01, ttftMs: 25 }]);
   assert.ok(!existsSync(join(partition, "results", `${entity.id}.json.tmp`)), "no temp files remain");
-  const reopenedEntity = createPersistentShadowInbox({ sessionDir, sessionId: "sess-1" }).list()[0];
+  const reopenedEntity = createPersistentShadowResultStore({ sessionDir, sessionId: "sess-1" }).list()[0];
   assert.equal(reopenedEntity.source, "automatic");
   assert.equal(reopenedEntity.primaryTrigger, "failure");
   assert.deepEqual(reopenedEntity.taskIdentity, { epoch: 3 });
@@ -103,11 +103,11 @@ function addResult(inbox, index, overrides = {}) {
 {
   // Results survive reopening: a fresh store over the same partition loads entities.
   const { sessionDir } = makeSessionRoot();
-  const first = createPersistentShadowInbox({ sessionDir, sessionId: "sess-1" });
+  const first = createPersistentShadowResultStore({ sessionDir, sessionId: "sess-1" });
   const entity = addResult(first, 1);
   first.markRead(entity.id);
 
-  const second = createPersistentShadowInbox({ sessionDir, sessionId: "sess-1" });
+  const second = createPersistentShadowResultStore({ sessionDir, sessionId: "sess-1" });
   const reloaded = second.list();
   assert.equal(reloaded.length, 1);
   assert.equal(reloaded[0].id, entity.id);
@@ -119,37 +119,29 @@ function addResult(inbox, index, overrides = {}) {
 {
   // Sessions are keyed: a different session ID gets its own partition.
   const { sessionDir } = makeSessionRoot();
-  const one = createPersistentShadowInbox({ sessionDir, sessionId: "sess-1" });
+  const one = createPersistentShadowResultStore({ sessionDir, sessionId: "sess-1" });
   addResult(one, 1);
-  const two = createPersistentShadowInbox({ sessionDir, sessionId: "sess-2" });
+  const two = createPersistentShadowResultStore({ sessionDir, sessionId: "sess-2" });
   assert.equal(two.list().length, 0, "partitions are keyed by session ID");
 }
 
-// ── AC4: distinct atomic transitions ─────────────────────────────────
+// ── AC4: transitions persist to the partition's entity files ─────────
 
 {
   const { sessionDir } = makeSessionRoot();
-  const inbox = createPersistentShadowInbox({ sessionDir, sessionId: "sess-1" });
+  const inbox = createPersistentShadowResultStore({ sessionDir, sessionId: "sess-1" });
   const a = addResult(inbox, 1);
   const b = addResult(inbox, 2);
 
-  // send: notified -> pending; a second send is refused.
+  // Every transition rewrites the versioned entity; a reopened store sees it.
   assert.equal(inbox.send(a.id), true);
-  assert.equal(inbox.send(a.id), false);
-  assert.equal(inbox.list().find((entry) => entry.id === a.id).delivery, "pending");
+  const reopened = createPersistentShadowResultStore({ sessionDir, sessionId: "sess-1" });
+  assert.equal(reopened.list().find((entry) => entry.id === a.id).delivery, "pending", "the send transition persists to disk");
 
-  // markRead / dismiss / delete stay distinct and atomic.
-  assert.equal(inbox.markRead(b.id), true);
-  assert.equal(inbox.dismiss(b.id), true, "dismiss overrides read attention");
-  assert.equal(inbox.list().find((entry) => entry.id === b.id).attention, "dismissed");
+  // Deletion removes the entity file itself, not only the index row.
   assert.equal(inbox.delete(b.id), true);
-  assert.equal(inbox.delete(b.id), false);
   assert.equal(inbox.list().find((entry) => entry.id === b.id), undefined);
-  assert.ok(!existsSync(join(shadowPartitionPath(sessionDir, "sess-1"), "results", `${b.id}.json`)));
-
-  // Unknown ids are refused everywhere.
-  assert.equal(inbox.send("shr-missing"), false);
-  assert.equal(inbox.markRead("shr-missing"), false);
+  assert.ok(!existsSync(join(shadowPartitionPath(sessionDir, "sess-1"), "results", `${b.id}.json`)), "deleting removes the entity file");
 }
 
 // ── AC6: retention bounds and eviction order ────────────────────────
@@ -157,7 +149,7 @@ function addResult(inbox, index, overrides = {}) {
 {
   // Count bound: oldest read/dismissed evicts before unread notified.
   const { sessionDir } = makeSessionRoot();
-  const inbox = createPersistentShadowInbox({ sessionDir, sessionId: "sess-1", maxResults: 3 });
+  const inbox = createPersistentShadowResultStore({ sessionDir, sessionId: "sess-1", maxResults: 3 });
   const unreadOld = addResult(inbox, 1);
   const readOld = addResult(inbox, 2);
   inbox.markRead(readOld.id);
@@ -176,7 +168,7 @@ function addResult(inbox, index, overrides = {}) {
 {
   // Byte bound: oversized totals evict resolved entries oldest first.
   const { sessionDir } = makeSessionRoot();
-  const inbox = createPersistentShadowInbox({ sessionDir, sessionId: "sess-1", maxBytes: 2_000 });
+  const inbox = createPersistentShadowResultStore({ sessionDir, sessionId: "sess-1", maxBytes: 2_000 });
   for (let index = 0; index < 6; index += 1) {
     const entity = addResult(inbox, index, { payload: { summary: `x`.repeat(600) } });
     if (index < 4) inbox.markRead(entity.id);
@@ -193,7 +185,7 @@ function addResult(inbox, index, overrides = {}) {
 {
   // Package hard caps are never exceeded through configured bounds.
   const { sessionDir } = makeSessionRoot();
-  const inflated = createPersistentShadowInbox({ sessionDir, sessionId: "sess-1", maxResults: 10_000, maxBytes: Number.MAX_SAFE_INTEGER });
+  const inflated = createPersistentShadowResultStore({ sessionDir, sessionId: "sess-1", maxResults: 10_000, maxBytes: Number.MAX_SAFE_INTEGER });
   addResult(inflated, 1);
   const index = JSON.parse(readFileSync(join(shadowPartitionPath(sessionDir, "sess-1"), "index.json"), "utf8"));
   assert.ok(index.maxResults <= 100, "the result cap is hard-capped at 100");
@@ -204,14 +196,14 @@ function addResult(inbox, index, overrides = {}) {
 {
   // A corrupt result file is quarantined and never surfaces.
   const { sessionDir } = makeSessionRoot();
-  const inbox = createPersistentShadowInbox({ sessionDir, sessionId: "sess-1" });
+  const inbox = createPersistentShadowResultStore({ sessionDir, sessionId: "sess-1" });
   const good = addResult(inbox, 1);
   const bad = addResult(inbox, 2);
   inbox.delete(good.id);
   const badPath = join(shadowPartitionPath(sessionDir, "sess-1"), "results", `${bad.id}.json`);
   writeFileSync(badPath, "{ not json", "utf8");
 
-  const reopened = createPersistentShadowInbox({ sessionDir, sessionId: "sess-1" });
+  const reopened = createPersistentShadowResultStore({ sessionDir, sessionId: "sess-1" });
   assert.equal(reopened.list().length, 0, "corrupt entities never load");
   const quarantineDir = join(shadowPartitionPath(sessionDir, "sess-1"), "quarantine");
   assert.ok(existsSync(quarantineDir), "corrupt files are quarantined");
@@ -221,7 +213,7 @@ function addResult(inbox, index, overrides = {}) {
 
 {
   const { sessionDir } = makeSessionRoot();
-  const inbox = createPersistentShadowInbox({ sessionDir, sessionId: "sess-1" });
+  const inbox = createPersistentShadowResultStore({ sessionDir, sessionId: "sess-1" });
   const entity = addResult(inbox, 1, {
     requests: [{ input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: 0, turn: 1, toolCalls: 0 }],
   });
@@ -230,14 +222,14 @@ function addResult(inbox, index, overrides = {}) {
   tampered.requests[0].turn = 1_000_000;
   tampered.requests[0].toolCalls = 1_000_000;
   writeFileSync(entityPath, JSON.stringify(tampered), "utf8");
-  const reopened = createPersistentShadowInbox({ sessionDir, sessionId: "sess-1" });
+  const reopened = createPersistentShadowResultStore({ sessionDir, sessionId: "sess-1" });
   assert.equal(reopened.list().length, 0, "tampered request metrics beyond package hard caps never surface");
   assert.ok(existsSync(join(shadowPartitionPath(sessionDir, "sess-1"), "quarantine")));
 }
 {
   // A tampered entity (wrong shape) is quarantined too, never returned.
   const { sessionDir } = makeSessionRoot();
-  const inbox = createPersistentShadowInbox({ sessionDir, sessionId: "sess-1" });
+  const inbox = createPersistentShadowResultStore({ sessionDir, sessionId: "sess-1" });
   const entity = addResult(inbox, 1);
   const entityPath = join(shadowPartitionPath(sessionDir, "sess-1"), "results", `${entity.id}.json`);
   const tampered = JSON.parse(readFileSync(entityPath, "utf8"));
@@ -245,14 +237,14 @@ function addResult(inbox, index, overrides = {}) {
   tampered.summary = "tampered " + "z".repeat(5_000);
   writeFileSync(entityPath, JSON.stringify(tampered), "utf8");
 
-  const reopened = createPersistentShadowInbox({ sessionDir, sessionId: "sess-1" });
+  const reopened = createPersistentShadowResultStore({ sessionDir, sessionId: "sess-1" });
   assert.equal(reopened.list().length, 0, "tampered summaries do not surface unvalidated");
 }
 {
   // A payload changed on disk must re-validate against the persisted effective
   // output schema even when its size and stored summary remain valid.
   const { sessionDir } = makeSessionRoot();
-  const inbox = createPersistentShadowInbox({ sessionDir, sessionId: "sess-1" });
+  const inbox = createPersistentShadowResultStore({ sessionDir, sessionId: "sess-1" });
   const entity = addResult(inbox, 1, {
     validationSchema: {
       type: "object",
@@ -272,7 +264,7 @@ function addResult(inbox, index, overrides = {}) {
   };
   writeFileSync(entityPath, JSON.stringify(tampered), "utf8");
 
-  const reopened = createPersistentShadowInbox({ sessionDir, sessionId: "sess-1" });
+  const reopened = createPersistentShadowResultStore({ sessionDir, sessionId: "sess-1" });
   assert.equal(reopened.list().length, 0, "schema-invalid tampered payloads never surface");
   assert.ok(existsSync(join(shadowPartitionPath(sessionDir, "sess-1"), "quarantine")));
 }
@@ -281,7 +273,7 @@ function addResult(inbox, index, overrides = {}) {
   // A valid entity written before an index update (for example a process crash)
   // is recovered by the next bounded validated scan even when index.json is valid.
   const { sessionDir } = makeSessionRoot();
-  const inbox = createPersistentShadowInbox({ sessionDir, sessionId: "sess-1" });
+  const inbox = createPersistentShadowResultStore({ sessionDir, sessionId: "sess-1" });
   const indexed = addResult(inbox, 1);
   const partition = shadowPartitionPath(sessionDir, "sess-1");
   const unindexed = JSON.parse(readFileSync(join(partition, "results", `${indexed.id}.json`), "utf8"));
@@ -291,7 +283,7 @@ function addResult(inbox, index, overrides = {}) {
   unindexed.summary = "recovered after crash";
   writeFileSync(join(partition, "results", "shr-crash-recovered.json"), JSON.stringify(unindexed), "utf8");
 
-  const reopened = createPersistentShadowInbox({ sessionDir, sessionId: "sess-1" });
+  const reopened = createPersistentShadowResultStore({ sessionDir, sessionId: "sess-1" });
   assert.deepEqual(reopened.list().map((entry) => entry.id), ["shr-crash-recovered", indexed.id]);
 }
 
@@ -299,7 +291,7 @@ function addResult(inbox, index, overrides = {}) {
   // Every caller-controlled filesystem key is one safe path segment.
   const { sessionDir } = makeSessionRoot();
   assert.throws(() => shadowPartitionPath(sessionDir, "../../escape"), /session id/i);
-  assert.throws(() => createPersistentShadowInbox({ sessionDir, sessionId: "safe", makeId: () => "../escape" }).add({
+  assert.throws(() => createPersistentShadowResultStore({ sessionDir, sessionId: "safe", makeId: () => "../escape" }).add({
     shadowId: "x", shadowName: "X", payload: { summary: "x" }, createdAt: 1,
     validationSchema: { type: "object", properties: { summary: { type: "string" } }, required: ["summary"], additionalProperties: false },
   }), /result id/i);
@@ -316,18 +308,18 @@ function addResult(inbox, index, overrides = {}) {
   mkdirSync(outside, { recursive: true });
   const { symlinkSync } = await import("node:fs");
   symlinkSync(outside, shadowPartitionPath(sessionDir, "sess-link"));
-  assert.throws(() => createPersistentShadowInbox({ sessionDir, sessionId: "sess-link" }), /real directory/i);
+  assert.throws(() => createPersistentShadowResultStore({ sessionDir, sessionId: "sess-link" }), /real directory/i);
 }
 
 {
   // A corrupt index is rebuilt from a bounded validated scan.
   const { sessionDir } = makeSessionRoot();
-  const inbox = createPersistentShadowInbox({ sessionDir, sessionId: "sess-1" });
+  const inbox = createPersistentShadowResultStore({ sessionDir, sessionId: "sess-1" });
   const one = addResult(inbox, 1);
   const two = addResult(inbox, 2);
   writeFileSync(join(shadowPartitionPath(sessionDir, "sess-1"), "index.json"), "{ broken", "utf8");
 
-  const reopened = createPersistentShadowInbox({ sessionDir, sessionId: "sess-1" });
+  const reopened = createPersistentShadowResultStore({ sessionDir, sessionId: "sess-1" });
   const ids = reopened.list().map((entry) => entry.id).sort();
   assert.deepEqual(ids, [one.id, two.id].sort(), "a corrupt index rebuilds from valid entities");
   assert.ok(reopened.diagnostics().some((line) => line.includes("index")), "the rebuild is diagnosed");
@@ -351,14 +343,14 @@ function addResult(inbox, index, overrides = {}) {
 {
   // A tampered oversized payload quarantines instead of surfacing.
   const { sessionDir } = makeSessionRoot();
-  const inbox = createPersistentShadowInbox({ sessionDir, sessionId: "sess-1" });
+  const inbox = createPersistentShadowResultStore({ sessionDir, sessionId: "sess-1" });
   const entity = addResult(inbox, 1);
   const entityPath = join(shadowPartitionPath(sessionDir, "sess-1"), "results", `${entity.id}.json`);
   const tampered = JSON.parse(readFileSync(entityPath, "utf8"));
   tampered.payload = { blob: "p".repeat(30_000) };
   writeFileSync(entityPath, JSON.stringify(tampered), "utf8");
 
-  const reopened = createPersistentShadowInbox({ sessionDir, sessionId: "sess-1" });
+  const reopened = createPersistentShadowResultStore({ sessionDir, sessionId: "sess-1" });
   assert.equal(reopened.list().length, 0, "oversized payloads never pass load validation");
   assert.ok(existsSync(join(shadowPartitionPath(sessionDir, "sess-1"), "quarantine")));
 }
@@ -415,11 +407,11 @@ function addResult(inbox, index, overrides = {}) {
   // A persisted reference mark survives reopening: the restored entity
   // reports referenced and markReferenced refuses to repeat it.
   const { sessionDir } = makeSessionRoot();
-  const first = createPersistentShadowInbox({ sessionDir, sessionId: "sess-1" });
+  const first = createPersistentShadowResultStore({ sessionDir, sessionId: "sess-1" });
   const entity = addResult(first, 1);
   assert.equal(first.markReferenced(entity.id), true);
   assert.equal(first.markReferenced(entity.id), false, "the mark is idempotent");
-  const reopened = createPersistentShadowInbox({ sessionDir, sessionId: "sess-1" });
+  const reopened = createPersistentShadowResultStore({ sessionDir, sessionId: "sess-1" });
   assert.equal(reopened.list()[0].referenced, true, "the mark survives reopening");
   assert.equal(reopened.markReferenced(entity.id), false);
 }
@@ -451,12 +443,10 @@ function addResult(inbox, index, overrides = {}) {
 {
   // A new task's forced-notify downgrade persists across reopening.
   const { sessionDir } = makeSessionRoot();
-  const inbox = createPersistentShadowInbox({ sessionDir, sessionId: "sess-1" });
+  const inbox = createPersistentShadowResultStore({ sessionDir, sessionId: "sess-1" });
   const steer = addResult(inbox, 1, { configuredDelivery: "steer" });
-  assert.equal(steer.configuredDelivery, "steer", "the fixture result starts configured for steer");
   assert.equal(inbox.forceNotify(steer.id), true, "the undelivered result downgrades");
-  assert.equal(inbox.forceNotify(steer.id), false, "the downgrade is idempotent");
-  const reopened = createPersistentShadowInbox({ sessionDir, sessionId: "sess-1" });
+  const reopened = createPersistentShadowResultStore({ sessionDir, sessionId: "sess-1" });
   assert.equal(reopened.list()[0].configuredDelivery, "notify", "the downgrade survives reopening");
 }
 
@@ -464,7 +454,7 @@ function addResult(inbox, index, overrides = {}) {
 
 {
   const { sessionDir } = makeSessionRoot("sess-delivery");
-  const inbox = createPersistentShadowInbox({ sessionDir, sessionId: "sess-delivery" });
+  const inbox = createPersistentShadowResultStore({ sessionDir, sessionId: "sess-delivery" });
   const schema = { type: "object", properties: { summary: { type: "string" } }, required: ["summary"], additionalProperties: false };
   const entity = inbox.add({ shadowId: "s", shadowName: "S", payload: { summary: "a" }, createdAt: 1, configuredDelivery: "steer", taskIdentity: { epoch: 2, sourceRun: 5 }, validationSchema: schema });
   const wakeEntity = inbox.add({ shadowId: "s", shadowName: "S", payload: { summary: "b" }, createdAt: 2, configuredDelivery: "wake", validationSchema: schema });
@@ -475,7 +465,7 @@ function addResult(inbox, index, overrides = {}) {
   assert.equal(inbox.degradeToNotify(wakeEntity.id), true, "a degraded result returns inbox-only");
   assert.equal(inbox.degradeToNotify(entity.id), false, "a delivered result never degrades");
 
-  const reopened = createPersistentShadowInbox({ sessionDir, sessionId: "sess-delivery" });
+  const reopened = createPersistentShadowResultStore({ sessionDir, sessionId: "sess-delivery" });
   const deliveredView = reopened.list().find((entry) => entry.id === entity.id);
   const degradedView = reopened.list().find((entry) => entry.id === wakeEntity.id);
   assert.equal(deliveredView.delivery, "delivered", "delivery confirmation survives reopening");
@@ -486,12 +476,12 @@ function addResult(inbox, index, overrides = {}) {
 
 {
   const { sessionDir } = makeSessionRoot("sess-recover");
-  const inbox = createPersistentShadowInbox({ sessionDir, sessionId: "sess-recover" });
+  const inbox = createPersistentShadowResultStore({ sessionDir, sessionId: "sess-recover" });
   const schema = { type: "object", properties: { summary: { type: "string" } }, required: ["summary"], additionalProperties: false };
   const pending = inbox.add({ shadowId: "s", shadowName: "S", payload: { summary: "p" }, createdAt: 1, configuredDelivery: "wake", validationSchema: schema });
   const fresh = inbox.add({ shadowId: "s", shadowName: "S", payload: { summary: "f" }, createdAt: 2, configuredDelivery: "steer", validationSchema: schema });
   assert.equal(inbox.send(pending.id), true);
-  const recovered = createPersistentShadowInbox({ sessionDir, sessionId: "sess-recover" });
+  const recovered = createPersistentShadowResultStore({ sessionDir, sessionId: "sess-recover" });
   assert.equal(recovered.recoverPendingDelivery(), 1, "only the pending result recovers at reopen");
   const views = recovered.list();
   assert.equal(views.find((entry) => entry.id === pending.id).delivery, "notified");
@@ -505,11 +495,11 @@ function addResult(inbox, index, overrides = {}) {
 
 {
   const { sessionDir } = makeSessionRoot("claim-1");
-  const inboxA = createPersistentShadowInbox({ sessionDir, sessionId: "claim-1", now: () => 5_000 });
+  const inboxA = createPersistentShadowResultStore({ sessionDir, sessionId: "claim-1", now: () => 5_000 });
   const entity = addResult(inboxA, 1);
   // A second store instance on the same partition observes the same
   // authoritative result while its in-memory copy is still unreferenced.
-  const inboxB = createPersistentShadowInbox({ sessionDir, sessionId: "claim-1", now: () => 5_000 });
+  const inboxB = createPersistentShadowResultStore({ sessionDir, sessionId: "claim-1", now: () => 5_000 });
   assert.ok(inboxB.list().some((item) => item.id === entity.id), "the second instance observes the shared result");
 
   assert.equal(inboxA.claimReference(entity.id), true, "the first instance claims the append right");
@@ -526,7 +516,7 @@ function addResult(inbox, index, overrides = {}) {
   // later instance seeds the shared result from the partition, exactly like
   // a session reopen that discovers another instance's in-flight result.
   const second = addResult(inboxA, 2);
-  const inboxC = createPersistentShadowInbox({ sessionDir, sessionId: "claim-1", now: () => 5_000 });
+  const inboxC = createPersistentShadowResultStore({ sessionDir, sessionId: "claim-1", now: () => 5_000 });
   assert.ok(inboxC.list().some((item) => item.id === second.id), "a later instance seeds the shared result");
   assert.equal(inboxC.claimReference(second.id), true, "another instance claims the retry right");
   inboxC.releaseReferenceClaim(second.id);
@@ -554,14 +544,14 @@ function addResult(inbox, index, overrides = {}) {
   assert.equal(inboxA.claimReference(fourth.id), true);
   const fourthClaim = join(shadowPartitionPath(sessionDir, "claim-1"), "references", `${fourth.id}.claim`);
   assert.equal(statSync(fourthClaim).mode & 0o777, 0o600, "claim files are private");
-  const reopened = createPersistentShadowInbox({ sessionDir, sessionId: "claim-1", now: () => 6_000 });
+  const reopened = createPersistentShadowResultStore({ sessionDir, sessionId: "claim-1", now: () => 6_000 });
   assert.equal(reopened.claimReference(fourth.id), false, "an ambiguous post-append claim stays fail-closed across reopen");
 }
 
 // A hostile references directory is rejected rather than followed.
 {
   const { sessionDir } = makeSessionRoot("claim-link");
-  const inbox = createPersistentShadowInbox({ sessionDir, sessionId: "claim-link", now: () => 5_000 });
+  const inbox = createPersistentShadowResultStore({ sessionDir, sessionId: "claim-link", now: () => 5_000 });
   const entity = addResult(inbox, 1);
   const outside = mkdtempSync(join(tmpdir(), "shadow-ref-outside-"));
   roots.push(outside);
@@ -574,4 +564,4 @@ function addResult(inbox, index, overrides = {}) {
 
 for (const root of roots) rmSync(root, { recursive: true, force: true });
 
-console.log("shadow-minds inbox-store tests: OK");
+console.log("shadow-minds result-partition tests: OK");

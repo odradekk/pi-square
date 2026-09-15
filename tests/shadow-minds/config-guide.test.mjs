@@ -1486,12 +1486,12 @@ const previousCodingAgentDir159 = process.env.PI_CODING_AGENT_DIR;
     assert.equal(shadowDeliveries(harness).length, 1, "no second delivery happens after recovery");
     // A runtime notification after reopen (for example a read marker) must
     // not re-enqueue the restored result into the delivery machine.
-    state.runtime.markResultRead(resultId);
+    const services = __testables.makeServices(state, eventCtx);
+    services.runtime.markResultRead(resultId);
     await harness.handlers.get("agent_settled")({ type: "agent_settled" }, eventCtx);
     assert.equal(shadowDeliveries(harness).length, 1, "a restored result never auto-delivers after reopen");
     assert.equal(state.runtime.snapshot().results[0].delivery, "notified");
     // But an explicit send from the reopened inbox still works.
-    const services = __testables.makeServices(state, eventCtx);
     assert.equal(services.delivery?.sendResultToAgent(resultId)?.ok, true);
     assert.equal(shadowDeliveries(harness).length, 2, "an explicit send still delivers after reopen");
     await harness.handlers.get("message_start")({ type: "message_start", message: shadowDeliveries(harness).at(-1)[1] }, eventCtx);
@@ -1997,7 +1997,7 @@ const previousCodingAgentDir160 = process.env.PI_CODING_AGENT_DIR;
     };
     reentryTrigger = () => {
       const result = state.runtime.snapshot().results[0];
-      if (result) state.runtime.markResultRead(result.id);
+      if (result) services.runtime.markResultRead(result.id);
     };
     let started = services.runtime.runManual({ shadowId: "session-synthesizer" });
     assert.equal(started.ok, true, started.message);
@@ -2031,7 +2031,7 @@ const previousCodingAgentDir160 = process.env.PI_CODING_AGENT_DIR;
     assert.notEqual(secondId, firstId, "distinct results are never coalesced");
     assert.equal(referenceCount(secondId), 0, "the failed append leaves no transcript reference");
     assert.ok(state.runtime.snapshot().results.some((result) => result.id === secondId), "the result stays safely available in the inbox");
-    state.runtime.markResultRead(secondId);
+    services.runtime.markResultRead(secondId);
     assert.equal(referenceCount(secondId), 1, "a later runtime update retries the append exactly once");
     assert.equal(state.runtime.snapshot().results.find((result) => result.id === secondId).referenced, true, "the retried append marks the result referenced");
 

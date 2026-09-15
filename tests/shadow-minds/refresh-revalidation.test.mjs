@@ -172,8 +172,9 @@ function queuePendingMutation(harness) {
 // ── Full user-owned lifecycle through the real wiring (#191) ─────────
 
 {
-  const { default: registerShadowMinds } = await load(join(packageRoot, "src", "shadow-minds", "index.ts"));
-  const { __testables } = await load(join(packageRoot, "src", "shadow-minds", "index.ts"));
+  // One load: the registration and its testable services must share the
+  // module instance so the services resolve the registration's result store.
+  const { default: registerShadowMinds, __testables } = await load(join(packageRoot, "src", "shadow-minds", "index.ts"));
   const { loadConfig } = await load(join(packageRoot, "src", "core", "config.ts"));
 
   const dir = mkdtempSync(join(tmpdir(), "pi-square-shadow-lifecycle-"));

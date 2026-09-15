@@ -54,10 +54,10 @@ import {
 } from "./prompt";
 import { matchesParentModelFilter, resolveShadowModel, resolveShadowThinkingLevel } from "./resolve";
 import {
-  createPersistentShadowInbox,
+  createPersistentShadowResultStore,
   reconcileShadowPartitions,
   sweepShadowDebugRetention,
-} from "./inbox-store";
+} from "./result-partition";
 import {
   createShadowRuntime,
   shadowCohortHash,
@@ -73,7 +73,7 @@ import {
 } from "./scheduler";
 import { buildTrajectory, type ShadowTrajectoryEvidence } from "./trajectory";
 import { resolveShadowTools } from "./tools";
-import { createShadowInbox, type ShadowInbox } from "./result";
+import { createShadowResultStore, type ShadowResultStore } from "./result-store";
 import {
   createShadowDeliveryController,
   MAX_PENDING_RESULTS,
@@ -359,6 +359,17 @@ function composeShadowRun(input: {
   }
 }
 
+/**
+ * The result store each registered state currently writes to, keyed weakly so
+ * parallel registrations (and test harnesses) stay separate. This is
+ * scaffolding for the state-shape split (#373): the natural home for the
+ * store is the in-session state container, which #373 owns; until then the
+ * manager services reach the store through this map rather than through the
+ * state container. A missing entry is a programming error, not a runtime
+ * condition.
+ */
+const resultStores = new WeakMap<ShadowMindsState, ShadowResultStore>();
+
 /** Builds the manager runtime services against one command invocation. */
 function makeServices(
   state: ShadowMindsState,
@@ -366,6 +377,8 @@ function makeServices(
   runtime: ShadowRuntime = state.runtime,
   hooks?: { onSchedulerChange?: () => void },
 ): ShadowManagerServices {
+  const store = resultStores.get(state);
+  if (!store) throw new Error("shadow-minds: no result store is registered for this state");
   return {
     runtime: {
       snapshot: () => runtime.snapshot(),
@@ -422,10 +435,10 @@ function makeServices(
       cancelRun(runId) {
         return runtime.cancelRun(runId);
       },
-      markResultRead: (id) => runtime.markResultRead(id),
-      dismissResult: (id) => runtime.dismissResult(id),
+      markResultRead: (id) => store.markRead(id),
+      dismissResult: (id) => store.dismiss(id),
       deleteResult: (id) => {
-        const ok = runtime.deleteResult(id);
+        const ok = store.delete(id);
         if (ok) state.delivery?.remove(id);
         return ok;
       },
@@ -476,15 +489,18 @@ export default function registerShadowMinds(
   runtimeDeps?: ShadowRuntimeDeps,
 ): ShadowMindsState {
   const effectiveConfig = (): ShadowMindsConfig => config?.().shadowMinds ?? DEFAULT_CONFIG.shadowMinds;
-  let currentInbox: ShadowInbox | undefined;
-  const makeRuntime = (inbox?: ShadowInbox): ShadowRuntime => {
-    // An explicit inbox is always tracked so old-task downgrades reach the
+  // Every makeRuntime call assigns this before any other read; the definite-
+  // assignment assertion stands in for what control-flow analysis cannot see
+  // through the makeRuntime call itself.
+  let currentStore!: ShadowResultStore;
+  const makeRuntime = (store?: ShadowResultStore): ShadowRuntime => {
+    // An explicit store is always tracked so old-task downgrades reach the
     // in-memory fallback of non-persisted sessions too.
-    currentInbox = inbox ?? createShadowInbox({});
+    currentStore = store ?? createShadowResultStore({});
     return createShadowRuntime({
       config: effectiveConfig,
       ...(runtimeDeps ? { deps: runtimeDeps } : {}),
-      inbox: currentInbox,
+      resultStore: currentStore,
       currentTaskEpoch: () => state.scheduler.snapshot().taskEpoch,
     });
   };
@@ -544,7 +560,7 @@ export default function registerShadowMinds(
           // Results without a recorded task identity predate scheduling;
           // treat them as old work.
           if ((result.taskIdentity?.epoch ?? 0) >= beforeEpoch) continue;
-          if (currentInbox?.forceNotify?.(result.id)) downgraded += 1;
+          if (currentStore.forceNotify(result.id)) downgraded += 1;
         }
         return downgraded;
       },
@@ -564,10 +580,13 @@ export default function registerShadowMinds(
       },
     };
   };
+  // The first store/runtime pair is created before the state object so
+  // `currentStore` is definitely assigned by the time the state exists.
+  const initialRuntime = makeRuntime();
   const state: ShadowMindsState = {
     registry: { definitions: [], invalid: [], diagnostics: [] },
     cwd: process.cwd(),
-    runtime: makeRuntime(),
+    runtime: initialRuntime,
     scheduler: makeScheduler(),
     currentParentRun: () => parentRunSeq,
     captureTaskSnapshot(commandCtx: ExtensionCommandContext): ShadowTaskSnapshot {
@@ -608,6 +627,7 @@ export default function registerShadowMinds(
       return snapshot(state.registry, effective);
     },
   };
+  resultStores.set(state, currentStore);
   // ── Bounded completion gate (#160) ─────────────────────────────────
   // The gate never delays the parent answer: it only holds this extension's
   // settled handling for a bounded window after the answer has rendered. The
@@ -720,7 +740,7 @@ export default function registerShadowMinds(
   let draining = false;
   state.delivery = createShadowDeliveryController({
     pi,
-    getRuntime: () => state.runtime,
+    getResultStore: () => currentStore,
     timing: () => ({
       currentRun: parentRunSeq,
       currentTaskEpoch: state.scheduler.snapshot().taskEpoch,
@@ -905,11 +925,11 @@ export default function registerShadowMinds(
     state.runtime.reset("Parent Pi session changed");
     seenPhases.clear();
     // Each parent session owns its Shadow state: persisted sessions get the
-    // authoritative partition inbox (results survive reopening) while
+    // authoritative partition store (results survive reopening) while
     // non-persisted sessions fall back to memory with a visible diagnostic.
     const sessionDir = sessionCtx.sessionManager?.getSessionDir?.() ?? "";
     const sessionFile = sessionCtx.sessionManager?.getSessionFile?.();
-    let inbox: ShadowInbox | undefined;
+    let store: ShadowResultStore | undefined;
     if (!effectiveConfig().enabled) {
       // Disabled: no partition is opened, scanned, or created, and the
       // fallback notice stays silent.
@@ -926,9 +946,9 @@ export default function registerShadowMinds(
       }
       try {
         sweepShadowDebugRetention(sessionDir, sessionId);
-        const persistentInbox = createPersistentShadowInbox({ sessionDir, sessionId });
-        inbox = persistentInbox;
-        for (const diagnostic of persistentInbox.diagnostics().slice(0, 3)) {
+        const persistentStore = createPersistentShadowResultStore({ sessionDir, sessionId });
+        store = persistentStore;
+        for (const diagnostic of persistentStore.diagnostics().slice(0, 3)) {
           sessionCtx.hasUI && sessionCtx.ui.notify(`shadow-minds: ${notifyText(diagnostic)}`, "warning");
         }
       } catch (error) {
@@ -947,7 +967,8 @@ export default function registerShadowMinds(
         );
       }
     }
-    state.runtime = makeRuntime(inbox);
+    state.runtime = makeRuntime(store);
+    resultStores.set(state, currentStore);
     state.scheduler = makeScheduler();
     state.delivery?.reset();
     state.gate?.reset();
@@ -957,7 +978,7 @@ export default function registerShadowMinds(
     draining = false;
     // A result left pending by a lost session never resumes automatically:
     // it returns inbox-only with notify policy and waits for an explicit send.
-    const recoveredDeliveries = inbox?.recoverPendingDelivery?.() ?? 0;
+    const recoveredDeliveries = currentStore.recoverPendingDelivery();
     if (recoveredDeliveries > 0 && sessionCtx.hasUI) {
       sessionCtx.ui.notify(
         `shadow-minds: recovered ${recoveredDeliveries} undelivered result${recoveredDeliveries === 1 ? "" : "s"} to the inbox`,
@@ -1088,7 +1109,7 @@ export default function registerShadowMinds(
         // of one authoritative result cannot both append it. A refused claim
         // stays fail-closed; only an append that explicitly throws releases
         // its owner token for a later retry.
-        if (!(currentInbox?.claimReference?.(result.id) ?? true)) {
+        if (!currentStore.claimReference(result.id)) {
           inFlightReferences.delete(result.id);
           continue;
         }
@@ -1104,7 +1125,7 @@ export default function registerShadowMinds(
           // A session append that did not complete leaves no reference. The
           // result stays authoritative in the inbox and releasing this
           // instance's token lets a later observer retry.
-          currentInbox?.releaseReferenceClaim?.(result.id);
+          currentStore.releaseReferenceClaim(result.id);
           inFlightReferences.delete(result.id);
           continue;
         }
@@ -1115,7 +1136,7 @@ export default function registerShadowMinds(
         // persisted optimization bit until a later repair path.
         seenResults.add(result.id);
         try {
-          currentInbox?.markReferenced?.(result.id);
+          currentStore.markReferenced(result.id);
         } catch {
           // Keep the claim fail-closed: the transcript append already landed.
         } finally {

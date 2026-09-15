@@ -29,7 +29,8 @@ import {
 } from "../subagents/confirmed-delivery";
 import { sanitizeDisplayLine, sanitizeDisplayText } from "../display/sanitize";
 import type { ShadowDelivery } from "./parser";
-import { canonicalPayloadJson, type ShadowResultEntity } from "./result";
+import { canonicalPayloadJson } from "./result";
+import type { ShadowResultEntity, ShadowResultStore } from "./result-store";
 
 export const SHADOW_NOTIFICATION_TYPE = "pi-square.shadow-notification";
 
@@ -105,16 +106,6 @@ export interface ShadowDeliveryValue {
   runId?: string;
   phase?: string;
   message?: string;
-}
-
-/** Runtime inbox operations the delivery machine drives. */
-export interface ShadowDeliveryRuntime {
-  /** Atomic `notified → pending` transition as the message goes out. */
-  sendResultForDelivery(id: string): boolean;
-  /** Confirmed delivery: `pending → delivered`, transcript-observed only. */
-  markResultDelivered(id: string): boolean;
-  /** A degraded entry returns inbox-only: `pending → notified`, policy notify. */
-  degradeResultDelivery(id: string): boolean;
 }
 
 function sourceLabel(result: ShadowResultEntity): string {
@@ -266,8 +257,8 @@ export interface ShadowDeliveryController {
 
 export function createShadowDeliveryController(options: {
   pi: Pick<ExtensionAPI, "sendMessage">;
-  /** Reads the current runtime inbox operations; runtime is rebuilt per session. */
-  getRuntime: () => ShadowDeliveryRuntime | undefined;
+  /** Reads the session result store; the store and runtime are rebuilt per session. */
+  getResultStore: () => ShadowResultStore | undefined;
   /** Reads the parent-run timing the policy gate decides against. */
   timing: () => ShadowDeliveryTiming;
   /** Fired once per sweep that degraded entries, for a bounded visible notice. */
@@ -297,7 +288,7 @@ export function createShadowDeliveryController(options: {
       }
       if (sendable.length > 0) {
         for (const entry of sendable) {
-          if (entry.value.kind === "result") options.getRuntime()?.sendResultForDelivery(entry.id);
+          if (entry.value.kind === "result") options.getResultStore()?.send(entry.id);
         }
         sequence += 1;
         const sendOptions = timing.quiet
@@ -334,7 +325,7 @@ export function createShadowDeliveryController(options: {
           core.remove(id);
           const record = records.get(id);
           records.delete(id);
-          if (record?.value.kind === "result") options.getRuntime()?.degradeResultDelivery(id);
+          if (record?.value.kind === "result") options.getResultStore()?.degradeToNotify(id);
         }
         options.onDegrade?.(degraded.length);
       }
@@ -353,7 +344,7 @@ export function createShadowDeliveryController(options: {
   const degradeEntry = (id: string, record: ShadowDeliveryRecord): void => {
     core.remove(id);
     records.delete(id);
-    if (record.value.kind === "result") options.getRuntime()?.degradeResultDelivery(id);
+    if (record.value.kind === "result") options.getResultStore()?.degradeToNotify(id);
   };
 
   /** Drops every entry the policy gate now refuses before the core selects a batch. */
@@ -445,7 +436,7 @@ export function createShadowDeliveryController(options: {
         const record = records.get(id);
         if (!record) continue;
         records.delete(id);
-        if (record.value.kind === "result") options.getRuntime()?.markResultDelivered(id);
+        if (record.value.kind === "result") options.getResultStore()?.markDelivered(id);
       }
     },
     handleTurnEnd: (message) => {
@@ -474,7 +465,7 @@ export function createShadowDeliveryController(options: {
         const record = records.get(id);
         records.delete(id);
         core.remove(id);
-        if (record?.value.kind === "result") options.getRuntime()?.markResultDelivered(id);
+        if (record?.value.kind === "result") options.getResultStore()?.markDelivered(id);
         confirmed += 1;
       }
       return confirmed;
