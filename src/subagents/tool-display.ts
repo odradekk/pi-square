@@ -53,19 +53,11 @@ function sanitizeArgValue(value: unknown, depth: number, budget: SanitizeBudget)
   if (value === null) return null;
   if (depth >= MAX_TOOL_ARG_DEPTH) return undefined;
   if (Array.isArray(value)) {
-    // Count before truncating: the projections show the real cardinality,
-    // never the truncated item count.
-    const trueLength = value.length;
     const out: unknown[] = [];
     for (const item of value.slice(0, MAX_TOOL_ARG_ITEMS)) {
       if (budget.chars <= 0) break;
       const cleaned = sanitizeArgValue(item, depth + 1, budget);
       if (cleaned !== undefined) out.push(cleaned);
-    }
-    if (out.length < trueLength) {
-      // Truncated (item cap or character budget): carry the true count in a
-      // structured wrapper so length reads stay truthful.
-      return Object.freeze({ count: trueLength, items: Object.freeze(out) });
     }
     return Object.freeze(out);
   }
@@ -85,12 +77,14 @@ function sanitizeArgValue(value: unknown, depth: number, budget: SanitizeBudget)
  *  fields a timeline entry persists. Strings pass the shared display
  *  sanitizer; finite numbers and booleans keep their type; containers stay
  *  within fixed depth/entry budgets; one shared character budget prunes the
- *  remainder deterministically. Arrays that outlive the budgets wrap as
- *  `{ count, items }` so the persisted record keeps the true cardinality.
- *  The result is frozen: the run record's update snapshots share this object
- *  by reference across shallow clones. This is the single construction point
- *  for stored tool activity — every projection reads these fields and never
- *  re-parses rendered text. */
+ *  remainder deterministically. The result is frozen: the run record's
+ *  update snapshots share this object by reference across shallow clones.
+ *  This is the single construction point for stored tool activity — every
+ *  projection reads these fields and never re-parses rendered text. True
+ *  list cardinalities are NOT stored here: they live in the timeline item's
+ *  parent-authored `listCounts` field, because anything inside the argument
+ *  object can be authored by the child and must never be trusted as a
+ *  number to display. */
 export function sanitizeToolActivityArgs(args: unknown): Record<string, unknown> {
   const budget: SanitizeBudget = { chars: MAX_TOOL_ARG_TOTAL };
   if (!args || typeof args !== "object" || Array.isArray(args)) return Object.freeze({});
@@ -99,29 +93,47 @@ export function sanitizeToolActivityArgs(args: unknown): Record<string, unknown>
   return cleaned as Record<string, unknown>;
 }
 
+// ─── Construction-point list counts ────────────────────────────────
+
+/** True cardinalities of the list-valued argument fields one tool call
+ *  counted at the timeline construction point, computed from the raw event
+ *  arguments BEFORE sanitizing truncation. Parent-authored: the child
+ *  influences these only through the real array lengths it sent, so a
+ *  model-crafted `{ count, items }` object can never project a fabricated
+ *  number. Only the fields the projections count are recorded. */
+export function toolArgCounts(toolName: string, args: unknown): Record<string, number> | undefined {
+  if (!args || typeof args !== "object" || Array.isArray(args)) return undefined;
+  const fields = toolName === "web_search" ? ["queries"] : toolName === "web_fetch" ? ["urls"] : [];
+  if (fields.length === 0) return undefined;
+  const counts: Record<string, number> = {};
+  for (const field of fields) {
+    const value = (args as Record<string, unknown>)[field];
+    if (Array.isArray(value)) counts[field] = value.length;
+  }
+  return Object.keys(counts).length > 0 ? Object.freeze(counts) : undefined;
+}
+
 // ─── Shared list-field readers ─────────────────────────────────────
 
-/** Cardinality of one list-shaped argument field. Plain arrays (raw session
- *  arguments, as the transcript paging and live events pass) report their
- *  own length; the sanitizer's truncation wrapper carries the true count. */
-export function toolArgListCount(value: unknown): number | undefined {
-  if (Array.isArray(value)) return value.length;
-  if (value && typeof value === "object") {
-    const count = (value as { count?: unknown }).count;
-    return typeof count === "number" && Number.isFinite(count) && count >= 0 ? count : undefined;
+/** Cardinality of one list-valued argument field. Only two sources are
+ *  trusted: the parent-authored `truthfulCount` recorded at the construction
+ *  point (pre-truncation), and a plain array's own length (raw session
+ *  arguments, as the transcript paging and live events pass). Any other
+ *  shape — in particular a model-crafted `{ count, items }` object — yields
+ *  undefined and the projections fall back to their anonymous rendering. */
+export function toolArgListCount(value: unknown, truthfulCount?: number): number | undefined {
+  if (typeof truthfulCount === "number" && Number.isFinite(truthfulCount) && truthfulCount >= 0) {
+    return truthfulCount;
   }
+  if (Array.isArray(value)) return value.length;
   return undefined;
 }
 
-/** First item of one list-shaped argument field, for summaries that preview
- *  it. Truncation wrappers expose their kept items; anything else yields
- *  undefined and the summaries fall back to their placeholder. */
+/** First item of one list-valued argument field, for summaries that preview
+ *  it. Anything but a plain array yields undefined and the summaries fall
+ *  back to their placeholder. */
 export function toolArgListFirst(value: unknown): unknown {
   if (Array.isArray(value)) return value[0];
-  if (value && typeof value === "object") {
-    const items = (value as { items?: unknown }).items;
-    if (Array.isArray(items)) return items[0];
-  }
   return undefined;
 }
 
@@ -155,7 +167,11 @@ export function timelineToolIdentity(item: Pick<SubagentTimelineItem, "tool">): 
  *  bounded for any input — so callers pass raw session arguments here with
  *  no construction-side cleaning. The manager's broader bounded-summary
  *  formatter is the explicitly named opt-in in `manager-tool-display.ts`. */
-export function rosterToolArgsDisplay(toolName: string, args: unknown): ToolEventDisplay {
+export function rosterToolArgsDisplay(
+  toolName: string,
+  args: unknown,
+  listCounts?: Record<string, number>,
+): ToolEventDisplay {
   if (!isKnownTool(toolName)) return { tool: "tool", summary: "called" };
   const parsed = (args && typeof args === "object" ? args : {}) as Record<string, unknown>;
   if (toolName === "read") {
@@ -171,11 +187,13 @@ export function rosterToolArgsDisplay(toolName: string, args: unknown): ToolEven
     }
   }
   if (toolName === "web_search") {
-    const count = toolArgListCount(parsed.queries) ?? 0;
+    const count = toolArgListCount(parsed.queries, listCounts?.queries);
+    if (count === undefined) return { tool: toolName, summary: "called" };
     return { tool: toolName, summary: `${count} quer${count === 1 ? "y" : "ies"}` };
   }
   if (toolName === "web_fetch") {
-    const count = toolArgListCount(parsed.urls) ?? 0;
+    const count = toolArgListCount(parsed.urls, listCounts?.urls);
+    if (count === undefined) return { tool: toolName, summary: "called" };
     return { tool: toolName, summary: `${count} URL${count === 1 ? "" : "s"}` };
   }
   return { tool: toolName, summary: "called" };
@@ -197,7 +215,7 @@ export function latestRosterToolCallSummary(
 ): string {
   const item = lastToolStart(timeline);
   if (!item) return fallback;
-  const display = rosterToolArgsDisplay(String(item.tool ?? ""), item.args);
+  const display = rosterToolArgsDisplay(String(item.tool ?? ""), item.args, item.listCounts);
   const summary = clipInline(display.summary, 120);
   return `${display.tool}${summary ? ` ${summary}` : ""}`;
 }
