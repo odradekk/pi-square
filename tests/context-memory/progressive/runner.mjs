@@ -16,6 +16,11 @@ const ROOT = resolve(HERE, "../../..");
 const FREEZE_SCHEMA = "pi-square.context-memory/progressive-freeze/1";
 const REPORT_SCHEMA = "pi-square.context-memory/progressive-report/1";
 export const MODEL_PIN = Object.freeze({ provider: "cpa", id: "deepseek-v4.1-flash", thinkingLevel: "max" });
+const MODEL_IDS = [MODEL_PIN.id, "glm-5.3-flash"];
+function modelPin(id = MODEL_PIN.id) {
+  if (!MODEL_IDS.includes(id)) throw new Error("unsupported progressive model");
+  return { ...MODEL_PIN, id };
+}
 const safe = error => safeErrorDiagnostic(error, { repoRoot: ROOT });
 
 function packageVersion(path) { return JSON.parse(readFileSync(path, "utf8")).version; }
@@ -46,22 +51,25 @@ export function createAttempt({ taskFactory = createTask } = {}) {
   const task = taskFactory();
   return { id: randomUUID(), flags: [...task.flags], seedDigest: digest(task.flags.join("\0")), task };
 }
-export async function resolveRuntime({ runtime } = {}) {
+export async function resolveRuntime({ runtime, modelId } = {}) {
+  const pin = modelPin(modelId);
   const modelRuntime = runtime ?? await ModelRuntime.create({ allowModelNetwork: false, refreshOnCreate: false });
-  const configured = modelRuntime.getModel(MODEL_PIN.provider, MODEL_PIN.id);
-  if (!configured || configured.provider !== MODEL_PIN.provider || configured.id !== MODEL_PIN.id) throw new Error("required progressive model is unavailable");
+  const configured = modelRuntime.getModel(pin.provider, pin.id);
+  if (!configured || configured.provider !== pin.provider || configured.id !== pin.id) throw new Error("required progressive model is unavailable");
   requireThinkingConfiguration(configured, CONFIG.thinkingLevel);
   if (!await modelRuntime.getAuth(configured)) throw new Error("required progressive model authentication is unavailable");
   return { modelRuntime, model: { ...configured, contextWindow: CONFIG.contextWindow } };
 }
-export function environmentPins({ model } = {}) {
+export function environmentPins({ model, modelId = model?.id } = {}) {
   if (git(["status", "--porcelain=v1", "--untracked-files=all"]) !== "") throw new Error("real progressive runs require a clean checkout");
-  const effectiveModel = stable(model ?? MODEL_PIN);
+  const pin = modelPin(modelId);
+  if (model && (model.provider !== pin.provider || model.id !== pin.id)) throw new Error("progressive model does not match selected model");
+  const effectiveModel = stable(model ?? pin);
   return {
     commit: git(["rev-parse", "HEAD"]), tree: git(["rev-parse", "HEAD^{tree}"]), progressiveDigest: taskDigest(),
     node: process.version, packageVersion: packageVersion(join(ROOT, "package.json")),
     piVersion: packageVersion(join(ROOT, "node_modules/@earendil-works/pi-coding-agent/package.json")),
-    model: { provider: MODEL_PIN.provider, id: MODEL_PIN.id, api: effectiveModel.api ?? null },
+    model: { provider: pin.provider, id: pin.id, api: effectiveModel.api ?? null },
     modelConfigurationSha256: digest(effectiveModel),
     thinking: { requested: CONFIG.thinkingLevel, generationValue: effectiveModel.thinkingLevelMap?.[CONFIG.thinkingLevel] ?? null, mapping: effectiveModel.thinkingLevelMap ?? null },
     config: CONFIG,
@@ -123,7 +131,7 @@ function validatePilotReport(report) {
     || !pair?.arms?.memory || !pair?.arms?.native || typeof pair.arms.memory.status !== "string" || typeof pair.arms.native.status !== "string"
     || report.totals?.pairs !== 1 || report.totals?.arms !== 2 || typeof report.totals?.result !== "string"
     || !/^[a-f0-9]{40}$/.test(pins?.commit ?? "") || !/^[a-f0-9]{40}$/.test(pins?.tree ?? "") || !/^[a-f0-9]{64}$/.test(pins?.progressiveDigest ?? "")
-    || !/^[a-f0-9]{64}$/.test(pins?.modelConfigurationSha256 ?? "") || typeof pins?.piVersion !== "string" || pins?.model?.provider !== MODEL_PIN.provider || pins?.model?.id !== MODEL_PIN.id
+    || !/^[a-f0-9]{64}$/.test(pins?.modelConfigurationSha256 ?? "") || typeof pins?.piVersion !== "string" || pins?.model?.provider !== MODEL_PIN.provider || !MODEL_IDS.includes(pins?.model?.id)
     || pins?.thinking?.requested !== CONFIG.thinkingLevel || pins?.thinking?.generationValue == null || !pins?.thinking?.mapping) {
     throw new Error("pilot report is not a complete one-pair progressive pilot report");
   }
@@ -147,16 +155,22 @@ function writePublic(directory, report) {
 }
 async function cli() {
   const args = process.argv.slice(2);
+  const modelOption = args.indexOf("--model");
+  const modelId = modelPin(modelOption < 0 ? undefined : args[modelOption + 1]).id;
+  if (modelOption >= 0) {
+    if (!args[modelOption + 1]) throw new Error("--model requires an exact model ID");
+    args.splice(modelOption, 2);
+  }
   if (args[0] === "--freeze-pilot") {
     if (!args[1] || args[2] !== "--output" || !args[3] || args.length !== 4) throw new Error("usage: runner.mjs --freeze-pilot <pilot-report.json> --output <manifest.json>");
     const report = JSON.parse(readFileSync(args[1], "utf8"));
-    freezePilot({ pilotReport: report, pins: environmentPins(), path: args[3] }); return;
+    freezePilot({ pilotReport: report, pins: environmentPins({ modelId }), path: args[3] }); return;
   }
-  if (args[0] !== "--real" || !["--pilot", "--formal"].includes(args[1]) || (args[1] === "--formal" && (args[2] !== "--freeze-pilot" || !args[3] || args.length !== 4)) || (args[1] === "--pilot" && args.length !== 2)) throw new Error("usage: runner.mjs --real --pilot | --real --formal --freeze-pilot <manifest>");
-  const preliminaryPins = environmentPins();
+  if (args[0] !== "--real" || !["--pilot", "--formal"].includes(args[1]) || (args[1] === "--formal" && (args[2] !== "--freeze-pilot" || !args[3] || args.length !== 4)) || (args[1] === "--pilot" && args.length !== 2)) throw new Error("usage: runner.mjs [--model deepseek-v4.1-flash|glm-5.3-flash] --real --pilot | --real --formal --freeze-pilot <manifest>");
+  const preliminaryPins = environmentPins({ modelId });
   const frozen = args[1] === "--formal" ? requireFreeze(args[3], preliminaryPins, { allowUnresolvedModel: true }) : null;
-  const resolved = await resolveRuntime({});
-  const pins = environmentPins({ model: resolved.model });
+  const resolved = await resolveRuntime({ modelId });
+  const pins = environmentPins({ model: resolved.model, modelId });
   if (frozen) requireFreeze(args[3], pins);
   const outputRoot = join(HERE, "private-runs");
   mkdirSync(outputRoot, { recursive: true, mode: 0o700 });

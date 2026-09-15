@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { lstatSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createAttempt, freezePilot, requireFreeze, runFormal, runPair, taskDigest } from "./runner.mjs";
+import { createAttempt, freezePilot, requireFreeze, runFormal, runPair, taskDigest, resolveRuntime } from "./runner.mjs";
 import { createProgressiveReport, reportMarkdown } from "./qualify.mjs";
 import { readEvidence } from "./evidence.mjs";
 import { cacheUsageObservation } from "./session.mjs";
@@ -66,6 +66,19 @@ try {
   assert.throws(() => requireFreeze(manifestPath, { ...pins, modelConfigurationSha256: "changed" }), /does not match/);
 
   assert.throws(() => requireFreeze(manifestPath, { ...pins, config: { ...pins.config, recovery: { initialDelayMs: 1000, maxDelayMs: 30000 } } }), /does not match/);
+
+  const glmPins = { ...pins, model: { ...pins.model, id: "glm-5.3-flash" } };
+  const glmReport = { ...pilotReport, pins: glmPins };
+  const glmManifestPath = join(root, "glm-freeze.json");
+  freezePilot({ pilotReport: glmReport, pins: glmPins, path: glmManifestPath });
+  assert.equal(requireFreeze(glmManifestPath, glmPins).pins.model.id, "glm-5.3-flash");
+  assert.throws(() => requireFreeze(glmManifestPath, pins), /does not match/);
+  assert.throws(() => freezePilot({ pilotReport: glmReport, pins, path: join(root, "wrong-model") }), /pins/);
+  const fakeRuntime = { getModel(provider, id) { return { provider, id, reasoning: true, thinkingLevelMap: { max: "high" } }; }, async getAuth() { return "test-only"; } };
+  assert.equal((await resolveRuntime({ runtime: fakeRuntime })).model.id, "deepseek-v4.1-flash");
+  assert.equal((await resolveRuntime({ runtime: fakeRuntime, modelId: "glm-5.3-flash" })).model.id, "glm-5.3-flash");
+  await assert.rejects(resolveRuntime({ runtime: fakeRuntime, modelId: "unknown" }), /unsupported/);
+  await assert.rejects(resolveRuntime({ runtime: { ...fakeRuntime, async getAuth() { return null; } }, modelId: "glm-5.3-flash" }), /authentication/);
 
   const report = createProgressiveReport({ kind: "formal", pairs: formal, manifest, pins });
   assert.equal(report.totals.result, "pass"); assert.equal(report.totals.memoryQualified, 3); assert.equal(report.totals.requests, 54);

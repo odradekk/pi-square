@@ -16,6 +16,8 @@ From a clean committed checkout:
 2. Inspect its JSON and Markdown reports, then freeze the JSON offline: `node tests/context-memory/progressive/runner.mjs --freeze-pilot <pilot-public-report.json> --output <pilot-freeze.json>`.
 3. Run exactly three new paid pairs: `node tests/context-memory/progressive/runner.mjs --real --formal --freeze-pilot <pilot-freeze.json>`.
 
+The default model is `cpa/deepseek-v4.1-flash`. Select the additional model with `--model glm-5.3-flash` on each pilot, freeze, and formal command. Both models use maximum thinking and the same experiment settings. Each model has its own pilot, freeze, seeds, reports, and three formal pairs; each pair still contains Memory and native arms of the same model. The two model lanes may run concurrently. A freeze from one model cannot authorize the other. Cross-model results are descriptive comparisons, not matched-seed causal estimates.
+
 Every paid-run command rejects a dirty checkout, unavailable exact model, missing authentication, changed source digest, changed commit or dependency version, changed effective non-secret model configuration, or changed thinking mapping before starting a model session. A freeze accepts exactly one pilot report and formal runs never reuse its seed.
 
 Private output is written to a new owner-only directory under the gitignored `tests/context-memory/progressive/private-runs/` directory. It includes fsynced seeds, per-pair attempt journals, session evidence, and native session files. Public JSON and Markdown contain statuses, counts, latency, usage and cache metrics, safe diagnostics, and exact evidence SHA-256/byte/record metadata. They omit flags, prompts, credentials, session bodies, reasoning, and private paths.
