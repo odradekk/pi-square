@@ -10,22 +10,12 @@
  * round-trip tests consume it; it is no longer a runtime write path.
  */
 
+import { SHADOW_DEFINITION_BOUNDS } from "./definition-bounds";
+import type { ShadowOutputSchema } from "./output-schema";
 import {
-  SHADOW_BODY_MAX_CHARS,
   SHADOW_FRONTMATTER_FIELDS,
-  SHADOW_ID_PATTERN,
-  SHADOW_NAME_MAX_CHARS,
-  SHADOW_PRIORITY_MAX,
-  SHADOW_PRIORITY_MIN,
-  SHADOW_TRIGGERS,
-  SHADOW_TRIGGER_INSTRUCTION_MAX_CHARS,
-  SHADOW_TOOLS_MAX,
-  SHADOW_PARENT_MODELS_MAX,
-  SHADOW_PROMPT_VERSION,
-  validateOutputSchema,
+  validateShadowDefinitionFields,
   type ShadowDefinitionFields,
-  type ShadowOutputSchema,
-  type ShadowTrigger,
 } from "./parser";
 
 /**
@@ -88,61 +78,22 @@ function schemaLines(schema: ShadowOutputSchema, indent: string): string[] {
 }
 
 function assertValid(fields: ShadowDefinitionFields): void {
-  if (typeof fields.id !== "string" || !SHADOW_ID_PATTERN.test(fields.id)) {
-    throw new Error(`Shadow definition id must match ${SHADOW_ID_PATTERN} (got '${fields.id}').`);
-  }
-  // Name and body are optional per layer: a project overlay may inherit them
-  // from the agent base. Effective completeness is enforced by the write
-  // path's full-candidate validation, so a body-less project-only definition
-  // can never reach disk through the manager.
-  if (fields.name !== undefined && (typeof fields.name !== "string" || fields.name.length < 1 || fields.name.length > SHADOW_NAME_MAX_CHARS)) {
-    throw new Error(`Shadow definition name must be a string between 1 and ${SHADOW_NAME_MAX_CHARS} characters when present.`);
-  }
-  if (fields.body !== undefined) {
-    if (typeof fields.body !== "string" || fields.body.trim() === "") {
-      throw new Error("Shadow definition body must be a non-empty string when present.");
-    }
-    if (fields.body.length > SHADOW_BODY_MAX_CHARS) {
-      throw new Error(`Shadow definition body exceeds ${SHADOW_BODY_MAX_CHARS} characters.`);
-    }
-  }
-  if (fields.priority !== undefined && (!Number.isInteger(fields.priority) || fields.priority < SHADOW_PRIORITY_MIN || fields.priority > SHADOW_PRIORITY_MAX)) {
-    throw new Error(`Shadow definition priority must be an integer between ${SHADOW_PRIORITY_MIN} and ${SHADOW_PRIORITY_MAX}.`);
-  }
-  if (fields.triggers !== undefined) {
-    if (fields.triggers.some((trigger) => !SHADOW_TRIGGERS.includes(trigger))) {
-      throw new Error(`Shadow definition triggers must be among ${SHADOW_TRIGGERS.join(", ")}.`);
-    }
-  }
-  if (fields.triggerInstructions !== undefined) {
-    for (const key of Object.keys(fields.triggerInstructions)) {
-      if (!SHADOW_TRIGGERS.includes(key as ShadowTrigger)) {
-        throw new Error(`Shadow definition triggerInstructions key '${key}' is not a known trigger.`);
-      }
-      const value = fields.triggerInstructions[key as ShadowTrigger];
-      if (value !== null && (typeof value !== "string" || value.length > SHADOW_TRIGGER_INSTRUCTION_MAX_CHARS)) {
-        throw new Error(`Shadow definition triggerInstructions '${key}' must be null or a string of at most ${SHADOW_TRIGGER_INSTRUCTION_MAX_CHARS} characters.`);
-      }
-    }
-  }
-  for (const listField of ["tools", "requiredTools", "parentModels"] as const) {
-    const value = fields[listField];
-    if (value === undefined) continue;
-    if (!Array.isArray(value) || value.length > (listField === "parentModels" ? SHADOW_PARENT_MODELS_MAX : SHADOW_TOOLS_MAX)) {
-      throw new Error(`Shadow definition ${listField} allows at most ${listField === "parentModels" ? SHADOW_PARENT_MODELS_MAX : SHADOW_TOOLS_MAX} entries.`);
-    }
-  }
-  if (fields.outputSchema !== undefined && fields.outputSchema !== null) {
-    const errors = validateOutputSchema(fields.outputSchema);
-    if (errors.length > 0) throw new Error(`Shadow definition outputSchema is invalid: ${errors.join(" ")}`);
-  }
+  // The pre-write guard consumes the parser's field validation result
+  // instead of restating bounds: a layer the serializer emits must be one
+  // the parser accepts. Name and body stay optional per layer — a project
+  // overlay may inherit them from the agent base, and effective completeness
+  // is enforced by the write path's full-candidate validation, so a
+  // body-less project-only definition can never reach disk through the
+  // manager.
+  const errors = validateShadowDefinitionFields(fields);
+  if (errors.length > 0) throw new Error(`Shadow definition is invalid: ${errors.join(" ")}`);
 }
 
 /** Serializes one definition layer into the canonical Markdown form. */
 export function serializeShadowDefinition(fields: ShadowDefinitionFields): string {
   assertValid(fields);
   // The parser's canonical field order is the serialized order.
-  const lines = [`promptVersion: ${SHADOW_PROMPT_VERSION}`];
+  const lines = [`promptVersion: ${SHADOW_DEFINITION_BOUNDS.promptVersion}`];
   for (const field of SHADOW_FRONTMATTER_FIELDS) {
     if (!Object.prototype.hasOwnProperty.call(fields, field)) continue;
     const value = fields[field];

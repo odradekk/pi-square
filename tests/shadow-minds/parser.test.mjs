@@ -4,12 +4,15 @@ import { join } from "node:path";
 import jiti from "jiti";
 
 const load = jiti(import.meta.url, { moduleCache: false });
-const {
-  DEFAULT_OUTPUT_SCHEMA,
-  parseShadowDefinitionFile,
-  validateOutputSchema,
-  validateShadowPayload,
-} = await load(join(import.meta.dirname, "..", "..", "src", "shadow-minds", "parser.ts"));
+const { parseShadowDefinitionFile, validateShadowDefinitionFields } = await load(
+  join(import.meta.dirname, "..", "..", "src", "shadow-minds", "parser.ts"),
+);
+const { DEFAULT_OUTPUT_SCHEMA, validateOutputSchema } = await load(
+  join(import.meta.dirname, "..", "..", "src", "shadow-minds", "output-schema.ts"),
+);
+const { validateShadowPayload } = await load(
+  join(import.meta.dirname, "..", "..", "src", "shadow-minds", "payload.ts"),
+);
 
 const body = "Ground every answer in local evidence.";
 
@@ -381,4 +384,110 @@ assert.ok(validateShadowPayload(DEFAULT_OUTPUT_SCHEMA, { summary: 5 }).length >=
   );
 }
 
+// ── Typed field validation consumed by the serializer ───────────────
+
+{
+  const valid = {
+    id: "typed",
+    name: "Typed",
+    priority: 3,
+    triggers: ["tool_turn", "completion"],
+    triggerInstructions: { tool_turn: "Check grounding.", failure: null },
+    delivery: "steer",
+    completionGate: false,
+    parentModels: ["cpa/model", "*"],
+    model: "cpa/model",
+    thinking: "high",
+    timeoutSeconds: 90,
+    maxTurns: 4,
+    maxToolCalls: 8,
+    tools: ["read", "grep"],
+    requiredTools: ["read"],
+    debug: false,
+    body,
+  };
+  assert.deepEqual(validateShadowDefinitionFields(valid), [], "a complete valid layer validates clean");
+  const cleared = { ...valid, outputSchema: null, triggers: [], tools: [] };
+  assert.deepEqual(validateShadowDefinitionFields(cleared), [], "clearing forms stay valid");
+  const withSchema = { ...valid, outputSchema: { type: "object", additionalProperties: false, properties: { summary: { type: "string" } }, required: ["summary"] } };
+  assert.deepEqual(validateShadowDefinitionFields(withSchema), [], "a bounded output schema stays valid");
+}
+assert.ok(validateShadowDefinitionFields({ id: "has space" }).some((error) => /id/.test(error)), "id shape is enforced");
+assert.ok(validateShadowDefinitionFields({ id: "x", name: "n".repeat(121) }).some((error) => /name/.test(error)), "name length is enforced");
+assert.ok(validateShadowDefinitionFields({ id: "x", priority: 1001 }).some((error) => /priority/.test(error)), "priority range is enforced");
+assert.ok(validateShadowDefinitionFields({ id: "x", triggers: ["tool_turn", "tool_turn"] }).some((error) => /duplicate trigger/.test(error)), "duplicate triggers are enforced");
+assert.ok(validateShadowDefinitionFields({ id: "x", triggerInstructions: { heartbeat: "x" } }).some((error) => /heartbeat/.test(error)), "unknown instruction keys are enforced");
+assert.ok(
+  validateShadowDefinitionFields({ id: "x", triggerInstructions: { failure: "x".repeat(8001) } }).some((error) => /8,?000/.test(error)),
+  "instruction length is enforced",
+);
+assert.ok(validateShadowDefinitionFields({ id: "x", delivery: "shout" }).some((error) => /delivery/.test(error)), "delivery enum is enforced");
+assert.ok(validateShadowDefinitionFields({ id: "x", parentModels: ["cpa/a", "cpa/a"] }).some((error) => /duplicate/.test(error)), "duplicate parentModels are enforced");
+assert.ok(validateShadowDefinitionFields({ id: "x", parentModels: ["**"] }).some((error) => /parentModels/.test(error)), "parentModels entry shape is enforced");
+assert.ok(validateShadowDefinitionFields({ id: "x", model: "not-a-reference" }).some((error) => /model/.test(error)), "model reference shape is enforced");
+assert.ok(validateShadowDefinitionFields({ id: "x", thinking: "ultra" }).some((error) => /thinking/.test(error)), "thinking levels are enforced");
+assert.ok(validateShadowDefinitionFields({ id: "x", timeoutSeconds: 0 }).some((error) => /timeoutSeconds/.test(error)), "budget floors are enforced");
+assert.ok(validateShadowDefinitionFields({ id: "x", maxTurns: 33 }).some((error) => /maxTurns/.test(error)), "budget ceilings are enforced");
+assert.ok(validateShadowDefinitionFields({ id: "x", tools: ["read", "read"] }).some((error) => /duplicate/.test(error)), "duplicate tools are enforced");
+assert.ok(validateShadowDefinitionFields({ id: "x", tools: ["Read"] }).some((error) => /tools/.test(error)), "tool name shape is enforced");
+assert.ok(validateShadowDefinitionFields({ id: "x", outputSchema: { type: "array" } }).some((error) => /root/.test(error)), "output schemas are validated");
+assert.ok(validateShadowDefinitionFields({ id: "x", body: "" }).some((error) => /body/.test(error)), "empty bodies are enforced");
+assert.ok(validateShadowDefinitionFields({ id: "x", body: "y".repeat(24_001) }).some((error) => /24,?000/.test(error)), "body length is enforced");
+
+// ── Raw and typed field validation apply one rule set ───────────────
+// `normalizeDefinitionFields` and `validateShadowDefinitionFields` are two
+// implementations of the same bounds and vocabularies; every case below
+// must be rejected by BOTH paths with the same rule message, and the valid
+// base layer must pass both.
+
+{
+  const baseFields = { id: "probe", name: "Probe", body };
+  const baseFrontmatter = ["promptVersion: 1", "id: probe", "name: Probe"];
+  const manyNames = (prefix, count) => Array.from({ length: count }, (_, i) => `${prefix}${i}`);
+  const manyQuotedModels = (count) => Array.from({ length: count }, (_, i) => `"cpa/model-${i}"`);
+  const cases = [
+    ["id shape", { id: "has space" }, ["promptVersion: 1", "id: has space", "name: Probe"], [/id must match/], undefined],
+    ["name length", { name: "n".repeat(121) }, ["promptVersion: 1", "id: probe", `name: ${"n".repeat(121)}`], [/name must be a string between/], undefined],
+    ["priority range", { priority: 1001 }, [...baseFrontmatter, "priority: 1001"], [/priority must be an integer/], undefined],
+    ["trigger enum", { triggers: ["heartbeat"] }, [...baseFrontmatter, "triggers: [heartbeat]"], [/triggers entries must be one of/], undefined],
+    ["duplicate trigger", { triggers: ["tool_turn", "tool_turn"] }, [...baseFrontmatter, "triggers: [tool_turn, tool_turn]"], [/duplicate trigger/], undefined],
+    ["trigger cap", { triggers: ["tool_turn", "failure", "mutation", "completion", "tool_turn"] }, [...baseFrontmatter, "triggers: [tool_turn, failure, mutation, completion, tool_turn]"], [/triggers allows at most/], undefined],
+    ["instruction key", { triggerInstructions: { heartbeat: "x" } }, [...baseFrontmatter, "triggerInstructions:", "  heartbeat: x"], [/unknown triggerInstructions key/], undefined],
+    ["instruction length", { triggerInstructions: { failure: "x".repeat(8001) } }, [...baseFrontmatter, "triggerInstructions:", `  failure: '${"x".repeat(8001)}'`], [/triggerInstructions\.failure/, /8,?000/], undefined],
+    ["delivery enum", { delivery: "shout" }, [...baseFrontmatter, "delivery: shout"], [/delivery must be steer/], undefined],
+    ["parentModels duplicate", { parentModels: ["cpa/a", "cpa/a"] }, [...baseFrontmatter, 'parentModels: ["cpa/a", "cpa/a"]'], [/duplicate parentModels/], undefined],
+    ["parentModels shape", { parentModels: ["**"] }, [...baseFrontmatter, 'parentModels: ["**"]'], [/parentModels entries must be exact/], undefined],
+    ["parentModels cap", { parentModels: manyNames("cpa/model-", 33) }, [...baseFrontmatter, `parentModels: [${manyQuotedModels(33).join(", ")}]`], [/parentModels allows at most/], undefined],
+    ["model shape", { model: "not-a-reference" }, [...baseFrontmatter, "model: not-a-reference"], [/model must be an exact/], undefined],
+    ["thinking enum", { thinking: "ultra" }, [...baseFrontmatter, "thinking: ultra"], [/thinking must be one of/], undefined],
+    ["timeoutSeconds floor", { timeoutSeconds: 0 }, [...baseFrontmatter, "timeoutSeconds: 0"], [/timeoutSeconds must be an integer/], undefined],
+    ["timeoutSeconds ceiling", { timeoutSeconds: 601 }, [...baseFrontmatter, "timeoutSeconds: 601"], [/timeoutSeconds must be an integer/], undefined],
+    ["maxTurns ceiling", { maxTurns: 33 }, [...baseFrontmatter, "maxTurns: 33"], [/maxTurns must be an integer/], undefined],
+    ["maxToolCalls ceiling", { maxToolCalls: 129 }, [...baseFrontmatter, "maxToolCalls: 129"], [/maxToolCalls must be an integer/], undefined],
+    ["tools cap", { tools: manyNames("tool", 17) }, [...baseFrontmatter, `tools: [${manyNames("tool", 17).join(", ")}]`], [/tools allows at most/], undefined],
+    ["duplicate tools", { tools: ["read", "read"] }, [...baseFrontmatter, "tools: [read, read]"], [/duplicate tools entry/], undefined],
+    ["tools shape", { tools: ["Read"] }, [...baseFrontmatter, "tools: [Read]"], [/tools entries must be lowercase/], undefined],
+    ["duplicate requiredTools", { requiredTools: ["read", "read"] }, [...baseFrontmatter, "requiredTools: [read, read]"], [/duplicate requiredTools entry/], undefined],
+    ["output schema root", { outputSchema: { type: "array" } }, [...baseFrontmatter, "outputSchema:", "  type: array"], [/root must be an object/], undefined],
+    ["body length", { body: "y".repeat(24_001) }, baseFrontmatter, [/body exceeds 24,?000 characters/], "y".repeat(24_001)],
+  ];
+
+  assert.deepEqual(validateShadowDefinitionFields(baseFields), [], "the valid base layer passes the typed path");
+  assert.deepEqual(
+    parseShadowDefinitionFile("probe.md", file(baseFrontmatter.join("\n"))).errors,
+    [],
+    "the valid base layer passes the raw path",
+  );
+
+  for (const [label, patch, frontmatter, patterns, docBody] of cases) {
+    const typedErrors = validateShadowDefinitionFields({ ...baseFields, ...patch });
+    assert.ok(typedErrors.length > 0, `${label}: the typed path rejects`);
+    const parsed = parseShadowDefinitionFile("probe.md", file(frontmatter.join("\n"), docBody ?? body));
+    assert.ok(!parsed.definition, `${label}: the raw path rejects`);
+    for (const pattern of patterns) {
+      assert.ok(typedErrors.some((error) => pattern.test(error)), `${label}: typed message matches ${pattern}`);
+      assert.ok(parsed.errors.some((error) => pattern.test(error)), `${label}: raw message matches ${pattern}`);
+    }
+  }
+}
 console.log("shadow-minds parser tests: OK");

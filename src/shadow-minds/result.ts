@@ -15,17 +15,14 @@
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { sanitizeDisplayLine } from "../display/sanitize";
-import {
-  SHADOW_PAYLOAD_MAX_CHARS,
-  validateShadowPayload,
-  type ShadowOutputSchema,
-} from "./parser";
+import { SHADOW_PAYLOAD_BOUNDS, validateShadowPayload } from "./payload";
+import type { ShadowOutputSchema } from "./output-schema";
 
 export const SUBMIT_SHADOW_RESULT_TOOL = "submit_shadow_result";
 export const SUBMIT_SHADOW_RESULT_DESCRIPTION = "Submit the final Shadow result. The payload must be a JSON string matching the output schema. A valid submission completes the run; an invalid one returns the exact fields to fix.";
 const SubmitParams = Type.Object({
   payload: Type.String({
-    maxLength: SHADOW_PAYLOAD_MAX_CHARS,
+    maxLength: SHADOW_PAYLOAD_BOUNDS.maxEncodedChars,
     description: "The Shadow result as a JSON string matching the output schema shown in the user message.",
   }),
 }, { additionalProperties: false });
@@ -75,9 +72,9 @@ export function createSubmitShadowResultTool(handlers: SubmitShadowResultHandler
           isError: true,
         };
       }
-      if (params.payload.length > SHADOW_PAYLOAD_MAX_CHARS) {
+      if (params.payload.length > SHADOW_PAYLOAD_BOUNDS.maxEncodedChars) {
         return {
-          content: [{ type: "text" as const, text: `The payload exceeds ${SHADOW_PAYLOAD_MAX_CHARS.toLocaleString("en-US")} characters. Shorten it and submit again.` }],
+          content: [{ type: "text" as const, text: `The payload exceeds ${SHADOW_PAYLOAD_BOUNDS.maxEncodedChars.toLocaleString("en-US")} characters. Shorten it and submit again.` }],
           details: { status: "payload_too_large" },
           isError: true,
         };

@@ -7,10 +7,10 @@ import jiti from "jiti";
 const packageRoot = resolve(import.meta.dirname, "..", "..");
 const load = jiti(import.meta.url, { moduleCache: false });
 const {
-  SHADOW_BODY_MAX_CHARS,
   SHADOW_DEFINITION_FIELDS,
   parseShadowDefinitionFile,
 } = await load(join(packageRoot, "src", "shadow-minds", "parser.ts"));
+const { SHADOW_DEFINITION_BOUNDS } = await load(join(packageRoot, "src", "shadow-minds", "definition-bounds.ts"));
 const { discoverShadowDefinitions } = await load(join(packageRoot, "src", "shadow-minds", "definitions.ts"));
 const { serializeShadowDefinition } = await load(join(packageRoot, "src", "shadow-minds", "serialize.ts"));
 const { buildShadowConfigGuide } = await load(join(packageRoot, "src", "shadow-minds", "config-guide.ts"));
@@ -40,7 +40,7 @@ const assetsDir = join(packageRoot, "shadow-minds");
   assert.deepEqual(fields.tools, ["read", "grep", "ls"]);
   assert.deepEqual(fields.requiredTools, ["read"]);
   assert.equal(fields.outputSchema.properties.verdict.enum.join(","), "sound,gap,wrong");
-  assert.ok(fields.body.length > 0 && fields.body.length <= SHADOW_BODY_MAX_CHARS);
+  assert.ok(fields.body.length > 0 && fields.body.length <= SHADOW_DEFINITION_BOUNDS.body.maxChars);
 
   // Serializer round-trip: the example stays canonically rewritable.
   const serialized = serializeShadowDefinition(fields);

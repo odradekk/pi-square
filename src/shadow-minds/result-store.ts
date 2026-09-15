@@ -31,7 +31,8 @@
 
 import { randomUUID } from "node:crypto";
 import type { ChildSessionUsage } from "../subagents/child-session-executor";
-import type { ShadowDelivery, ShadowOutputSchema, ShadowTrigger } from "./parser";
+import type { ShadowOutputSchema } from "./output-schema";
+import type { ShadowDelivery, ShadowTrigger } from "./parser";
 import { summarizeShadowResult } from "./result";
 
 export type ShadowResultDelivery = "notified" | "pending" | "delivered";

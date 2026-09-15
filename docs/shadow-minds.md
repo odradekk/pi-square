@@ -137,13 +137,13 @@ every automatic candidate set.
 The normative field reference is the packaged
 `shadow-minds/schema-reference.md` (see **Layers** below): every field, bound,
 enum, default, and consistency rule, in a contract block generated from the
-parser constants and compared against them by a contract test. This guide no
-longer restates that table — the restatement was the copy that went stale — and
-describes behavior instead: `triggers`, `priority`, and `completionGate` under
-**Triggers and scheduling**; `tools`, `requiredTools`, `model`, `parentModels`,
-and `thinking` under **Tool and model boundaries**; `delivery` and
-`outputSchema` under **Runs, results, and delivery**; `debug` under **Debug
-data**.
+bounds entries the parser and validators enforce and compared against them by
+a contract test. This guide no longer restates that table — the restatement
+was the copy that went stale — and describes behavior instead: `triggers`,
+`priority`, and `completionGate` under **Triggers and scheduling**; `tools`,
+`requiredTools`, `model`, `parentModels`, and `thinking` under **Tool and
+model boundaries**; `delivery` and `outputSchema` under **Runs, results, and
+delivery**; `debug` under **Debug data**.
 
 ### Layers
 
