@@ -210,6 +210,50 @@ export function createTuiStub(rows = 24) {
   };
 }
 
+/**
+ * Recording stand-in for the delivery event source (`DeliveryEventSource`):
+ * captures every subscribed handler per event and lets a test emit through
+ * the wiring `subscribeDeliveryLifecycle` installed.
+ */
+export function createDeliveryEventSource() {
+  const handlers = new Map();
+  return {
+    source: {
+      on(event, handler) {
+        if (!handlers.has(event)) handlers.set(event, []);
+        handlers.get(event).push(handler);
+      },
+    },
+    emit(event, payload) {
+      for (const handler of handlers.get(event) ?? []) {
+        if (payload === undefined) handler();
+        else handler(payload);
+      }
+    },
+    wired: (event) => (handlers.get(event) ?? []).length,
+  };
+}
+
+/**
+ * Registers one handler in a single-handler event map by composing it with
+ * the previous one, mirroring Pi, which invokes every handler registered
+ * for one event. A previous handler's returned promise is awaited before the
+ * next handler runs; synchronous handlers stay synchronous.
+ */
+export function addComposedEventHandler(map, event, handler) {
+  const previous = map.get(event);
+  if (!previous) {
+    map.set(event, handler);
+    return;
+  }
+  map.set(event, (e, c) => {
+    const result = previous(e, c);
+    if (result && typeof result.then === "function") return result.then(() => handler(e, c));
+    return handler(e, c);
+  });
+}
+
+
 export function createExtensionStub() {
   const shortcuts = new Map();
   const events = new Map();

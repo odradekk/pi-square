@@ -4,6 +4,8 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { stripVTControlCharacters } from "node:util";
 import jiti from "jiti";
+
+import { addComposedEventHandler } from "../subagents/lib/test-helpers.mjs";
 import { initTheme } from "@earendil-works/pi-coding-agent";
 import { KeybindingsManager, setKeybindings, TUI_KEYBINDINGS } from "@earendil-works/pi-tui";
 
@@ -225,13 +227,10 @@ function fakePi() {
       sendMessage(message, options) { events.push(["guide", message, options]); },
       sendUserMessage(message, options) { events.push(["user", message, options]); },
       appendEntry(type, data) { entries.push({ type, data }); },
-      // Pi invokes every handler registered for one event; compose so a
-      // second subscriber (the delivery lifecycle subscription) never
-      // displaces the first.
-      on(event, handler) {
-        const previous = handlers.get(event);
-        handlers.set(event, previous ? (e, c) => { previous(e, c); handler(e, c); } : handler);
-      },
+      // Pi invokes every handler registered for one event, so a second
+      // subscriber (the delivery lifecycle subscription) never displaces
+      // the first.
+      on(event, handler) { addComposedEventHandler(handlers, event, handler); },
     },
   };
 }

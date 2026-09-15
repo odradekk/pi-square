@@ -3,7 +3,7 @@ import { join, resolve } from "node:path";
 
 import jiti from "jiti";
 
-import { run, test } from "./lib/test-helpers.mjs";
+import { createDeliveryEventSource, run, test } from "./lib/test-helpers.mjs";
 
 const packageRoot = resolve(import.meta.dirname, "..", "..");
 const load = jiti(import.meta.url, { moduleCache: false });
@@ -424,33 +424,13 @@ test("the reservation bound default matches the documented wait contract", () =>
 // ─── Lifecycle subscription (odradekk/pi-square#369) ──────────────────
 //
 // The registration roots no longer call the lifecycle methods one by one:
-// they hand the core one event source and the core wires every signal in
-// the fixed order below. These tests drive that subscribe entry with a
+// they hand the core one event source and the core maps every signal to its
+// event in one place. These tests drive that subscribe entry with a
 // recording event source instead of touching the lifecycle methods.
-
-/** Recording stand-in for the Pi event source the subscribe entry accepts. */
-function eventSource() {
-  const handlers = new Map();
-  return {
-    source: {
-      on(event, handler) {
-        if (!handlers.has(event)) handlers.set(event, []);
-        handlers.get(event).push(handler);
-      },
-    },
-    emit(event, payload) {
-      for (const handler of handlers.get(event) ?? []) {
-        if (payload === undefined) handler();
-        else handler(payload);
-      }
-    },
-    wired: (event) => (handlers.get(event) ?? []).length,
-  };
-}
 
 test("through the subscribe entry, a busy consumer receives results at the next turn boundary", () => {
   const probe = harness({ idle: false });
-  const events = eventSource();
+  const events = createDeliveryEventSource();
   subscribeDeliveryLifecycle(probe.core, events.source);
   assert.equal(events.wired("agent_start"), 1, "every delivery signal is wired exactly once");
   assert.equal(events.wired("turn_end"), 1);
@@ -467,7 +447,7 @@ test("through the subscribe entry, a busy consumer receives results at the next 
 
 test("through the subscribe entry, a natural settle delivers without waiting for the next turn", () => {
   const probe = harness({ idle: false });
-  const events = eventSource();
+  const events = createDeliveryEventSource();
   subscribeDeliveryLifecycle(probe.core, events.source);
   probe.core.enqueue({ id: "natural", value: "v" });
 
@@ -479,7 +459,7 @@ test("through the subscribe entry, a natural settle delivers without waiting for
 
 test("through the subscribe entry, an interrupted consumer stays silent until its next run starts", () => {
   const probe = harness({ idle: false });
-  const events = eventSource();
+  const events = createDeliveryEventSource();
   subscribeDeliveryLifecycle(probe.core, events.source);
   probe.core.enqueue({ id: "held", value: "v" });
 
@@ -498,7 +478,7 @@ test("through the subscribe entry, an interrupted consumer stays silent until it
 
 test("through the subscribe entry, an unconfirmed result is resent after a natural settle and stops after confirmation", () => {
   const probe = harness({ idle: false });
-  const events = eventSource();
+  const events = createDeliveryEventSource();
   subscribeDeliveryLifecycle(probe.core, events.source);
   probe.core.enqueue({ id: "lost", value: "v" });
   events.emit("turn_end", { message: { stopReason: "tool_use" } });
@@ -520,7 +500,7 @@ test("through the subscribe entry, an unconfirmed result is resent after a natur
 
 test("with caller-forwarded settles, the settled event stays unwired and the handle forwards one settle", () => {
   const probe = harness({ idle: false });
-  const events = eventSource();
+  const events = createDeliveryEventSource();
   const subscription = subscribeDeliveryLifecycle(probe.core, events.source, { subscribeSettled: false });
   assert.equal(events.wired("agent_settled"), 0, "the caller owns the settled event");
   probe.core.enqueue({ id: "r1", value: "v" });
