@@ -3,7 +3,7 @@ import { join, resolve } from "node:path";
 
 import jiti from "jiti";
 
-import { run, test } from "./lib/test-helpers.mjs";
+import { createDeliveryEventSource, run, test } from "./lib/test-helpers.mjs";
 
 const packageRoot = resolve(import.meta.dirname, "..", "..");
 const load = jiti(import.meta.url, { moduleCache: false });
@@ -402,27 +402,9 @@ test("the wait reservation bound matches the documented contract", () => {
 // instead of wiring each Pi event itself; these tests drive the controller
 // as the lifecycle sink through a recording event source.
 
-function eventSource() {
-  const handlers = new Map();
-  return {
-    source: {
-      on(event, handler) {
-        if (!handlers.has(event)) handlers.set(event, []);
-        handlers.get(event).push(handler);
-      },
-    },
-    emit(event, payload) {
-      for (const handler of handlers.get(event) ?? []) {
-        if (payload === undefined) handler();
-        else handler(payload);
-      }
-    },
-  };
-}
-
 test("the controller receives delivery timing and confirmation through the subscribe entry", () => {
   const probe = harness({ idle: false });
-  const events = eventSource();
+  const events = createDeliveryEventSource();
   subscribeDeliveryLifecycle(probe.controller, events.source);
 
   enqueue(probe.controller, "run-wired");

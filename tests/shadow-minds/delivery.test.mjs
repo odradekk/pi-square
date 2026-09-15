@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { join, resolve } from "node:path";
 import jiti from "jiti";
 
+import { createDeliveryEventSource } from "../subagents/lib/test-helpers.mjs";
+
 const packageRoot = resolve(import.meta.dirname, "..", "..");
 const load = jiti(import.meta.url, { moduleCache: false });
 
@@ -480,30 +482,11 @@ function makeHarness(options = {}) {
 // event); these tests drive the controller as the lifecycle sink through a
 // recording event source.
 
-function eventSource() {
-  const handlers = new Map();
-  return {
-    source: {
-      on(event, handler) {
-        if (!handlers.has(event)) handlers.set(event, []);
-        handlers.get(event).push(handler);
-      },
-    },
-    emit(event, payload) {
-      for (const handler of handlers.get(event) ?? []) {
-        if (payload === undefined) handler();
-        else handler(payload);
-      }
-    },
-    wired: (event) => (handlers.get(event) ?? []).length,
-  };
-}
-
 {
   // Steer delivers at the turn boundary and confirms through the subscribed
   // wiring; the settled event stays caller-forwarded for the gate.
   const { controller, sent, storeOps } = makeHarness();
-  const events = eventSource();
+  const events = createDeliveryEventSource();
   const lifecycle = subscribeDeliveryLifecycle(controller, events.source, { subscribeSettled: false });
   assert.equal(events.wired("agent_settled"), 0, "the caller owns the settled event");
   controller.enqueueResult(makeResult());
