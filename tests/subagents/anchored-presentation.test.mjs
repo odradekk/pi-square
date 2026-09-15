@@ -9,11 +9,13 @@ import { run, test } from "./lib/test-helpers.mjs";
 const packageRoot = resolve(import.meta.dirname, "..", "..");
 const load = jiti(import.meta.url, { moduleCache: false });
 const {
-  formatToolCall,
-  managerToolArgsDisplay,
   rosterToolArgsDisplay,
   sanitizeToolActivityArgs,
 } = await load(join(packageRoot, "src", "subagents", "tool-display.ts"));
+const {
+  managerToolArgsDisplay,
+  managerToolCallText,
+} = await load(join(packageRoot, "src", "subagents", "manager-tool-display.ts"));
 const { describeSubagentRun } = await load(join(packageRoot, "src", "subagents", "display-adapter.ts"));
 const { renderSubagentNotification } = await load(join(packageRoot, "src", "subagents", "render.ts"));
 const { __testables } = await load(join(packageRoot, "src", "subagents", "session.ts"));
@@ -84,23 +86,23 @@ function details(overrides = {}) {
 
 test("replace summaries name the target file", () => {
   assert.equal(
-    formatToolCall("replace", { path: "src/a.txt", remove_from: "abc", remove_to: "def", replacement_text: "X", secret: "private" }),
+    managerToolCallText("replace", { path: "src/a.txt", remove_from: "abc", remove_to: "def", replacement_text: "X", secret: "private" }),
     "replace src/a.txt",
   );
-  assert.doesNotMatch(formatToolCall("replace", { path: "src/a.txt", secret: "private" }), /private/);
+  assert.doesNotMatch(managerToolCallText("replace", { path: "src/a.txt", secret: "private" }), /private/);
 });
 
 test("insert summaries name the target file", () => {
   assert.equal(
-    formatToolCall("insert", { path: "src/a.txt", anchor: "abc", direction: "after", lines: ["x"], secret: "private" }),
+    managerToolCallText("insert", { path: "src/a.txt", anchor: "abc", direction: "after", lines: ["x"], secret: "private" }),
     "insert src/a.txt",
   );
-  assert.doesNotMatch(formatToolCall("insert", { path: "src/a.txt", lines: ["secret-text"] }), /secret-text/);
+  assert.doesNotMatch(managerToolCallText("insert", { path: "src/a.txt", lines: ["secret-text"] }), /secret-text/);
 });
 
 test("anchored summaries shorten long paths and never leak arguments", () => {
   const long = `nested/${"segment/".repeat(20)}tail.txt`;
-  const summary = formatToolCall("replace", { path: long, replacement_text: "secret-text" });
+  const summary = managerToolCallText("replace", { path: long, replacement_text: "secret-text" });
   assert.match(summary, /^replace /);
   assert.ok(Array.from(summary).length <= 120, "the summary stays within the formatter bound");
   assert.doesNotMatch(summary, /secret-text/);

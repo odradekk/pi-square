@@ -84,10 +84,13 @@ export interface SubagentTimelineItem {
   phase?: "start" | "end";
   text: string;
   /** Tool identity claimed by a kind: "tool" entry, as reported by the child.
-   *  Projections gate it against the closed tool registry before rendering
-   *  it as an identity. */
+   *  Only the roster-grade projection gates it against the closed tool
+   *  registry, rendering anything unknown as anonymous; the manager-grade
+   *  projection renders any bounded name. */
   tool?: string;
-  /** Sanitized, bounded structured argument fields for a start entry. */
+  /** Sanitized, bounded structured argument fields for a start entry. Arrays
+   *  that outlived the sanitizer's budgets wrap as `{ count, items }` so the
+   *  persisted record keeps the true cardinality. */
   args?: Record<string, unknown>;
   at?: number;
   isError?: boolean;

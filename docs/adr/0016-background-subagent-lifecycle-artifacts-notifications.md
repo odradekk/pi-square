@@ -235,6 +235,16 @@ directory left on disk by an earlier version is neither read, listed,
 rendered, migrated, nor resumed — it fails the ordinary shape validation and
 disappears from every surface, but is never deleted or rewritten by pi-square.
 
+Since #368 the bounded timeline persists structured tool activity: each tool
+entry written by `session.ts` carries the tool name plus sanitized, bounded
+argument fields (arrays that outlived the sanitizer's budgets wrap as
+`{ count, items }` so the record keeps the true cardinality) alongside the
+human-readable `text` line, and no timeline string is ever re-parsed for
+structure — the roster-grade allowlisted projection is the default read, and
+the manager's wider bounded-summary projection is the explicitly named opt-in
+in `manager-tool-display.ts`. Entries persisted before #368 carry text only
+and degrade to anonymous `tool called` activity.
+
 Resume eligibility follows the effective activity lease, not the persisted
 phase: an inactive `completed`, `failed`, `aborted`, or stale active record
 with no live lease remains resumable under its frozen prompt, model, effort,
