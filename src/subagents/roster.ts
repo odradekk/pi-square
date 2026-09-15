@@ -14,9 +14,9 @@ import {
 } from "./live-events";
 import { latestRosterToolCallSummary } from "./tool-display";
 import type { BackgroundJobSnapshot } from "./run-types";
+import type { ChildHistoryView } from "./transcript";
 import {
   childOverlayOptions,
-  type ChildHistoryView,
   type ChildOverlayModel,
   type ChildReadingState,
   ChildTranscriptOverlay,

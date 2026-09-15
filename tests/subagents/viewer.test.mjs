@@ -26,10 +26,11 @@ const {
   ChildTranscriptOverlay,
   childOverlayPlan,
   classifyViewerInput,
-  projectSessionEntries,
 } = viewerModule;
 const childHistoryModule = await load(join(packageRoot, "src", "subagents", "child-history.ts"));
-const { staticChildHistory } = childHistoryModule;
+// The viewer no longer re-exports history-module helpers (#367): tests reach
+// the projection through the implementation module like every other caller.
+const { projectSessionEntries, staticChildHistory } = childHistoryModule;
 const {
   createSubagentRosterController,
   renderSubagentRoster,
