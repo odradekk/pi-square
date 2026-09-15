@@ -15,7 +15,7 @@ const {
   canonicalSchemaJson,
 } = await load(join(packageRoot, "src", "shadow-minds", "prompt.ts"));
 
-const { DEFAULT_OUTPUT_SCHEMA } = await load(join(packageRoot, "src", "shadow-minds", "parser.ts"));
+const { DEFAULT_OUTPUT_SCHEMA } = await load(join(packageRoot, "src", "shadow-minds", "output-schema.ts"));
 
 function baseDefinition(overrides = {}) {
   return {

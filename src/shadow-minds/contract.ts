@@ -26,33 +26,14 @@ import {
   SHADOW_MINDS_TOOL_CALLS_HARD_MAX,
 } from "../core/config";
 import type { EffectiveShadowDefinition } from "./definitions";
+import { SHADOW_DEFINITION_BOUNDS } from "./definition-bounds";
+import { SHADOW_PAYLOAD_BOUNDS } from "./payload";
+import { SHADOW_OUTPUT_SCHEMA_BOUNDS } from "./output-schema";
 import {
-  SHADOW_BODY_MAX_CHARS,
   SHADOW_DEFAULT_TOOLS,
   SHADOW_DELIVERIES,
-  SHADOW_FILE_MAX_BYTES,
-  SHADOW_ID_MAX_CHARS,
-  SHADOW_ID_PATTERN,
-  SHADOW_MODEL_REFERENCE,
-  SHADOW_NAME_MAX_CHARS,
-  SHADOW_PARENT_MODELS_MAX,
-  SHADOW_PAYLOAD_MAX_CHARS,
-  SHADOW_PAYLOAD_VALIDATION_ERRORS_MAX,
-  SHADOW_PRIORITY_MAX,
-  SHADOW_PRIORITY_MIN,
-  SHADOW_PROMPT_VERSION,
-  SHADOW_RUN_BUDGET_MIN,
-  SHADOW_SCHEMA_MAX_DEPTH,
-  SHADOW_SCHEMA_MAX_ITEMS,
-  SHADOW_SCHEMA_MAX_PROPERTIES_PER_OBJECT,
-  SHADOW_SCHEMA_MAX_TOTAL_PROPERTIES,
-  SHADOW_SCHEMA_STRING_MAX_LENGTH,
   SHADOW_THINKING_LEVELS,
-  SHADOW_TOOL_PATTERN,
-  SHADOW_TOOLS_MAX,
-  SHADOW_TRIGGER_INSTRUCTION_MAX_CHARS,
   SHADOW_TRIGGERS,
-  SHADOW_TRIGGERS_MAX,
   type ShadowDefinitionField,
 } from "./parser";
 import { SHADOW_BUILTIN_BASE_ORDER, SHADOW_EXTENSION_BASE_ORDER } from "./tools";
@@ -88,33 +69,38 @@ export interface ShadowDefinitionContract {
  * production falls back to.
  */
 export function buildShadowDefinitionContract(minimal: EffectiveShadowDefinition): ShadowDefinitionContract {
+  // Every bound and pattern below is read off the declarative entries the
+  // parser and validators enforce (`SHADOW_DEFINITION_BOUNDS`,
+  // `SHADOW_OUTPUT_SCHEMA_BOUNDS`, `SHADOW_PAYLOAD_BOUNDS`), so this
+  // contract cannot claim a bound enforcement does not apply.
+  const bounds = SHADOW_DEFINITION_BOUNDS;
   const fields: Record<ShadowDefinitionField, ShadowContractField> = {
     id: {
       required: true,
-      maxLength: SHADOW_ID_MAX_CHARS,
-      pattern: SHADOW_ID_PATTERN.source,
+      maxLength: bounds.id.maxChars,
+      pattern: bounds.id.pattern.source,
       equalsFilenameStem: true,
     },
     name: {
-      maxLength: SHADOW_NAME_MAX_CHARS,
+      maxLength: bounds.name.maxChars,
       effectiveRequired: true,
     },
     enabled: { default: minimal.enabled },
     hidden: { default: minimal.hidden },
     priority: {
-      min: SHADOW_PRIORITY_MIN,
-      max: SHADOW_PRIORITY_MAX,
+      min: bounds.priority.min,
+      max: bounds.priority.max,
       default: minimal.priority,
     },
     triggers: {
-      maxEntries: SHADOW_TRIGGERS_MAX,
+      maxEntries: bounds.triggers.maxEntries,
       unique: true,
       enum: [...SHADOW_TRIGGERS],
       default: minimal.triggers,
     },
     triggerInstructions: {
       keysSubsetOfDeclaredTriggers: true,
-      valueMaxLength: SHADOW_TRIGGER_INSTRUCTION_MAX_CHARS,
+      valueMaxLength: bounds.triggerInstructions.valueMaxChars,
       nullClearsKey: true,
       merge: "per-key across layers",
     },
@@ -127,27 +113,27 @@ export function buildShadowDefinitionContract(minimal: EffectiveShadowDefinition
       requiresCompletionTrigger: true,
     },
     parentModels: {
-      maxEntries: SHADOW_PARENT_MODELS_MAX,
+      maxEntries: bounds.parentModels.maxEntries,
       unique: true,
       entryPattern: "exact provider/model-id or *",
     },
-    model: { pattern: SHADOW_MODEL_REFERENCE.source },
+    model: { pattern: bounds.modelReferencePattern.source },
     thinking: { enum: [...SHADOW_THINKING_LEVELS] },
-    timeoutSeconds: { min: SHADOW_RUN_BUDGET_MIN, max: SHADOW_MINDS_RUN_TIMEOUT_HARD_MAX_SECONDS },
-    maxTurns: { min: SHADOW_RUN_BUDGET_MIN, max: SHADOW_MINDS_MODEL_TURNS_HARD_MAX },
-    maxToolCalls: { min: SHADOW_RUN_BUDGET_MIN, max: SHADOW_MINDS_TOOL_CALLS_HARD_MAX },
+    timeoutSeconds: { min: bounds.runBudgetMin, max: SHADOW_MINDS_RUN_TIMEOUT_HARD_MAX_SECONDS },
+    maxTurns: { min: bounds.runBudgetMin, max: SHADOW_MINDS_MODEL_TURNS_HARD_MAX },
+    maxToolCalls: { min: bounds.runBudgetMin, max: SHADOW_MINDS_TOOL_CALLS_HARD_MAX },
     tools: {
-      maxEntries: SHADOW_TOOLS_MAX,
+      maxEntries: bounds.toolListsMaxEntries,
       unique: true,
-      entryPattern: SHADOW_TOOL_PATTERN.source,
+      entryPattern: bounds.toolNamePattern.source,
       default: minimal.tools ?? [...SHADOW_DEFAULT_TOOLS],
       emptyListMeans: "no tools",
       catalogIsFixed: true,
     },
     requiredTools: {
-      maxEntries: SHADOW_TOOLS_MAX,
+      maxEntries: bounds.toolListsMaxEntries,
       unique: true,
-      entryPattern: SHADOW_TOOL_PATTERN.source,
+      entryPattern: bounds.toolNamePattern.source,
       subsetOfFinalTools: true,
     },
     debug: { default: minimal.debug },
@@ -156,15 +142,15 @@ export function buildShadowDefinitionContract(minimal: EffectiveShadowDefinition
       nullRestoresDefault: true,
       rootMustBeObject: true,
       additionalPropertiesFalseRequired: true,
-      maxDepth: SHADOW_SCHEMA_MAX_DEPTH,
-      maxTotalProperties: SHADOW_SCHEMA_MAX_TOTAL_PROPERTIES,
-      maxPropertiesPerObject: SHADOW_SCHEMA_MAX_PROPERTIES_PER_OBJECT,
-      maxItems: SHADOW_SCHEMA_MAX_ITEMS,
-      stringMaxLength: SHADOW_SCHEMA_STRING_MAX_LENGTH,
+      maxDepth: SHADOW_OUTPUT_SCHEMA_BOUNDS.maxDepth,
+      maxTotalProperties: SHADOW_OUTPUT_SCHEMA_BOUNDS.maxTotalProperties,
+      maxPropertiesPerObject: SHADOW_OUTPUT_SCHEMA_BOUNDS.maxPropertiesPerObject,
+      maxItems: SHADOW_OUTPUT_SCHEMA_BOUNDS.maxItems,
+      stringMaxLength: SHADOW_OUTPUT_SCHEMA_BOUNDS.stringMaxLength,
       default: minimal.outputSchema,
     },
     body: {
-      maxChars: SHADOW_BODY_MAX_CHARS,
+      maxChars: bounds.body.maxChars,
       omittedOrEmptyInherits: true,
       nonEmptyReplaces: true,
       effectiveRequired: true,
@@ -172,9 +158,9 @@ export function buildShadowDefinitionContract(minimal: EffectiveShadowDefinition
   };
 
   return {
-    promptVersion: SHADOW_PROMPT_VERSION,
+    promptVersion: bounds.promptVersion,
     file: {
-      maxBytes: SHADOW_FILE_MAX_BYTES,
+      maxBytes: bounds.fileMaxBytes,
       commentPolicy: "whole-line-only",
     },
     toolCatalog: {
@@ -184,8 +170,8 @@ export function buildShadowDefinitionContract(minimal: EffectiveShadowDefinition
     },
     fields,
     payload: {
-      maxEncodedChars: SHADOW_PAYLOAD_MAX_CHARS,
-      maxFieldErrors: SHADOW_PAYLOAD_VALIDATION_ERRORS_MAX,
+      maxEncodedChars: SHADOW_PAYLOAD_BOUNDS.maxEncodedChars,
+      maxFieldErrors: SHADOW_PAYLOAD_BOUNDS.maxFieldErrors,
     },
   };
 }

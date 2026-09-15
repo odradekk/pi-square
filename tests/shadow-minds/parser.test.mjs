@@ -4,12 +4,13 @@ import { join } from "node:path";
 import jiti from "jiti";
 
 const load = jiti(import.meta.url, { moduleCache: false });
-const {
-  DEFAULT_OUTPUT_SCHEMA,
-  parseShadowDefinitionFile,
-  validateOutputSchema,
-  validateShadowPayload,
-} = await load(join(import.meta.dirname, "..", "..", "src", "shadow-minds", "parser.ts"));
+const { parseShadowDefinitionFile } = await load(join(import.meta.dirname, "..", "..", "src", "shadow-minds", "parser.ts"));
+const { DEFAULT_OUTPUT_SCHEMA, validateOutputSchema } = await load(
+  join(import.meta.dirname, "..", "..", "src", "shadow-minds", "output-schema.ts"),
+);
+const { validateShadowPayload } = await load(
+  join(import.meta.dirname, "..", "..", "src", "shadow-minds", "payload.ts"),
+);
 
 const body = "Ground every answer in local evidence.";
 

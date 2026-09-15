@@ -53,14 +53,12 @@ import {
 import { summarizeShadowResult } from "./result";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { sanitizeDisplayText } from "../display/sanitize";
+import { SHADOW_PAYLOAD_BOUNDS, validateShadowPayload } from "./payload";
 import {
   SHADOW_DELIVERIES,
-  SHADOW_PAYLOAD_MAX_CHARS,
   SHADOW_TRIGGERS,
-  validateOutputSchema,
-  validateShadowPayload,
-  type ShadowOutputSchema,
 } from "./parser";
+import { validateOutputSchema, type ShadowOutputSchema } from "./output-schema";
 import {
   SHADOW_MINDS_MODEL_TURNS_HARD_MAX,
   SHADOW_MINDS_TOOL_CALLS_HARD_MAX,
@@ -197,7 +195,7 @@ function validatePersistedEntity(value: unknown): LoadedEntity["entity"] & { val
   if (validateShadowPayload(validationSchema as ShadowOutputSchema, record.payload).length > 0) return undefined;
   // Keep the encoded hard bound as defense in depth even though payload
   // validation applies it too.
-  if (JSON.stringify(record.payload).length > SHADOW_PAYLOAD_MAX_CHARS) return undefined;
+  if (JSON.stringify(record.payload).length > SHADOW_PAYLOAD_BOUNDS.maxEncodedChars) return undefined;
   if (!isBoundedString(record.summary, 300) || record.summary !== summarizeShadowResult(record.payload)) return undefined;
   if (record.delivery !== "notified" && record.delivery !== "pending" && record.delivery !== "delivered") return undefined;
   if (record.attention !== "unread" && record.attention !== "read" && record.attention !== "dismissed") return undefined;

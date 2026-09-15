@@ -24,17 +24,16 @@ import { isWithinWorkspace } from "../core/paths";
 import { diagnostic, type DiagnosticMessage } from "../core/diagnostics";
 import { getAgentPath } from "../core/paths";
 import {
-  DEFAULT_OUTPUT_SCHEMA,
   parseShadowDefinitionFile,
   SHADOW_DEFAULT_TOOLS,
   SHADOW_FRONTMATTER_FIELDS,
   type ParsedShadowDefinition,
   type ShadowDefinitionFields,
   type ShadowDelivery,
-  type ShadowOutputSchema,
   type ShadowThinkingLevel,
   type ShadowTrigger,
 } from "./parser";
+import { DEFAULT_OUTPUT_SCHEMA, type ShadowOutputSchema } from "./output-schema";
 
 export type ShadowDefinitionScope = "agent" | "project";
 

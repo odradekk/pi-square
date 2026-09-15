@@ -14,7 +14,8 @@
 import { sanitizeDisplayLine, sanitizeDisplayText } from "../display/sanitize";
 import type { EffectiveShadowDefinition } from "./definitions";
 import { formatTriggerReason } from "./scheduler";
-import type { ShadowOutputSchema, ShadowTrigger } from "./parser";
+import type { ShadowOutputSchema } from "./output-schema";
+import type { ShadowTrigger } from "./parser";
 
 export const SHADOW_GOVERNANCE_VERSION = 2 as const;
 export const SHADOW_PROMPT_CONTRACT_VERSION = 1 as const;

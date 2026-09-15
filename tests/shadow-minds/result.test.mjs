@@ -12,7 +12,8 @@ const {
   canonicalPayloadJson,
   SHADOW_RESULT_SUMMARY_MAX_CHARS,
 } = await load(join(packageRoot, "src", "shadow-minds", "result.ts"));
-const { DEFAULT_OUTPUT_SCHEMA, validateShadowPayload } = await load(join(packageRoot, "src", "shadow-minds", "parser.ts"));
+const { DEFAULT_OUTPUT_SCHEMA } = await load(join(packageRoot, "src", "shadow-minds", "output-schema.ts"));
+const { validateShadowPayload } = await load(join(packageRoot, "src", "shadow-minds", "payload.ts"));
 
 const fakeCtx = { cwd: "/repo" };
 
