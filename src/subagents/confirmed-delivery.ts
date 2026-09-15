@@ -16,6 +16,13 @@
  * semantics. The shared head/tail text budget (`clipWithHeadTail`) also lives
  * here for the Subagent and Shadow Minds adapters.
  *
+ * The core also owns its Pi lifecycle wiring: `subscribeDeliveryLifecycle`
+ * hands the five delivery signals (agent start, turn end, agent end, agent
+ * settled, message observation) to one event source in the fixed order below,
+ * so registration roots cannot drop a result by wiring one signal to the
+ * wrong event (odradekk/pi-square#369). Session start and shutdown resets
+ * stay with the caller, whose own teardown ordering they interleave with.
+ *
  * Scope is the current parent session. Nothing here persists across sessions.
  */
 
@@ -455,5 +462,77 @@ export function createConfirmedDeliveryCore<T>(options: {
       interrupted = false;
       if (had) notify();
     },
+  };
+}
+
+/**
+ * The five delivery signals every confirmed-delivery consumer must receive,
+ * named for the Pi session events that carry them. `ConfirmedDeliveryCore`
+ * satisfies this shape, and so does every adapter controller that wraps it.
+ */
+export interface ConfirmedDeliveryLifecycle {
+  /** A new consumer run started, so an earlier interruption no longer holds. */
+  handleAgentStart(): void;
+  /** Turn boundary of a running consumer; an aborted terminal message suppresses delivery. */
+  handleTurnEnd(message?: unknown): void;
+  /** Records whether the finished run ended through an interruption. */
+  handleAgentEnd(messages: unknown): void;
+  /** Consumer settled naturally: unconfirmed results are delivered again. */
+  handleAgentSettled(): void;
+  /** Offers one observed consumer message for confirmation. */
+  observeMessage(message: unknown): void;
+}
+
+/**
+ * The Pi session lifecycle surface the delivery core subscribes to. Pi's
+ * extension event emitter satisfies this shape; tests substitute a recording
+ * source and emit through it.
+ */
+export interface DeliveryEventSource {
+  on(event: "agent_start", handler: () => void): void;
+  on(event: "turn_end", handler: (event: { message?: unknown }) => void): void;
+  on(event: "agent_end", handler: (event: { messages?: unknown }) => void): void;
+  on(event: "agent_settled", handler: () => void): void;
+  on(event: "message_start", handler: (event: { message?: unknown }) => void): void;
+}
+
+export interface DeliveryLifecycleSubscribeOptions {
+  /**
+   * Defaults to true. Set false when the caller owns settle forwarding — a
+   * completion gate may park the settled event for a bounded window and
+   * release it later; the core then leaves `agent_settled` unwired and the
+   * returned handle forwards one settled signal instead.
+   */
+  subscribeSettled?: boolean;
+}
+
+/** Handle over the wiring `subscribeDeliveryLifecycle` installed. */
+export interface DeliveryLifecycleSubscription {
+  /** Forwards one consumer-settled signal into the subscribed lifecycle. */
+  settle(): void;
+}
+
+/**
+ * Wires one delivery lifecycle to one event source. The core fixes the
+ * signal-to-event mapping and its order, so the caller cannot drop a result
+ * by wiring a signal to the wrong event or forgetting one: a running
+ * consumer receives results at each turn boundary, a naturally settled
+ * consumer at once, and an interrupted consumer stays silent until its next
+ * run starts (ADR-0009).
+ */
+export function subscribeDeliveryLifecycle(
+  lifecycle: ConfirmedDeliveryLifecycle,
+  events: DeliveryEventSource,
+  options?: DeliveryLifecycleSubscribeOptions,
+): DeliveryLifecycleSubscription {
+  events.on("agent_start", () => lifecycle.handleAgentStart());
+  events.on("turn_end", (event) => lifecycle.handleTurnEnd(event?.message));
+  events.on("agent_end", (event) => lifecycle.handleAgentEnd(event?.messages));
+  if (options?.subscribeSettled !== false) {
+    events.on("agent_settled", () => lifecycle.handleAgentSettled());
+  }
+  events.on("message_start", (event) => lifecycle.observeMessage(event?.message));
+  return {
+    settle: () => lifecycle.handleAgentSettled(),
   };
 }

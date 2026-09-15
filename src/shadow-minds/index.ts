@@ -78,6 +78,8 @@ import {
   createShadowDeliveryController,
   MAX_PENDING_RESULTS,
   shadowNotificationResultIds,
+  subscribeDeliveryLifecycle,
+  type DeliveryLifecycleSubscription,
   type ShadowDeliveryController,
 } from "./delivery";
 import { createCompletionGate, type ShadowCompletionGate } from "./gate";
@@ -634,6 +636,11 @@ export default function registerShadowMinds(
   // root reports parent run-state transitions below and at the Pi event
   // boundaries; which transition opens, re-evaluates, or closes the gate —
   // and with which reason — is derived inside the gate.
+  // Delivery settles are caller-forwarded here: the completion gate parks the
+  // settled event for its bounded window and releases it through this handle,
+  // and the headless drain forwards settles itself. Assigned once the
+  // delivery controller exists below.
+  let deliveryLifecycle: DeliveryLifecycleSubscription | undefined;
   state.gate = createCompletionGate({
     now: () => Date.now(),
     config: effectiveConfig,
@@ -646,7 +653,7 @@ export default function registerShadowMinds(
     // The gate calls this only when a settle is actually parked, so the
     // delivery flush needs no hold-state check of its own.
     forwardSettle: (_at) => {
-      state.delivery?.handleAgentSettled();
+      deliveryLifecycle?.settle();
       refreshStatus();
     },
     onClose: (reason, cancelled) => {
@@ -738,7 +745,7 @@ export default function registerShadowMinds(
   // A headless drain makes every delivery quiet (no new turn); the gate
   // owns the held-settle bit itself.
   let draining = false;
-  state.delivery = createShadowDeliveryController({
+  const shadowDelivery = createShadowDeliveryController({
     pi,
     getResultStore: () => currentStore,
     timing: () => ({
@@ -756,6 +763,12 @@ export default function registerShadowMinds(
     },
     onPendingChange: refreshStatus,
   });
+  state.delivery = shadowDelivery;
+  // Delivery timing and confirmation (ADR-0009) subscribe through the shared
+  // core. The settled event stays caller-forwarded: the completion gate above
+  // parks it for its bounded window, the headless drain forwards settles
+  // itself, and an unheld settle forwards at once.
+  deliveryLifecycle = subscribeDeliveryLifecycle(shadowDelivery, pi, { subscribeSettled: false });
   const toolArgsById = new Map<string, { toolName: string; args: unknown }>();
   const TOOL_ARG_PAIRS_MAX = 64;
   const STREAMING_INPUT_PAIRS_MAX = 64;
@@ -813,7 +826,6 @@ export default function registerShadowMinds(
       parentRunActive = true;
     }
     parentRunPrepared = false;
-    state.delivery?.handleAgentStart();
   });
 
   pi.on("agent_settled", () => {
@@ -826,11 +838,10 @@ export default function registerShadowMinds(
       refreshStatus();
       return;
     }
-    state.delivery?.handleAgentSettled();
+    deliveryLifecycle?.settle();
   });
 
   pi.on("message_start", (event) => {
-    state.delivery?.observeMessage(event?.message);
     if (event?.message?.role !== "user") return;
     if (skipInitialUserMessage) {
       skipInitialUserMessage = false;
@@ -874,7 +885,6 @@ export default function registerShadowMinds(
   });
 
   pi.on("turn_end", (event, sessionCtx) => {
-    state.delivery?.handleTurnEnd(event?.message);
     if (!sessionCtx) return;
     // A turn that ended through user interruption drops its observations
     // instead of dispatching: Pi emits turn_end before agent_end on abort,
@@ -909,7 +919,6 @@ export default function registerShadowMinds(
       }
     }
     state.scheduler.handleAgentEnd({ interrupted, checkpoint });
-    state.delivery?.handleAgentEnd(event?.messages);
     state.gate?.handleRunTransition({ kind: "parent-run-end", interrupted });
     refreshStatus();
     streamingInputDesynchronized = false;
@@ -1034,7 +1043,7 @@ export default function registerShadowMinds(
         for (let batch = 0; batch < MAX_PENDING_RESULTS && Date.now() < deadline; batch += 1) {
           const before = state.delivery?.pendingCount() ?? 0;
           if (before === 0) break;
-          state.delivery?.handleAgentSettled();
+          deliveryLifecycle?.settle();
           await new Promise((resolve) => setTimeout(resolve, 0));
           const confirmed = state.delivery?.confirmQuietDeliveries(
             quietDeliveryIdsFromBranch(ctx?.sessionManager),
