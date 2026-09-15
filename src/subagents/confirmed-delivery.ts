@@ -529,6 +529,15 @@ export function subscribeDeliveryLifecycle(
   events: DeliveryEventSource,
   options?: { subscribeSettled?: true },
 ): void;
+/**
+ * Accepts a widened options value the caller could not narrow; the return
+ * type is the union because the settled wiring depends on the runtime flag.
+ */
+export function subscribeDeliveryLifecycle(
+  lifecycle: ConfirmedDeliveryLifecycle,
+  events: DeliveryEventSource,
+  options: DeliveryLifecycleSubscribeOptions,
+): DeliverySettleForwarding | void;
 export function subscribeDeliveryLifecycle(
   lifecycle: ConfirmedDeliveryLifecycle,
   events: DeliveryEventSource,
