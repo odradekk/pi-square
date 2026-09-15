@@ -10,13 +10,12 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
-import type { Stats } from "node:fs";
 import { basename, dirname, resolve as resolvePath } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { dropChildPartition } from "../anchored-edit/partitions";
 import { subagentsStateRoot } from "./agent-paths";
 import { createSubagentError, normalizeSubagentError, SubagentError } from "./errors";
-import { openChildSessionFile } from "./session-file";
+import { openChildSessionFile, sameFileIdentity, type SessionFileIo, type SessionFilePathStat } from "./session-file";
 import type { SubagentRunDetails } from "./types";
 
 const PUBLIC_ID_PATTERN = /^subagent_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -381,10 +380,8 @@ export interface ResolvedChildSessionFile {
   sessionFile: string;
 }
 
-type SessionPathStat = Pick<Stats, "dev" | "ino" | "isFile">;
-
 interface SessionPathIo {
-  lstat(path: string): SessionPathStat;
+  lstat(path: string): SessionFilePathStat;
   realpath(path: string): string;
 }
 
@@ -392,10 +389,6 @@ const SESSION_PATH_IO: SessionPathIo = {
   lstat: lstatSync,
   realpath: realpathSync,
 };
-
-function sameFileIdentity(left: SessionPathStat, right: SessionPathStat): boolean {
-  return left.dev === right.dev && left.ino === right.ino;
-}
 
 function resolveDirectRegularSessionFile(
   recordedPath: string,
@@ -455,9 +448,9 @@ export function resolveChildSessionFile(id: string, operation = "resume"): Resol
   }
 }
 
-export function validateRunArtifacts(id: string): ValidatedRunArtifacts {
+export function validateRunArtifacts(id: string, io?: SessionFileIo): ValidatedRunArtifacts {
   try {
-    const { artifactsDir, details, handle } = openChildSessionFile(id, "resume");
+    const { artifactsDir, details, handle } = openChildSessionFile(id, "resume", io);
     const rawSession = withTransientFsRetries(() => handle.readText());
     const sessionEntries = parseSessionFileStrict(rawSession);
     if (sessionEntries[0].id !== details.sessionId) {

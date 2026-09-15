@@ -141,10 +141,6 @@ test("the identity protocol refuses a path replaced between the pre-open and pos
         assert.equal(descriptor, 7);
         return stable;
       },
-      readText() {
-        read = true;
-        return "replacement content";
-      },
       read() {
         read = true;
         return 0;
@@ -179,6 +175,34 @@ test("the identity protocol refuses a non-regular file it observes itself", () =
       () => opened.handle.readText(),
       (error) => error instanceof SessionFileRefusal && error.code === "NOT_A_REGULAR_FILE",
     );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+test("the identity protocol refuses a symlink raced in before the open", () => {
+  const root = makeTempRoot();
+  try {
+    createValidArtifacts(root);
+    let attemptedOpen = false;
+    let read = false;
+    const io = {
+      ...NODE_SESSION_FILE_IO,
+      open(candidate) {
+        attemptedOpen = true;
+        throw Object.assign(new Error("too many levels of symbolic links"), { code: "ELOOP" });
+      },
+      read() {
+        read = true;
+        return 0;
+      },
+    };
+    const opened = openChildSessionFile(ID, "view", io);
+    assert.throws(
+      () => opened.handle.readText(),
+      (error) => error?.code === "ELOOP",
+    );
+    assert.equal(attemptedOpen, true, "the open was attempted with O_NOFOLLOW");
+    assert.equal(read, false, "no byte is read from a refused open");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

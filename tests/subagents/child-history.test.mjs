@@ -16,7 +16,7 @@ const {
   projectSessionEntries,
 } = await load(join(packageRoot, "src", "subagents", "child-history.ts"));
 const { ensureArtifactsDir, initializeSessionFile, writeRunState } = await load(join(packageRoot, "src", "subagents", "artifacts.ts"));
-const { openChildSessionFile } = await load(join(packageRoot, "src", "subagents", "session-file.ts"));
+const { NODE_SESSION_FILE_IO, openChildSessionFile } = await load(join(packageRoot, "src", "subagents", "session-file.ts"));
 const { createPromptSnapshot } = await load(join(packageRoot, "tests", "subagents", "lib", "test-helpers.mjs"));
 
 const ID = "subagent_00000000-0000-4000-8000-000000000001";
@@ -81,8 +81,6 @@ function recursiveListing(directory) {
   walk(directory);
   return out.sort();
 }
-
-
 /** One user/assistant pair with stable per-entry ids. */
 function pair(base, text) {
   return [
@@ -362,25 +360,19 @@ test("a concurrent append leaves older offsets stable and is discoverable on the
 test("a transient read failure retries successfully and clears the bounded error", () => {
   const testRoot = root();
   try {
-    writeArtifacts(testRoot, conversation(12));
+    const { sessionFile } = writeArtifacts(testRoot, conversation(12));
     let failReads = 1;
-    const openSessionFile = (id, operation) => {
-      const opened = openChildSessionFile(id, operation);
-      return {
-        ...opened,
-        handle: {
-          ...opened.handle,
-          readRange(start, end) {
-            if (failReads > 0 && end < statSync(opened.handle.path).size) {
-              failReads -= 1;
-              throw Object.assign(new Error("EBUSY"), { code: "EBUSY" });
-            }
-            return opened.handle.readRange(start, end);
-          },
-        },
-      };
+    const io = {
+      ...NODE_SESSION_FILE_IO,
+      read(descriptor, buffer, offset, length, position) {
+        if (failReads > 0 && position + length < statSync(sessionFile).size) {
+          failReads -= 1;
+          throw Object.assign(new Error("EBUSY"), { code: "EBUSY" });
+        }
+        return NODE_SESSION_FILE_IO.read(descriptor, buffer, offset, length, position);
+      },
     };
-    const pager = createChildHistory(ID, { observedAt: OBSERVED_AT, pageBytes: 600, openSessionFile });
+    const pager = createChildHistory(ID, { observedAt: OBSERVED_AT, pageBytes: 600, io });
     assert.equal(pager.snapshot().initialError, undefined);
     assert.equal(pager.loadOlder(), false, "the transient failure fails the page");
     assert.equal(pager.snapshot().olderError, CHILD_HISTORY_READ_ERROR);
@@ -397,22 +389,16 @@ test("a successful newer retry clears its error when it confirms EOF", () => {
   const testRoot = root();
   try {
     writeArtifacts(testRoot, conversation(1));
-    let reads = 0;
-    const openSessionFile = (id, operation) => {
-      const opened = openChildSessionFile(id, operation);
-      return {
-        ...opened,
-        handle: {
-          ...opened.handle,
-          readRange(start, end) {
-            reads += 1;
-            if (reads === 3) throw Object.assign(new Error("EBUSY"), { code: "EBUSY" });
-            return opened.handle.readRange(start, end);
-          },
-        },
-      };
+    let fstats = 0;
+    const io = {
+      ...NODE_SESSION_FILE_IO,
+      fstat(descriptor) {
+        fstats += 1;
+        if (fstats === 3) throw Object.assign(new Error("EBUSY"), { code: "EBUSY" });
+        return NODE_SESSION_FILE_IO.fstat(descriptor);
+      },
     };
-    const pager = createChildHistory(ID, { observedAt: OBSERVED_AT, pageBytes: 4096, openSessionFile });
+    const pager = createChildHistory(ID, { observedAt: OBSERVED_AT, pageBytes: 4096, io });
     assert.equal(pager.loadNewer(), false, "the failed EOF probe is retryable");
     assert.equal(pager.snapshot().newerError, CHILD_HISTORY_READ_ERROR);
     assert.equal(pager.loadNewer(), false, "the successful retry confirms there is no newer page");
@@ -421,8 +407,6 @@ test("a successful newer retry clears its error when it confirms EOF", () => {
     rmSync(testRoot, { recursive: true, force: true });
   }
 });
-
-
 test("the loaded window stays bounded and reloads evicted pages on demand", () => {
   const testRoot = root();
   try {

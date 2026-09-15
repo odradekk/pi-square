@@ -1,4 +1,4 @@
-import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, readSync } from "node:fs";
+import { closeSync, constants, fstatSync, lstatSync, openSync, readSync } from "node:fs";
 import type { Stats } from "node:fs";
 
 import { resolveChildSessionFile } from "./artifacts";
@@ -52,7 +52,6 @@ export interface SessionFileIo {
   lstat(path: string): SessionFilePathStat;
   open(path: string, flags: number): number;
   fstat(descriptor: number): SessionFilePathStat;
-  readText(descriptor: number): string;
   read(descriptor: number, buffer: Buffer, offset: number, length: number, position: number): number;
   close(descriptor: number): void;
 }
@@ -62,7 +61,6 @@ export const NODE_SESSION_FILE_IO: SessionFileIo = {
   lstat: lstatSync,
   open: openSync,
   fstat: fstatSync,
-  readText: (descriptor) => readFileSync(descriptor, "utf8"),
   read: readSync,
   close: closeSync,
 };
@@ -72,7 +70,11 @@ const SESSION_FILE_OPEN_FLAGS =
 
 const EMPTY_BUFFER = Buffer.alloc(0);
 
-function sameIdentity(left: SessionFilePathStat, right: SessionFilePathStat): boolean {
+/** Chunk size for one verified whole-file text read. */
+const TEXT_READ_CHUNK_BYTES = 64 * 1024;
+
+/** Binds two filesystem observations to one dev/ino identity. */
+export function sameFileIdentity(left: SessionFilePathStat, right: SessionFilePathStat): boolean {
   return left.dev === right.dev && left.ino === right.ino;
 }
 
@@ -87,7 +89,7 @@ function openVerifiedSessionFile(
 ): { descriptor: number; stat: SessionFileStat } {
   const before = io.lstat(sessionFile);
   if (!before.isFile()) {
-    throw new SessionFileRefusal("NOT_A_REGULAR_FILE", sessionFile, "native session file is not a regular file");
+    throw new SessionFileRefusal("NOT_A_REGULAR_FILE", sessionFile, "native session path is not a regular file");
   }
   // O_NOFOLLOW refuses a final-component symlink where the platform supports
   // it; O_NONBLOCK keeps a raced FIFO replacement from hanging the reader.
@@ -103,11 +105,11 @@ function openVerifiedSessionFile(
   }
   if (!opened.isFile() || !after.isFile()) {
     io.close(descriptor);
-    throw new SessionFileRefusal("NOT_A_REGULAR_FILE", sessionFile, "native session file is not a regular file");
+    throw new SessionFileRefusal("NOT_A_REGULAR_FILE", sessionFile, "native session path is not a regular file");
   }
-  if (!sameIdentity(before, opened) || !sameIdentity(opened, after)) {
+  if (!sameFileIdentity(before, opened) || !sameFileIdentity(opened, after)) {
     io.close(descriptor);
-    throw new SessionFileRefusal("IDENTITY_CHANGED", sessionFile, "native session file changed while opening");
+    throw new SessionFileRefusal("IDENTITY_CHANGED", sessionFile, "native session path changed while opening");
   }
   return { descriptor, stat: { size: opened.size, dev: opened.dev, ino: opened.ino } };
 }
@@ -156,7 +158,16 @@ export function openChildSessionFile(
     readText() {
       const { descriptor } = openVerifiedSessionFile(sessionFile, io);
       try {
-        return io.readText(descriptor);
+        const chunks: Buffer[] = [];
+        let position = 0;
+        for (;;) {
+          const buffer = Buffer.alloc(TEXT_READ_CHUNK_BYTES);
+          const bytes = io.read(descriptor, buffer, 0, buffer.length, position);
+          if (bytes <= 0) break;
+          chunks.push(buffer.subarray(0, bytes));
+          position += bytes;
+        }
+        return Buffer.concat(chunks).toString("utf8");
       } finally {
         io.close(descriptor);
       }

@@ -1,8 +1,9 @@
 import { createHash } from "node:crypto";
 import {
+  NODE_SESSION_FILE_IO,
   openChildSessionFile,
   type ChildSessionFileHandle,
-  type OpenChildSessionFile,
+  type SessionFileIo,
   type SessionFileStat,
 } from "./session-file";
 import { clipWithHeadTail } from "./confirmed-delivery";
@@ -17,7 +18,11 @@ import { rosterToolArgsDisplay } from "./tool-display";
  * transcript overlay. It reads the validated native session file only through
  * the shared session-file artifact identity boundary (`openChildSessionFile`
  * in `session-file.ts`, the single implementation of the lstat/open/fstat/
- * lstat dev/ino protocol that resume also uses) and pages that file
+ * lstat dev/ino protocol that resume also uses): that boundary keeps the
+ * artifacts directory inside the subagent state root, requires the run record
+ * to describe that directory, and requires the recorded path to name a
+ * regular file directly, then re-verifies the file's identity on every read.
+ * The pager pages that file
  * tail-first in bounded byte ranges. It creates no second transcript store: no cache file,
  * index, sidecar, writer, lock, journal, migration, or artifact version
  * exists beside the native session file, and every read is stateless against
@@ -533,8 +538,6 @@ export interface ChildHistoryView {
   /** Retry a failed initial tail load; false when there was nothing to retry. */
   retryInitial(): boolean;
 }
-
-
 export interface ChildHistoryOptions {
   /** Clock for unresolved tool-call durations; defaults to now. */
   observedAt?: number;
@@ -542,8 +545,8 @@ export interface ChildHistoryOptions {
   pageBytes?: number;
   /** Per-entry byte cap override for focused tests; defaults to 1 MiB. */
   maxEntryBytes?: number;
-  /** Session-file opener override for focused tests; defaults to the shared artifact identity boundary. */
-  openSessionFile?: OpenChildSessionFile;
+  /** Filesystem primitives override for focused tests; defaults to the production binding. */
+  io?: SessionFileIo;
 }
 
 /** Pairing state for one page's window, re-playable across window moves. */
@@ -596,7 +599,7 @@ export class ChildHistoryPager implements ChildHistoryView {
   private readonly id: string;
   private readonly pageBytes: number;
   private readonly maxEntryBytes: number;
-  private readonly openSessionFile: OpenChildSessionFile;
+  private readonly io: SessionFileIo;
   private readonly observedAt: number;
 
   private handle: ChildSessionFileHandle | undefined;
@@ -617,7 +620,7 @@ export class ChildHistoryPager implements ChildHistoryView {
     this.id = id;
     this.pageBytes = Math.max(16, Math.floor(options.pageBytes ?? DEFAULT_PAGE_BYTES));
     this.maxEntryBytes = Math.max(32, Math.floor(options.maxEntryBytes ?? DEFAULT_MAX_ENTRY_BYTES));
-    this.openSessionFile = options.openSessionFile ?? openChildSessionFile;
+    this.io = options.io ?? NODE_SESSION_FILE_IO;
     this.observedAt = options.observedAt ?? Date.now();
     this.loadInitial();
   }
@@ -699,7 +702,7 @@ export class ChildHistoryPager implements ChildHistoryView {
     this.identity = undefined;
     this.handle = undefined;
     try {
-      const opened = this.openSessionFile(this.id, "view");
+      const opened = openChildSessionFile(this.id, "view", this.io);
       this.handle = opened.handle;
       const details = opened.details;
       const headerRead = this.readRange(0, MAX_HEADER_READ_BYTES);

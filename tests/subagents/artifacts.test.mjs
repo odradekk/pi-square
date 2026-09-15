@@ -269,6 +269,51 @@ test("session path resolution rejects mutable intermediate path components", () 
   );
 });
 
+test("resume validation maps a session-file identity refusal to SESSION_HISTORY_UNAVAILABLE", () => {
+  const root = makeTempRoot();
+  try {
+    const { value } = createValidArtifacts(root);
+    const stable = { dev: 1, ino: 2, size: 3, isFile: () => true };
+    const replacement = { dev: 1, ino: 3, size: 3, isFile: () => true };
+    let observations = 0;
+    let read = false;
+    let closed = false;
+    assert.throws(
+      () => validateRunArtifacts(ID, {
+        lstat(candidate) {
+          assert.equal(candidate, value.sessionFile);
+          observations += 1;
+          return observations === 1 ? stable : replacement;
+        },
+        open(candidate) {
+          assert.equal(candidate, value.sessionFile);
+          return 7;
+        },
+        fstat(descriptor) {
+          assert.equal(descriptor, 7);
+          return stable;
+        },
+        read() {
+          read = true;
+          return 0;
+        },
+        close(descriptor) {
+          assert.equal(descriptor, 7);
+          closed = true;
+        },
+      }),
+      (error) => {
+        assert.equal(error?.info?.code, "SESSION_HISTORY_UNAVAILABLE");
+        assert.match(String(error?.info?.cause ?? ""), /changed while opening/);
+        return true;
+      },
+    );
+    assert.equal(read, false, "the replacement target is never read");
+    assert.equal(closed, true, "the opened descriptor is still closed on refusal");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
 
 test("listRunDirs ignores old-ID directories and sorts valid directories by mtime", () => {
   const root = makeTempRoot();
