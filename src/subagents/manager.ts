@@ -47,7 +47,7 @@ import {
 import { sanitizeSubagentDisplay } from "./display";
 import { isRunLeaseActive } from "./lease";
 import { compileFreshPrompt, promptDefinitionHash } from "./prompt";
-import { latestToolCallSummary } from "./tool-display";
+import { latestManagerToolCallSummary } from "./manager-tool-display";
 import { anchoredAutoReadEnabled, anchoredEditingEnabled, type SubagentRuntimeState } from "./tool";
 import type { BackgroundJobSnapshot, SubagentRunDetails } from "./run-types";
 
@@ -1016,7 +1016,7 @@ export class SubagentManager implements Component, Focusable {
       const rows = [
         `ID: ${job.id}`,
         `Task: ${sanitizeSubagentDisplay(job.details.task)}`,
-        `Activity: ${latestToolCallSummary(job.details.timeline)}`,
+        `Activity: ${latestManagerToolCallSummary(job.details.timeline)}`,
       ];
       if (refusals > 0) rows.push(`Refusals: ${refusals}`);
       rows.push(`Usage: ${job.details.usage.turns} turns · ${formatDuration(Date.now() - job.details.startedAt)}`);

@@ -80,8 +80,8 @@ function details(overrides = {}) {
     toolErrors: [],
     usage: { input: 1200, output: 340, cacheRead: 20, cacheWrite: 0, cost: 0.0012, turns: 2 },
     timeline: [
-      { kind: "tool", phase: "start", text: "grep {\"pattern\":\"needle\",\"path\":\"src\"}" },
-      { kind: "tool", phase: "end", text: "grep: SECRET TOOL OUTPUT", isError: false },
+      { kind: "tool", phase: "start", tool: "grep", args: { pattern: "needle", path: "src" }, text: "grep /needle/ in src" },
+      { kind: "tool", phase: "end", tool: "grep", text: "grep: SECRET TOOL OUTPUT", isError: false },
     ],
     ...overrides,
   };
@@ -107,6 +107,27 @@ const message = {
   assert.equal(shared.lifecycle, "completed", "done phase resolves to the completed lifecycle");
   assert.equal(shared.title, "Subagent");
   assert.equal(shared.target, "explorer");
+}
+
+// Legacy timeline entries (persisted before structured tool activity)
+// carry no tool field: they cannot be paired truthfully, so each renders
+// as a standalone anonymous row and never adopts another call's status.
+{
+  const legacy = details({
+    timeline: [
+      { kind: "tool", phase: "start", text: "read src/a.ts" },
+      { kind: "tool", phase: "start", text: "bash npm test" },
+      { kind: "tool", phase: "end", text: "read: ok" },
+      { kind: "tool", phase: "start", tool: "grep", args: { pattern: "needle", path: "." }, text: "grep /needle/ in ." },
+      { kind: "tool", phase: "end", tool: "grep", text: "grep: 1 match" },
+    ],
+  });
+  const description = describeSubagentRun("delegate_subagent", legacy, { expanded: true, isError: false }, "background content");
+  const activity = description.sections.find((section) => section.title === "Activity");
+  const items = activity.blocks[0].items;
+  assert.equal(items.length, 4, "three standalone legacy rows plus one paired structured call");
+  assert.deepEqual(items.map((item) => item.tool), ["tool", "tool", "tool", "grep"], "legacy entries stay anonymous");
+  assert.deepEqual(items.map((item) => item.status), ["running", "running", "done", "done"], "a legacy end never closes another tool's start and the structured pair closes exactly");
 }
 
 // ─── 2. Native shell remains the documented exception ────────────────

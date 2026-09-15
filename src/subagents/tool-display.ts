@@ -1,13 +1,13 @@
 import { catalogToolNames } from "../display/catalog";
 import { sanitizeSubagentDisplay } from "./display";
-import type { SubagentTimelineItem } from "./display-types";
+import type { SubagentTimelineItem } from "./run-types";
 
 export interface ToolEventDisplay {
   tool: string;
   summary: string;
 }
 
-function clipInline(value: unknown, max: number): string {
+export function clipInline(value: unknown, max: number): string {
   const clean = sanitizeSubagentDisplay(value).replace(/\s+/g, " ").trim();
   const codePoints = Array.from(clean);
   return codePoints.length <= max
@@ -15,73 +15,129 @@ function clipInline(value: unknown, max: number): string {
     : `${codePoints.slice(0, Math.max(0, max - 3)).join("")}...`;
 }
 
-function shortenPath(value: unknown): string {
+export function shortenPath(value: unknown): string {
   return clipInline(value || ".", 48);
 }
 
-export function toolDisplayFromArgs(toolName: string, args: any): ToolEventDisplay {
-  let summary: string;
-  switch (toolName) {
-    case "read": {
-      const path = shortenPath(args?.path ?? args?.file_path ?? "...");
-      const offset = args?.offset;
-      const limit = args?.limit;
-      if (typeof offset === "number" || typeof limit === "number") {
-        const start = typeof offset === "number" ? offset : 1;
-        const end = typeof limit === "number" ? start + limit - 1 : undefined;
-        summary = `${path}:${start}${end ? `-${end}` : ""}`;
-      } else summary = path;
-      break;
-    }
-    case "grep":
-      summary = `/${clipInline(args?.pattern || "...", 40)}/ in ${shortenPath(args?.path || ".")}`;
-      break;
-    case "find":
-      summary = `${clipInline(args?.pattern || ".", 40)} in ${shortenPath(args?.path || ".")}`;
-      break;
-    case "ls":
-      summary = shortenPath(args?.path || ".");
-      break;
-    case "bash":
-    case "pwsh":
-      summary = clipInline(args?.command, 80) || "called";
-      break;
-    case "edit":
-    case "write":
-    case "replace":
-    case "insert":
-      summary = shortenPath(args?.path || "...");
-      break;
-    case "web_search": {
-      const queries = Array.isArray(args?.queries) ? args.queries : [];
-      summary = `${queries.length} quer${queries.length === 1 ? "y" : "ies"}: ${clipInline(queries[0] || "...", 50)}`;
-      break;
-    }
-    case "web_fetch": {
-      const urls = Array.isArray(args?.urls) ? args.urls : [];
-      summary = `${urls.length} URL${urls.length === 1 ? "" : "s"}`;
-      break;
-    }
-    case "library_search":
-      summary = clipInline(args?.libraryName || "...", 60);
-      break;
-    case "library_docs":
-      summary = clipInline(args?.libraryId || "...", 60);
-      break;
-    default:
-      summary = "called";
-      break;
-  }
-  return {
-    tool: clipInline(toolName, 64) || "tool",
-    summary: clipInline(summary, 120),
-  };
+// ─── Construction-point sanitizing ─────────────────────────────────
+
+/** Codepoints kept per string argument value. The widest summary read is the
+ *  80-codepoint command, so 200 leaves every projection its full input. */
+const MAX_TOOL_ARG_STRING = 200;
+/** Nesting depth for argument containers. */
+const MAX_TOOL_ARG_DEPTH = 4;
+/** Object entries kept per container level. */
+const MAX_TOOL_ARG_KEYS = 32;
+/** Array items kept per container level. */
+const MAX_TOOL_ARG_ITEMS = 32;
+/** Total characters kept across one entry's arguments. */
+const MAX_TOOL_ARG_TOTAL = 1600;
+
+interface SanitizeBudget {
+  chars: number;
 }
 
-export function formatToolCall(toolName: string, args: any): string {
-  const display = toolDisplayFromArgs(toolName, args);
-  return `${display.tool}${display.summary ? ` ${display.summary}` : ""}`;
+function sanitizeArgValue(value: unknown, depth: number, budget: SanitizeBudget): unknown {
+  if (budget.chars <= 0) return undefined;
+  if (typeof value === "string") {
+    const clean = sanitizeSubagentDisplay(value);
+    const codePoints = Array.from(clean);
+    const clipped = codePoints.length <= MAX_TOOL_ARG_STRING
+      ? clean
+      : `${codePoints.slice(0, MAX_TOOL_ARG_STRING).join("")}...`;
+    budget.chars -= clipped.length;
+    return clipped;
+  }
+  if (typeof value === "number") return Number.isFinite(value) ? value : undefined;
+  if (typeof value === "boolean") return value;
+  if (value === null) return null;
+  if (depth >= MAX_TOOL_ARG_DEPTH) return undefined;
+  if (Array.isArray(value)) {
+    const out: unknown[] = [];
+    for (const item of value.slice(0, MAX_TOOL_ARG_ITEMS)) {
+      if (budget.chars <= 0) break;
+      const cleaned = sanitizeArgValue(item, depth + 1, budget);
+      if (cleaned !== undefined) out.push(cleaned);
+    }
+    return Object.freeze(out);
+  }
+  if (typeof value === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [key, entry] of Object.entries(value).slice(0, MAX_TOOL_ARG_KEYS)) {
+      if (budget.chars <= 0) break;
+      const cleaned = sanitizeArgValue(entry, depth + 1, budget);
+      if (cleaned !== undefined) out[key] = cleaned;
+    }
+    return Object.freeze(out);
+  }
+  return undefined;
 }
+
+/** Deep-clean one tool-call argument payload into the structured, bounded
+ *  fields a timeline entry persists. Strings pass the shared display
+ *  sanitizer; finite numbers and booleans keep their type; containers stay
+ *  within fixed depth/entry budgets; one shared character budget prunes the
+ *  remainder deterministically. The result is frozen: the run record's
+ *  update snapshots share this object by reference across shallow clones.
+ *  This is the single construction point for stored tool activity — every
+ *  projection reads these fields and never re-parses rendered text. True
+ *  list cardinalities are NOT stored here: they live in the timeline item's
+ *  parent-authored `listCounts` field, because anything inside the argument
+ *  object can be authored by the child and must never be trusted as a
+ *  number to display. */
+export function sanitizeToolActivityArgs(args: unknown): Record<string, unknown> {
+  const budget: SanitizeBudget = { chars: MAX_TOOL_ARG_TOTAL };
+  if (!args || typeof args !== "object" || Array.isArray(args)) return Object.freeze({});
+  const cleaned = sanitizeArgValue(args, 0, budget);
+  if (!cleaned || typeof cleaned !== "object" || Array.isArray(cleaned)) return Object.freeze({});
+  return cleaned as Record<string, unknown>;
+}
+
+// ─── Construction-point list counts ────────────────────────────────
+
+/** True cardinalities of the list-valued argument fields one tool call
+ *  counted at the timeline construction point, computed from the raw event
+ *  arguments BEFORE sanitizing truncation. Parent-authored: the child
+ *  influences these only through the real array lengths it sent, so a
+ *  model-crafted `{ count, items }` object can never project a fabricated
+ *  number. Only the fields the projections count are recorded. */
+export function toolArgCounts(toolName: string, args: unknown): Record<string, number> | undefined {
+  if (!args || typeof args !== "object" || Array.isArray(args)) return undefined;
+  const fields = toolName === "web_search" ? ["queries"] : toolName === "web_fetch" ? ["urls"] : [];
+  if (fields.length === 0) return undefined;
+  const counts: Record<string, number> = {};
+  for (const field of fields) {
+    const value = (args as Record<string, unknown>)[field];
+    if (Array.isArray(value)) counts[field] = value.length;
+  }
+  return Object.keys(counts).length > 0 ? Object.freeze(counts) : undefined;
+}
+
+// ─── Shared list-field readers ─────────────────────────────────────
+
+/** Cardinality of one list-valued argument field. Only two sources are
+ *  trusted: the parent-authored `truthfulCount` recorded at the construction
+ *  point (pre-truncation), and a plain array's own length (raw session
+ *  arguments, as the transcript paging and live events pass). Any other
+ *  shape — in particular a model-crafted `{ count, items }` object — yields
+ *  undefined and the projections fall back to their anonymous rendering. */
+export function toolArgListCount(value: unknown, truthfulCount?: number): number | undefined {
+  if (typeof truthfulCount === "number" && Number.isFinite(truthfulCount) && truthfulCount >= 0) {
+    return truthfulCount;
+  }
+  if (Array.isArray(value)) return value.length;
+  return undefined;
+}
+
+/** First item of one list-valued argument field, for summaries that preview
+ *  it. Anything but a plain array yields undefined and the summaries fall
+ *  back to their placeholder. */
+export function toolArgListFirst(value: unknown): unknown {
+  if (Array.isArray(value)) return value[0];
+  return undefined;
+}
+
+// ─── Default safe projection ───────────────────────────────────────
 
 /**
  * Closed vocabulary of tool identities a timeline entry may claim: Pi
@@ -95,50 +151,27 @@ function isKnownTool(name: string): boolean {
   return KNOWN_TOOL_NAMES.has(name);
 }
 
-export function toolEventDisplay(item: SubagentTimelineItem): ToolEventDisplay {
-  const original = sanitizeSubagentDisplay(item.text).trim();
-  if (item.phase === "start") {
-    const jsonCall = /^([A-Za-z0-9_.-]+)\s+(\{.*\})$/s.exec(original);
-    if (jsonCall) {
-      const toolName = jsonCall[1] ?? "tool";
-      try {
-        return toolDisplayFromArgs(toolName, JSON.parse(jsonCall[2] ?? "{}"));
-      } catch {
-        return { tool: clipInline(toolName, 64) || "tool", summary: "called" };
-      }
-    }
-  }
-
-  const colon = /^([A-Za-z0-9_.-]+):\s*(.*)$/s.exec(original);
-  if (colon) return { tool: clipInline(colon[1], 64) || "tool", summary: clipInline(colon[2], 120) };
-  const spaced = /^([A-Za-z0-9_.-]+)\s+(.*)$/s.exec(original);
-  if (spaced) {
-    const rawSummary = spaced[2] ?? "";
-    return {
-      tool: clipInline(spaced[1], 64) || "tool",
-      summary: rawSummary.trimStart().startsWith("{") ? "called" : clipInline(rawSummary, 120),
-    };
-  }
-  return { tool: clipInline(original, 64) || "tool", summary: "" };
+/** Bounded identity string for one timeline item's stored tool name, as the
+ *  manager-grade projection renders it. The safe projection gates the raw
+ *  name against the closed registry before use instead. */
+export function timelineToolIdentity(item: Pick<SubagentTimelineItem, "tool">): string {
+  return clipInline(String(item.tool ?? ""), 64) || "tool";
 }
 
-export function latestToolCallSummary(timeline: SubagentTimelineItem[] | undefined): string {
-  const item = [...(timeline ?? [])].reverse().find((entry) => entry?.kind === "tool" && entry.phase === "start");
-  if (!item) return "working";
-  const display = toolEventDisplay(item);
-  return `${display.tool}${display.summary ? ` ${display.summary}` : ""}`;
-}
-
-/**
- * Strict identity-plus-structure projection for one cataloged tool call:
- * identity comes from the closed known-tool registry and the summary carries
- * only structural counts and numeric ranges — every free-form path, pattern,
- * query, command, or identifier is omitted, and an unknown name renders as an
- * anonymous tool. The roster rows and the read-only child transcript viewer
- * share this seam; the manager's broader bounded-summary formatter stays in
- * `toolDisplayFromArgs`.
- */
-export function rosterToolArgsDisplay(toolName: string, args: unknown): ToolEventDisplay {
+/** The default tool-activity projection — the roster-grade allowlisted shape
+ *  every roster, viewer, live-event, and history surface consumes. Identity
+ *  comes from the closed known-tool registry and the summary carries only
+ *  structural counts and numeric ranges: every free-form path, pattern,
+ *  query, command, or identifier is omitted, and an unknown name renders as
+ *  an anonymous tool. It is self-defending — its output is sanitized and
+ *  bounded for any input — so callers pass raw session arguments here with
+ *  no construction-side cleaning. The manager's broader bounded-summary
+ *  formatter is the explicitly named opt-in in `manager-tool-display.ts`. */
+export function rosterToolArgsDisplay(
+  toolName: string,
+  args: unknown,
+  listCounts?: Record<string, number>,
+): ToolEventDisplay {
   if (!isKnownTool(toolName)) return { tool: "tool", summary: "called" };
   const parsed = (args && typeof args === "object" ? args : {}) as Record<string, unknown>;
   if (toolName === "read") {
@@ -154,48 +187,35 @@ export function rosterToolArgsDisplay(toolName: string, args: unknown): ToolEven
     }
   }
   if (toolName === "web_search") {
-    const count = Array.isArray(parsed.queries) ? parsed.queries.length : 0;
+    const count = toolArgListCount(parsed.queries, listCounts?.queries);
+    if (count === undefined) return { tool: toolName, summary: "called" };
     return { tool: toolName, summary: `${count} quer${count === 1 ? "y" : "ies"}` };
   }
   if (toolName === "web_fetch") {
-    const count = Array.isArray(parsed.urls) ? parsed.urls.length : 0;
+    const count = toolArgListCount(parsed.urls, listCounts?.urls);
+    if (count === undefined) return { tool: toolName, summary: "called" };
     return { tool: toolName, summary: `${count} URL${count === 1 ? "" : "s"}` };
   }
   return { tool: toolName, summary: "called" };
 }
 
-function rosterToolEventDisplay(item: SubagentTimelineItem): ToolEventDisplay {
-  const original = sanitizeSubagentDisplay(item.text).trim();
-  const jsonCall = item.phase === "start"
-    ? /^([A-Za-z0-9_.-]+)\s+(\{.*\})$/s.exec(original)
-    : null;
-  if (jsonCall) {
-    try {
-      return rosterToolArgsDisplay(jsonCall[1] ?? "", JSON.parse(jsonCall[2] ?? "{}"));
-    } catch {
-      return rosterToolArgsDisplay(jsonCall[1] ?? "", undefined);
-    }
-  }
+// ─── Structured timeline readers ───────────────────────────────────
 
-  const head = /^([A-Za-z0-9_.-]+)(?=[\s:]|$)/.exec(original)?.[1];
-  if (head === undefined || !isKnownTool(head)) return { tool: "tool", summary: "called" };
-  const rest = original.slice(head.length).replace(/^[\s:]+/, "");
-  if (head === "read") {
-    const range = /:(\d+)(?:-(\d+))?$/.exec(rest);
-    if (range) return { tool: head, summary: `lines ${range[1]}${range[2] ? `-${range[2]}` : ""}` };
-  }
-  const safeSummary = /^(?:\d+ quer(?:y|ies)|\d+ URLs?)/.exec(rest)?.[0];
-  return { tool: head, summary: safeSummary ?? "called" };
+function lastToolStart(timeline: SubagentTimelineItem[] | undefined): SubagentTimelineItem | undefined {
+  return [...(timeline ?? [])].reverse().find((entry) => entry?.kind === "tool" && entry.phase === "start");
 }
 
-/** Roster-only projection: trusted tool identity and structural counts/ranges. */
+/** Roster-grade summary of the latest started tool call — the default read
+ *  of timeline activity for roster-level surfaces. Reads the structured
+ *  fields recorded at the construction point; entries that carry no
+ *  structure render as an anonymous `tool called`. */
 export function latestRosterToolCallSummary(
   timeline: SubagentTimelineItem[] | undefined,
   fallback = "working",
 ): string {
-  const item = [...(timeline ?? [])].reverse().find((entry) => entry?.kind === "tool" && entry.phase === "start");
+  const item = lastToolStart(timeline);
   if (!item) return fallback;
-  const display = rosterToolEventDisplay(item);
+  const display = rosterToolArgsDisplay(String(item.tool ?? ""), item.args, item.listCounts);
   const summary = clipInline(display.summary, 120);
   return `${display.tool}${summary ? ` ${summary}` : ""}`;
 }

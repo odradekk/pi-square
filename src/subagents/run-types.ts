@@ -1,10 +1,9 @@
 /** Run-axis types: the persisted run record and the lifecycle vocabulary
  *  around it — the V4 `run.json` shape, its prompt snapshot and manifests,
- *  the shared error/usage details, and the background job snapshot. The
- *  display projection type `SubagentTimelineItem` lives in
- *  `display-types.ts`; the notification and wait/abort projections live in
- *  `notification-types.ts`. */
-import type { SubagentTimelineItem } from "./display-types";
+ *  the shared error/usage details, the timeline activity, and the background
+ *  job snapshot. The timeline is part of the persisted record, so its item
+ *  type lives here; the display modules project it read-only. The
+ *  notification and wait/abort projections live in `notification-types.ts`. */
 
 /** Persisted operation that produced the run record. Background is the only
  * execution mode, so it is not a persisted dimension. */
@@ -69,6 +68,41 @@ export interface SubagentToolWarning {
   message: string;
 }
 
+
+/** One entry of the run record's bounded timeline. Status, assistant, and
+ *  error entries carry human text; tool entries additionally carry the
+ *  structured activity recorded at the single construction point in
+ *  `session.ts` — the tool name plus sanitized, bounded argument fields — so
+ *  display projections read fields directly and never re-parse `text`. `text`
+ *  remains the bounded human line kept for run.json readability and
+ *  `lastEvent`.
+ *
+ *  Entries persisted before the structured form may lack `tool`/`args`; every
+ *  projection treats a missing or unknown identity as anonymous. */
+export interface SubagentTimelineItem {
+  kind: "status" | "tool" | "assistant" | "error";
+  phase?: "start" | "end";
+  text: string;
+  /** Tool identity claimed by a kind: "tool" entry, as reported by the child.
+   *  Only the roster-grade projection gates it against the closed tool
+   *  registry, rendering anything unknown as anonymous; the manager-grade
+   *  projection renders any bounded name. */
+  tool?: string;
+  /** Sanitized, bounded structured argument fields for a start entry. */
+  args?: Record<string, unknown>;
+  /** True cardinalities of the counted list-valued argument fields, computed
+   *  at the construction point from the raw call BEFORE sanitizing
+   *  truncation. Parent-authored: the child influences these only through the
+   *  real array lengths it sent, so a model-crafted `{ count, items }`
+   *  argument object can never project a fabricated number. */
+  listCounts?: Record<string, number>;
+  at?: number;
+  isError?: boolean;
+  /** Set on a tool end item whose call was refused by the anchored safety
+   *  mechanism (stale range, owner mismatch, lock contention) — a working
+   *  refusal, never a failed call. */
+  isWarning?: boolean;
+}
 export interface PromptSourceRef {
   source: "package" | "agent" | "project";
   filePath: string;

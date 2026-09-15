@@ -1,9 +1,9 @@
 import type { AgentToolResult, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { decorateToolDefinition, type DisplayRuntimeProvider, type InternalToolDisplayAdapter } from "../display/tool-renderer";
 import type { DisplayActivityItem, DisplayDescriptionV1, DisplayRow, DisplaySection, DisplayTone, OperationalLifecycle, OperationalQualifier } from "../display/types";
-import { toolEventDisplay } from "./tool-display";
-import type { SubagentTimelineItem } from "./display-types";
-import type { SubagentRunDetails } from "./run-types";
+import { timelineToolIdentity } from "./tool-display";
+import { managerToolArgsDisplay } from "./manager-tool-display";
+import type { SubagentTimelineItem } from "./run-types";
 
 function record(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)
@@ -65,19 +65,25 @@ interface ToolCall {
   toolName: string;
 }
 
-/**
- * Pair start/end timeline entries into one call per tool invocation.
- * Uses toolEventDisplay for consistent tool-name extraction so end entries
- * like "read: ok" do not produce a malformed "read:" key.
- */
+/** Pair start/end timeline entries into one call per tool invocation. Both
+ *  entry kinds carry the structured tool name recorded at the construction
+ *  point, so pairing matches exact identities and never re-parses the human
+ *  `text` line. Entries persisted before the structured form carry no tool
+ *  field and cannot be paired truthfully: they render as standalone
+ *  anonymous rows so one tool's end never closes another tool's call. */
 function pairToolCalls(timeline: SubagentTimelineItem[]): ToolCall[] {
   const calls: ToolCall[] = [];
   const pendingByTool = new Map<string, number>();
 
   for (const item of timeline) {
-    if (!item || item.kind !== "tool" || typeof item.text !== "string") continue;
-    const display = toolEventDisplay(item);
-    const toolName = display.tool;
+    if (!item || item.kind !== "tool") continue;
+    if (typeof item.tool !== "string") {
+      calls.push(item.phase === "start"
+        ? { startItem: item, toolName: "tool" }
+        : { endItem: item, toolName: "tool" });
+      continue;
+    }
+    const toolName = timelineToolIdentity(item);
 
     if (item.phase === "start") {
       const idx = calls.length;
@@ -98,7 +104,9 @@ function pairToolCalls(timeline: SubagentTimelineItem[]): ToolCall[] {
 function activityItems(timeline: SubagentTimelineItem[]): DisplayActivityItem[] {
   if (!Array.isArray(timeline)) return [];
   return pairToolCalls(timeline).slice(-8).map((call) => {
-    const startDisplay = call.startItem ? toolEventDisplay(call.startItem) : undefined;
+    const startDisplay = call.startItem
+      ? managerToolArgsDisplay(String(call.startItem.tool ?? ""), call.startItem.args, call.startItem.listCounts)
+      : undefined;
     const tool = startDisplay?.tool ?? call.toolName;
     const summary = startDisplay?.summary ?? "called";
     const status = call.endItem
@@ -127,6 +135,15 @@ function taskSection(details: Record<string, unknown>): DisplaySection | undefin
 function resultSection(title: string, text: string): DisplaySection | undefined {
   if (!text) return undefined;
   return { title, blocks: [{ kind: "markdown", text }], compact: false };
+}
+
+/** Coerce a loosely typed run-record field into timeline items: every entry
+ *  must at least claim a string kind; projections guard the rest. */
+function timelineItems(value: unknown): SubagentTimelineItem[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((item): item is SubagentTimelineItem => (
+    Boolean(item) && typeof item === "object" && typeof (item as { kind?: unknown }).kind === "string"
+  ));
 }
 
 function activitySection(timeline: SubagentTimelineItem[]): DisplaySection | undefined {
@@ -270,18 +287,45 @@ function subagentTarget(
   return name ?? id;
 }
 
+/** The run-record fields the canonical description renders from. Every field
+ *  is optional — the description stays a defensive projection over persisted
+ *  records and notification payloads — but the fields it reads are declared,
+ *  so a call site passing a value whose shape drifts (a renamed `timeline`, a
+ *  mistyped `finalText`) fails at compile time instead of silently dropping a
+ *  section. Containers the description only skims (`agent`, `usage`,
+ *  `toolErrors`, `toolWarnings`) stay `unknown` and are guarded at read. */
+export interface SubagentRunDescriptionFields {
+  id?: string;
+  operation?: string;
+  phase?: string;
+  model?: string;
+  task?: string;
+  finalText?: string;
+  error?: string;
+  durationMs?: number;
+  retries?: number;
+  agent?: unknown;
+  usage?: unknown;
+  toolErrors?: unknown;
+  toolWarnings?: unknown;
+  timeline?: SubagentTimelineItem[];
+}
+
 /**
  * Build the canonical operational description for one persisted subagent run.
  */
 export function describeSubagentRun(
   name: string,
-  run: SubagentRunDetails,
+  run: SubagentRunDescriptionFields,
   options: { expanded: boolean; isError: boolean },
   fallbackText: string,
   args: Record<string, unknown> = {},
 ): DisplayDescriptionV1 {
-  const details = run as unknown as Record<string, unknown>;
-  const live = String(run.finalText || fallbackText || "").trim();
+  // JavaScript callers can pass null despite the declared shape; the
+  // defensive projection degrades to empty fields instead of throwing.
+  const fields = run ?? {};
+  const details = record(fields);
+  const live = String(fields.finalText || fallbackText || "").trim();
   const lc = subagentLifecycle(details, options.isError);
   const isResume = name === "resume_subagent";
   const summary = subagentSummary(details, lc.lifecycle);
@@ -299,7 +343,7 @@ export function describeSubagentRun(
   // that used to live in the collapsed body move into the inline summary. The
   // queued summary keeps the short run ID visible for named agents too,
   // because the queued outcome and the ID are one fact for the caller.
-  const queuedRunId = lc.lifecycle === "queued" ? shortId(details.id ?? args.id) : undefined;
+  const queuedRunId = lc.lifecycle === "queued" ? shortId(fields.id ?? args.id) : undefined;
   const queuedMessage = !isTerminal && lc.lifecycle === "queued"
     ? ["Queued in the parent session", queuedRunId ? `run ${queuedRunId}` : undefined].filter(Boolean).join(" · ")
     : undefined;
@@ -334,7 +378,7 @@ export function describeSubagentRun(
     expandedSections.push(...[
       taskSection(details),
       resultSection("Result", live),
-      activitySection(run.timeline),
+      activitySection(timelineItems(fields.timeline)),
       refusalSection(details),
       issueSection(details),
       usageSection(details),
@@ -352,10 +396,10 @@ export function describeSubagentRun(
     metadata: [],
     rows,
     sections: options.expanded ? expandedSections : collapsedSections,
-    durationMs: typeof run.durationMs === "number" ? run.durationMs : undefined,
+    durationMs: typeof fields.durationMs === "number" ? fields.durationMs : undefined,
     summary: effectiveSummary,
-    ...(options.isError || run.phase === "failed"
-      ? { error: String(run.error || fallbackText || "Subagent failed") }
+    ...(options.isError || fields.phase === "failed"
+      ? { error: String(fields.error || fallbackText || "Subagent failed") }
       : {}),
   } satisfies DisplayDescriptionV1;
 }
@@ -432,7 +476,7 @@ function createSubagentAdapter(name: string): InternalToolDisplayAdapter<any, un
 
       return describeSubagentRun(
         name,
-        details as unknown as SubagentRunDetails,
+        details as SubagentRunDescriptionFields,
         { expanded: options.expanded, isError: context.isError },
         text,
         args,
