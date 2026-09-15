@@ -27,6 +27,13 @@ import {
   DEFAULT_MAX_PENDING_RESULTS,
   type ConfirmedDeliveryBatchEntry,
 } from "../subagents/confirmed-delivery";
+export {
+  subscribeDeliveryLifecycle,
+  type ConfirmedDeliveryLifecycle,
+  type DeliveryEventSource,
+  type DeliveryLifecycleSubscribeOptions,
+  type DeliveryLifecycleSubscription,
+} from "../subagents/confirmed-delivery";
 import { sanitizeDisplayLine, sanitizeDisplayText } from "../display/sanitize";
 import type { ShadowDelivery } from "./parser";
 import { canonicalPayloadJson } from "./result";
