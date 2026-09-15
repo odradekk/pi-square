@@ -88,8 +88,8 @@ function runDetails(overrides = {}) {
     toolErrors: [],
     usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 1 },
     timeline: [
-      { kind: "tool", phase: "start", text: "ls src/components" },
-      { kind: "tool", phase: "end", text: "ls: SECRET TOOL OUTPUT" },
+      { kind: "tool", phase: "start", tool: "ls", args: { path: "src/components" }, text: "ls src/components" },
+      { kind: "tool", phase: "end", tool: "ls", text: "ls: SECRET TOOL OUTPUT" },
     ],
     ...overrides,
   };

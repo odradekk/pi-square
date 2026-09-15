@@ -39,11 +39,10 @@ import {
 import { tryAcquireRunLease } from "./lease";
 import { type ChildViewEvent, deriveChildViewEvent } from "./live-events";
 import { compileFreshPrompt, finalizePromptSnapshot, hashPromptValue } from "./prompt";
-import { formatToolCall } from "./tool-display";
+import { formatToolCall, sanitizeToolActivityArgs } from "./tool-display";
 import { resolveSubagentTools } from "./tool-policy";
 import { ALLOWED_EFFORTS, type AllowedEffort } from "./efforts";
-import type { SubagentTimelineItem } from "./display-types";
-import type { ActiveSubagentConfig, SubagentPromptSnapshot, SubagentRunDetails } from "./run-types";
+import type { ActiveSubagentConfig, SubagentPromptSnapshot, SubagentRunDetails, SubagentTimelineItem } from "./run-types";
 
 const MAX_TIMELINE_ITEMS = 120;
 const MAX_TIMELINE_TEXT = 1600;
@@ -146,6 +145,7 @@ export function classifyToolEnd(
   pushTimeline(details, {
     kind: "tool",
     phase: "end",
+    tool: toolName,
     text: formatToolResult(toolName, result),
     isError: Boolean(isError) && !refusal,
     ...(refusal ? { isWarning: true } : {}),
@@ -575,10 +575,17 @@ async function promptSession(input: {
         break;
       }
       case "tool_execution_start": {
+        // The single construction point for stored tool activity: the entry
+        // carries the structured tool name plus sanitized, bounded argument
+        // fields; every display projection reads those fields and never
+        // re-parses the human `text` line.
+        const toolName = String(event.toolName ?? "tool");
         pushTimeline(details, {
           kind: "tool",
           phase: "start",
-          text: formatToolCall(String(event.toolName ?? "tool"), event.args),
+          tool: toolName,
+          args: sanitizeToolActivityArgs(event.args),
+          text: formatToolCall(toolName, event.args),
         });
         emitUpdate();
         break;

@@ -53,10 +53,10 @@ const RUN_DETAILS = {
   retries: 0,
   usage: { input: 1200, output: 800, cacheRead: 400, cacheWrite: 100, cost: 0.02, turns: 6 },
   timeline: [
-    { kind: "tool", phase: "start", text: 'rg {"pattern":"adapter","path":"src/display"}' },
-    { kind: "tool", phase: "end", text: "rg found 5 matches" },
-    { kind: "tool", phase: "start", text: 'read {"path":"src/display/adapter.ts"}' },
-    { kind: "tool", phase: "end", text: "read returned content" },
+    { kind: "tool", phase: "start", tool: "rg", args: { pattern: "adapter", path: "src/display" }, text: "rg /adapter/ in src/display" },
+    { kind: "tool", phase: "end", tool: "rg", text: "rg found 5 matches" },
+    { kind: "tool", phase: "start", tool: "read", args: { path: "src/display/adapter.ts" }, text: "read src/display/adapter.ts" },
+    { kind: "tool", phase: "end", tool: "read", text: "read returned content" },
   ],
   finalText: "I found 3 display adapters in src/display/.",
 };
@@ -312,7 +312,7 @@ function renderResult(decorated, args, details, opts = {}) {
   const decorated = decorateSubagentTool(makeDef(), () => runtime);
   const details = {
     ...RUN_DETAILS,
-    timeline: [{ kind: "tool", phase: "start", text: 'unknown_tool {"args":"data"}' }],
+    timeline: [{ kind: "tool", phase: "start", tool: "unknown_tool", args: { args: "data" }, text: "unknown_tool called" }],
   };
   const result = renderResult(decorated, ARGS_DELEGATE, details, { expanded: true });
   const text = stripVTControlCharacters(result.render(100).join("\n"));

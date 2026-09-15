@@ -10,9 +10,9 @@ const packageRoot = resolve(import.meta.dirname, "..", "..");
 const load = jiti(import.meta.url, { moduleCache: false });
 const {
   formatToolCall,
-  latestToolCallSummary,
-  toolDisplayFromArgs,
-  toolEventDisplay,
+  managerToolArgsDisplay,
+  rosterToolArgsDisplay,
+  sanitizeToolActivityArgs,
 } = await load(join(packageRoot, "src", "subagents", "tool-display.ts"));
 const { describeSubagentRun } = await load(join(packageRoot, "src", "subagents", "display-adapter.ts"));
 const { renderSubagentNotification } = await load(join(packageRoot, "src", "subagents", "render.ts"));
@@ -106,15 +106,11 @@ test("anchored summaries shorten long paths and never leak arguments", () => {
   assert.doesNotMatch(summary, /secret-text/);
 });
 
-test("legacy JSON timeline entries use the same anchored formatter", () => {
-  const replace = toolEventDisplay({
-    kind: "tool",
-    phase: "start",
-    text: 'replace {"path":"src/a.txt","remove_from":"abc","replacement_text":"X"}',
-  });
-  assert.deepEqual(replace, { tool: "replace", summary: "src/a.txt" });
+test("structured timeline entries use the same anchored formatters", () => {
+  const args = sanitizeToolActivityArgs({ path: "src/a.txt", remove_from: "abc", replacement_text: "X" });
+  assert.deepEqual(managerToolArgsDisplay("replace", args), { tool: "replace", summary: "src/a.txt" });
+  assert.deepEqual(rosterToolArgsDisplay("replace", args), { tool: "replace", summary: "called" });
 });
-
 // ─── 2. Refusal detection at the tool boundary ─────────────────────
 
 test("warning results from anchored tools are refusals, not successes or failures", () => {
@@ -257,10 +253,10 @@ test("expanded notification shows the anchored activity and the refusal, without
   initTheme();
   const refused = details({
     timeline: [
-      { kind: "tool", phase: "start", text: 'read {"path":"src/a.txt"}' },
-      { kind: "tool", phase: "end", text: "read: ok" },
-      { kind: "tool", phase: "start", text: 'replace {"path":"src/a.txt","remove_from":"abc"}' },
-      { kind: "tool", phase: "end", text: "replace: [E_RANGE_STALE] stale range", isWarning: true },
+      { kind: "tool", phase: "start", tool: "read", args: { path: "src/a.txt" }, text: "read src/a.txt" },
+      { kind: "tool", phase: "end", tool: "read", text: "read: ok" },
+      { kind: "tool", phase: "start", tool: "replace", args: { path: "src/a.txt", remove_from: "abc" }, text: "replace src/a.txt" },
+      { kind: "tool", phase: "end", tool: "replace", text: "replace: [E_RANGE_STALE] stale range", isWarning: true },
     ],
     toolWarnings: [{ tool: "replace", message: "replace refused with [E_RANGE_STALE]" }],
     finalText: "Done.",
