@@ -253,7 +253,6 @@ export function addComposedEventHandler(map, event, handler) {
   });
 }
 
-
 export function createExtensionStub() {
   const shortcuts = new Map();
   const events = new Map();
