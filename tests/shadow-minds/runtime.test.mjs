@@ -9,6 +9,7 @@ const { createShadowRuntime, SHADOW_MANUAL_NOTE_MAX_CHARS, createFrozenShadowRes
   join(packageRoot, "src", "shadow-minds", "runtime.ts"),
 );
 const { SUBMIT_SHADOW_RESULT_TOOL } = await load(join(packageRoot, "src", "shadow-minds", "result.ts"));
+const { createShadowResultStore } = await load(join(packageRoot, "src", "shadow-minds", "result-store.ts"));
 const { DEFAULT_SHADOW_MINDS } = await load(join(packageRoot, "src", "core", "config.ts"));
 
 const COMPLETED_NO_SUBMISSION = {
@@ -102,15 +103,17 @@ function baseRequest(overrides = {}) {
 }
 
 {
-  // A persistent inbox write failure becomes an observable bounded run error;
+  // A persistent store write failure becomes an observable bounded run error;
   // it never rejects done or leaves the active slot occupied.
   const fake = makeFake({ submit: JSON.stringify({ summary: "accepted before persistence" }) });
-  const failingInbox = {
-    persistent: true,
+  const failingStore = {
     add() { throw new Error("disk full Authorization: Bearer SECRET"); },
-    list: () => [], send: () => false, markRead: () => false, dismiss: () => false, delete: () => false, clear() {},
+    list: () => [], send: () => false, markRead: () => false, dismiss: () => false, delete: () => false,
+    forceNotify: () => false, markDelivered: () => false, degradeToNotify: () => false,
+    recoverPendingDelivery: () => 0, claimReference: () => false, releaseReferenceClaim() {}, markReferenced: () => false,
+    events: () => [], clear() {}, subscribe: () => () => {},
   };
-  const runtime = createShadowRuntime({ config: () => config(), deps: fake.deps, inbox: failingInbox });
+  const runtime = createShadowRuntime({ config: () => config(), deps: fake.deps, resultStore: failingStore });
   const terminal = await runtime.startManualRun(baseRequest()).done;
   assert.equal(terminal.phase, "error");
   assert.match(terminal.message, /disk full/);
@@ -343,11 +346,12 @@ function baseRequest(overrides = {}) {
   assert.equal(runtime.snapshot().runs.length, 0, "reset clears the run history");
 }
 
-// ── snapshot, runs history, and inbox actions ──────────────────────
+// ── snapshot, runs history, and store actions ──────────────────────
 
 {
   const fake = makeFake({ submit: JSON.stringify({ summary: "one" }) });
-  const runtime = createShadowRuntime({ config: () => config(), deps: fake.deps });
+  const store = createShadowResultStore();
+  const runtime = createShadowRuntime({ config: () => config(), deps: fake.deps, resultStore: store });
   await runtime.startManualRun(baseRequest()).done;
   await runtime.startManualRun(baseRequest({ definition: definition({ id: "another", name: "Another" }) })).done;
 
@@ -357,15 +361,24 @@ function baseRequest(overrides = {}) {
   assert.equal(snapshot.results.length, 2);
   assert.ok(snapshot.results[0].createdAt >= snapshot.results[1].createdAt, "newest results first");
 
+  // Store transitions fan out through the runtime notify path.
+  let notifications = 0;
+  const unsubscribe = runtime.subscribe(() => {
+    notifications += 1;
+  });
+
   const target = snapshot.results[0].id;
-  assert.equal(runtime.markResultRead(target), true);
+  assert.equal(store.markRead(target), true);
+  assert.equal(notifications, 1, "a store attention transition notifies runtime observers");
   assert.equal(runtime.snapshot().results.find((entry) => entry.id === target).attention, "read");
-  assert.equal(runtime.dismissResult(target), true);
+  assert.equal(store.dismiss(target), true);
   assert.equal(runtime.snapshot().results.find((entry) => entry.id === target).attention, "dismissed");
   const deleted = snapshot.results[1].id;
-  assert.equal(runtime.deleteResult(deleted), true);
+  assert.equal(store.delete(deleted), true);
   assert.equal(runtime.snapshot().results.some((entry) => entry.id === deleted), false);
-  assert.equal(runtime.markResultRead("missing"), false);
+  assert.equal(store.markRead("missing"), false);
+  unsubscribe();
+
   const external = runtime.snapshot();
   external.runs[0].phase = "error";
   if (external.runs[0].usage) external.runs[0].usage.turns = 999;
@@ -673,10 +686,10 @@ function baseRequest(overrides = {}) {
   runtime.reset("session switch");
   assert.deepEqual(runtime.snapshot(), { runs: [], results: [], evictionEvents: [] });
 
-  const { createShadowInbox } = await load(join(packageRoot, "src", "shadow-minds", "result.ts"));
-  const persistent = createShadowInbox();
-  Object.defineProperty(persistent, "persistent", { value: true });
-  const second = createShadowRuntime({ config: () => config(), deps: makeFake({ submit: JSON.stringify({ summary: "kept" }) }).deps, inbox: persistent });
+  // A persistent partition survives runtime resets because its clear() is a
+  // deliberate no-op; the wrapper models that strategy over the in-memory store.
+  const persistent = { ...createShadowResultStore(), clear: () => {} };
+  const second = createShadowRuntime({ config: () => config(), deps: makeFake({ submit: JSON.stringify({ summary: "kept" }) }).deps, resultStore: persistent });
   await second.startManualRun(baseRequest()).done;
   assert.equal(second.snapshot().results.length, 1);
   second.reset("session switch");
@@ -947,32 +960,33 @@ function baseRequest(overrides = {}) {
   assert.equal(result.configuredDelivery, definition().delivery, "current-task delivery is untouched");
 }
 
-// ── confirmed-delivery inbox transitions (#159) ─────────────────────
+// ── confirmed-delivery transitions observed through the runtime (#159) ──
 
 {
   const fake = makeFake({ submit: JSON.stringify({ summary: "deliverable" }) });
-  const runtime = createShadowRuntime({ config: () => config(), deps: fake.deps });
+  const store = createShadowResultStore();
+  const runtime = createShadowRuntime({ config: () => config(), deps: fake.deps, resultStore: store });
   await runtime.startManualRun(baseRequest({ definition: definition({ delivery: "steer" }) })).done;
   const result = runtime.snapshot().results[0];
   assert.equal(result.configuredDelivery, "steer", "the definition policy rides the result");
 
-  assert.equal(runtime.markResultDelivered(result.id), false, "a notified result cannot confirm delivery");
-  assert.equal(runtime.sendResultForDelivery(result.id), true, "the delivery handoff marks the result pending");
-  assert.equal(runtime.sendResultForDelivery(result.id), false, "the handoff is atomic");
+  assert.equal(store.markDelivered(result.id), false, "a notified result cannot confirm delivery");
+  assert.equal(store.send(result.id), true, "the delivery handoff marks the result pending");
+  assert.equal(store.send(result.id), false, "the handoff is atomic");
   assert.equal(runtime.snapshot().results[0].delivery, "pending");
-  assert.equal(runtime.markResultDelivered(result.id), true, "transcript confirmation delivers");
-  assert.equal(runtime.markResultDelivered(result.id), false, "confirmation is single-shot");
+  assert.equal(store.markDelivered(result.id), true, "transcript confirmation delivers");
+  assert.equal(store.markDelivered(result.id), false, "confirmation is single-shot");
   assert.equal(runtime.snapshot().results[0].delivery, "delivered");
-  assert.equal(runtime.degradeResultDelivery(result.id), false, "a delivered result never degrades");
+  assert.equal(store.degradeToNotify(result.id), false, "a delivered result never degrades");
 
   await runtime.startManualRun(baseRequest({ definition: definition({ id: "second", name: "Second", delivery: "steer" }) })).done;
   const second = runtime.snapshot().results[0];
-  assert.equal(runtime.sendResultForDelivery(second.id), true);
-  assert.equal(runtime.degradeResultDelivery(second.id), true, "a degraded delivery returns inbox-only");
+  assert.equal(store.send(second.id), true);
+  assert.equal(store.degradeToNotify(second.id), true, "a degraded delivery returns inbox-only");
   const view = runtime.snapshot().results[0];
   assert.equal(view.delivery, "notified");
   assert.equal(view.configuredDelivery, "notify");
-  assert.equal(runtime.sendResultForDelivery("missing"), false);
+  assert.equal(store.send("missing"), false);
 }
 
 console.log("shadow-minds runtime tests: OK");

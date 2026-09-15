@@ -6,7 +6,7 @@
  * session per run through the shared one-time executor seam, event-boundary
  * enforcement of the model-turn and tool-call budgets, user cancellation,
  * timeout propagation, terminal classification, and the session result
- * inbox. Terminal operational states (timeout, bounded budgets, aborts,
+ * store. Terminal operational states (timeout, bounded budgets, aborts,
  * model/auth failures) are lifecycle data and never become cognitive
  * payloads: only a schema-valid `submit_shadow_result` submission creates
  * a result, and a run without one is silent.
@@ -43,13 +43,13 @@ import { SUBMIT_SHADOW_RESULT_DESCRIPTION, SUBMIT_SHADOW_RESULT_PARAMETERS } fro
 import { finalizeShadowDebugRun, openShadowDebugSessionManager, shadowDebugRunDir } from "./inbox-store";
 import type { ShadowTriggerKind, ShadowTriggerReason } from "./scheduler";
 import type { ShadowToolEnvelope } from "./tools";
+import { createSubmitShadowResultTool, SUBMIT_SHADOW_RESULT_TOOL } from "./result";
 import {
-  createShadowInbox,
-  createSubmitShadowResultTool,
-  SUBMIT_SHADOW_RESULT_TOOL,
-  type ShadowInbox,
+  createShadowResultStore,
   type ShadowResultEntity,
-} from "./result";
+  type ShadowResultStore,
+  type ShadowResultStoreEvictionEvent,
+} from "./result-store";
 
 export const SHADOW_MANUAL_NOTE_MAX_CHARS = 8_000;
 
@@ -277,7 +277,7 @@ export interface ShadowManualRunRequest {
 export interface ShadowRuntimeSnapshot {
   runs: ShadowRunView[];
   results: ShadowResultEntity[];
-  evictionEvents: Array<{ kind: "evicted"; id: string; at: number; reason: "count" | "bytes" }>;
+  evictionEvents: ShadowResultStoreEvictionEvent[];
 }
 
 /** Child-session creation input for the runtime seam; the system rides on the loader. */
@@ -420,14 +420,16 @@ function boundedMessage(value: unknown): string {
 /**
  * Creates one session-scoped Shadow runtime. Manual runs occupy concurrency
  * slots against the effective configuration; a valid submission terminates
- * its run and persists a result into the inbox; everything else is an
- * observable operational outcome.
+ * its run and persists a result into the session result store; everything
+ * else is an observable operational outcome. The runtime sends requests to
+ * the store — it neither forwards nor re-exports the store's operations; the
+ * store's own transition notifications are bridged to runtime observers.
  */
 export function createShadowRuntime(input: {
   config: () => ShadowMindsConfig;
   deps?: ShadowRuntimeDeps;
-  /** Session inbox; defaults to the in-memory fallback. */
-  inbox?: ShadowInbox;
+  /** Session result store; defaults to the in-memory fallback. */
+  resultStore?: ShadowResultStore;
   /**
    * The scheduler's current task epoch: a run whose task is no longer
    * current persists its result with notify delivery.
@@ -436,7 +438,7 @@ export function createShadowRuntime(input: {
 }) {
   const deps = input.deps ?? createShadowRuntimeDeps();
   let runSequence = 0;
-  const inbox = input.inbox ?? createShadowInbox({
+  const store = input.resultStore ?? createShadowResultStore({
     makeId: deps.makeResultId,
   });
   let sessionEpoch = 0;
@@ -453,6 +455,11 @@ export function createShadowRuntime(input: {
       }
     }
   };
+  // Result-store transitions reached from outside the runtime (manager
+  // attention actions, the confirmed-delivery machine) fan out to runtime
+  // observers through the same notify path the forwarders used to drive.
+  store.subscribe(() => notify());
+
 
   function startManualRun(request: ShadowManualRunRequest): ManualRunStart {
     return startRun(request, "manual");
@@ -779,7 +786,7 @@ export function createShadowRuntime(input: {
       let resultId: string | undefined;
       if (phase === "submitted" && submitted && runEpoch === sessionEpoch && !run.detached) {
         try {
-          const entity = inbox.add({
+          const entity = store.add({
             shadowId: definition.id,
             shadowName: definition.name,
             payload: submitted.payload,
@@ -921,8 +928,8 @@ export function createShadowRuntime(input: {
   function snapshot(): ShadowRuntimeSnapshot {
     return {
       runs: [...active.map((run) => structuredClone(run.view)), ...history.map((run) => structuredClone(run))],
-      results: inbox.list(),
-      evictionEvents: inbox.events?.().map((event) => structuredClone(event)) ?? [],
+      results: store.list(),
+      evictionEvents: store.events().map((event) => structuredClone(event)),
     };
   }
 
@@ -935,36 +942,6 @@ export function createShadowRuntime(input: {
     cancelTaskRuns,
     cancelAutomaticRuns,
     snapshot,
-    markResultRead(id: string) {
-      const ok = inbox.markRead(id);
-      if (ok) notify();
-      return ok;
-    },
-    dismissResult(id: string) {
-      const ok = inbox.dismiss(id);
-      if (ok) notify();
-      return ok;
-    },
-    deleteResult(id: string) {
-      const ok = inbox.delete(id);
-      if (ok) notify();
-      return ok;
-    },
-    sendResultForDelivery(id: string) {
-      const ok = inbox.send(id);
-      if (ok) notify();
-      return ok;
-    },
-    markResultDelivered(id: string) {
-      const ok = inbox.markDelivered?.(id) ?? false;
-      if (ok) notify();
-      return ok;
-    },
-    degradeResultDelivery(id: string) {
-      const ok = inbox.degradeToNotify?.(id) ?? false;
-      if (ok) notify();
-      return ok;
-    },
     subscribe(listener: () => void): () => void {
       subscribers.add(listener);
       return () => subscribers.delete(listener);
@@ -979,9 +956,10 @@ export function createShadowRuntime(input: {
         run.cancel(true);
       }
       history.length = 0;
-      // A persistent partition is the authoritative record and survives
-      // session-scoped resets; only the in-memory inbox is wiped.
-      if (!inbox.persistent) inbox.clear();
+      // The result store owns session-scoped wiping: a persistent partition
+      // is the authoritative record and its clear() is a deliberate no-op,
+      // so only the in-memory store removes anything.
+      store.clear();
       notify();
     },
   };

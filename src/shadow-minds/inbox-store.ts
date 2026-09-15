@@ -1,20 +1,22 @@
 /**
- * Persistent Shadow result inbox partition (odradekk/pi-square#157).
+ * Persistent Shadow result store partition (odradekk/pi-square#157).
  *
- * Owns the authoritative result storage beneath the parent session
- * directory: one hidden partition per parent session ID holding one
- * versioned atomic JSON entity per result, a bounded index of ordering and
- * summary metadata only, quarantine for corrupt files, index rebuild from a
- * bounded validated scan, count- and byte-bounded retention that evicts
- * resolved entries before unread notified ones with visible eviction
- * events, and orphan-partition reconciliation. Every entity read from disk
- * is strictly validated before it can surface, so unvalidated disk content
- * never reaches the parent model. Non-persisted sessions keep the in-memory
- * inbox; this store implements the same `ShadowInbox` surface plus the
- * atomic `send` delivery transition the confirmed-delivery slice drives and
+ * Owns the persistent implementation of the Shadow result store contract
+ * (`result-store.ts`) beneath the parent session directory: one hidden
+ * partition per parent session ID holding one versioned atomic JSON entity
+ * per result, a bounded index of ordering and summary metadata only,
+ * quarantine for corrupt files, index rebuild from a bounded validated scan,
+ * count- and byte-bounded retention that evicts resolved entries before
+ * unread notified ones with visible eviction events, and orphan-partition
+ * reconciliation. Every entity read from disk is strictly validated before it
+ * can surface, so unvalidated disk content never reaches the parent model.
+ * Non-persisted sessions keep the in-memory result store; this store
+ * satisfies the same full contract — persistence is an internal strategy,
+ * not a capability gap — including the atomic `send` delivery transition and
  * the exclusive-create transcript-reference claims that keep one
  * authoritative result to one bounded reference across overlapping runtime
- * and extension instances (#181).
+ * and extension instances (#181). Native debug JSONL histories (off by
+ * default) are sanitized and retention-swept in the same partition.
  */
 
 import { createHash, randomUUID } from "node:crypto";
@@ -40,13 +42,14 @@ import { canonicalSchemaJson } from "./prompt";
 import {
   SHADOW_INBOX_DEFAULT_MAX_RESULTS,
   evictionCandidate,
-  summarizeShadowResult,
-  type ShadowInbox,
-  type ShadowInboxAddInput,
   type ShadowResultAttention,
   type ShadowResultDelivery,
   type ShadowResultEntity,
-} from "./result";
+  type ShadowResultStore,
+  type ShadowResultStoreAddInput,
+  type ShadowResultStoreEvictionEvent,
+} from "./result-store";
+import { summarizeShadowResult } from "./result";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { sanitizeDisplayText } from "../display/sanitize";
 import {
@@ -78,13 +81,6 @@ const DEBUG_INDEX_MAX_BYTES = 256 * 1024;
 const ID_MAX_CHARS = 128;
 const RECONCILE_MAX_PARTITIONS = 1_000;
 
-export interface ShadowInboxEvictionEvent {
-  kind: "evicted";
-  id: string;
-  at: number;
-  reason: "count" | "bytes";
-}
-
 interface StoredIndexEntry {
   id: string;
   createdAt: number;
@@ -102,7 +98,7 @@ interface StoredIndex {
   maxBytes: number;
   updatedAt: number;
   results: StoredIndexEntry[];
-  events: ShadowInboxEvictionEvent[];
+  events: ShadowResultStoreEvictionEvent[];
 }
 
 const SAFE_PATH_SEGMENT = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
@@ -311,7 +307,7 @@ function validatePersistedIndex(value: unknown): StoredIndex | undefined {
       ...(item.referenced === true ? { referenced: true } : {}),
     });
   }
-  const events: ShadowInboxEvictionEvent[] = [];
+  const events: ShadowResultStoreEvictionEvent[] = [];
   for (const event of record.events.slice(0, INDEX_EVENTS_MAX)) {
     if (!event || typeof event !== "object") return undefined;
     const item = event as Record<string, unknown>;
@@ -337,14 +333,12 @@ interface LoadedEntity {
   bytes: number;
 }
 
-export interface PersistentShadowInbox extends ShadowInbox {
-  /** Recorded eviction and load events, oldest first. */
-  events(): ShadowInboxEvictionEvent[];
+export interface PersistentShadowResultStore extends ShadowResultStore {
   /** Bounded diagnostics from the last load (quarantine, rebuild). */
   diagnostics(): string[];
 }
 
-export interface PersistentShadowInboxOptions {
+export interface PersistentShadowResultStoreOptions {
   sessionDir: string;
   sessionId: string;
   maxResults?: number;
@@ -354,12 +348,12 @@ export interface PersistentShadowInboxOptions {
 }
 
 /**
- * Opens the persistent result inbox for one parent session partition. The
+ * Opens the persistent result store for one parent session partition. The
  * partition is created on demand; entities and the index are validated on
  * load, corrupt files are quarantined, a corrupt index is rebuilt from a
  * bounded scan, and retention is re-applied before any entity surfaces.
  */
-export function createPersistentShadowInbox(options: PersistentShadowInboxOptions): PersistentShadowInbox {
+export function createPersistentShadowResultStore(options: PersistentShadowResultStoreOptions): PersistentShadowResultStore {
   const partition = shadowPartitionPath(options.sessionDir, options.sessionId);
   const partitionRoot = join(resolve(options.sessionDir), SHADOW_PARTITION_DIR);
   const resultsDir = join(partition, "results");
@@ -377,10 +371,20 @@ export function createPersistentShadowInbox(options: PersistentShadowInboxOption
   );
 
   const diagnostics: string[] = [];
-  const events: ShadowInboxEvictionEvent[] = [];
+  const events: ShadowResultStoreEvictionEvent[] = [];
   const loaded = new Map<string, LoadedEntity>();
 
   const clone = <T>(value: T): T => structuredClone(value);
+  const subscribers = new Set<() => void>();
+  const emit = () => {
+    for (const subscriber of subscribers) {
+      try {
+        subscriber();
+      } catch {
+        // A broken observer never affects result state.
+      }
+    }
+  };
 
   const entityPath = (id: string): string => join(resultsDir, `${requireSafePathSegment(id, "result id")}.json`);
   const referencesDir = join(partition, "references");
@@ -655,8 +659,7 @@ export function createPersistentShadowInbox(options: PersistentShadowInboxOption
   writeIndex();
 
   return {
-    persistent: true,
-    add(input: ShadowInboxAddInput): ShadowResultEntity {
+    add(input: ShadowResultStoreAddInput): ShadowResultEntity {
       const validationSchema = input.validationSchema;
       if (validateOutputSchema(validationSchema).length > 0 || validateShadowPayload(validationSchema as ShadowOutputSchema, input.payload).length > 0) {
         throw new Error("Shadow result payload or validation schema is invalid.");
@@ -714,6 +717,7 @@ export function createPersistentShadowInbox(options: PersistentShadowInboxOption
       writeEntity(next);
       loaded.set(id, next);
       writeIndex();
+      emit();
       return true;
     },
     markRead(id: string): boolean {
@@ -724,6 +728,7 @@ export function createPersistentShadowInbox(options: PersistentShadowInboxOption
       writeEntity(next);
       loaded.set(id, next);
       writeIndex();
+      emit();
       return true;
     },
     dismiss(id: string): boolean {
@@ -734,6 +739,7 @@ export function createPersistentShadowInbox(options: PersistentShadowInboxOption
       writeEntity(next);
       loaded.set(id, next);
       writeIndex();
+      emit();
       return true;
     },
     delete(id: string): boolean {
@@ -746,6 +752,7 @@ export function createPersistentShadowInbox(options: PersistentShadowInboxOption
       loaded.delete(id);
       removeReferenceClaim(id);
       writeIndex();
+      emit();
       return true;
     },
     markReferenced(id: string): boolean {
@@ -789,6 +796,7 @@ export function createPersistentShadowInbox(options: PersistentShadowInboxOption
       writeEntity(next);
       loaded.set(id, next);
       writeIndex();
+      emit();
       return true;
     },
     degradeToNotify(id: string): boolean {
@@ -800,6 +808,7 @@ export function createPersistentShadowInbox(options: PersistentShadowInboxOption
       writeEntity(next);
       loaded.set(id, next);
       writeIndex();
+      emit();
       return true;
     },
     recoverPendingDelivery(): number {
@@ -820,11 +829,15 @@ export function createPersistentShadowInbox(options: PersistentShadowInboxOption
       // The partition is the authoritative record and deliberately survives
       // session-scoped resets; per-session clearing removes nothing.
     },
-    events(): ShadowInboxEvictionEvent[] {
+    events(): ShadowResultStoreEvictionEvent[] {
       return events.slice(-INDEX_EVENTS_MAX);
     },
     diagnostics(): string[] {
       return [...diagnostics];
+    },
+    subscribe(listener: () => void): () => void {
+      subscribers.add(listener);
+      return () => subscribers.delete(listener);
     },
   };
 }
