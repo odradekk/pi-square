@@ -32,7 +32,7 @@ export {
   type ConfirmedDeliveryLifecycle,
   type DeliveryEventSource,
   type DeliveryLifecycleSubscribeOptions,
-  type DeliveryLifecycleSubscription,
+  type DeliverySettleForwarding,
 } from "./confirmed-delivery";
 import type { SubagentNotificationDetails, SubagentResultStatus } from "./notification-types";
 import type { SubagentRunDetails } from "./run-types";
