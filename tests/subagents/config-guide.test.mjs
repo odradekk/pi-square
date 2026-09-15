@@ -105,12 +105,15 @@ test("the guide's field table and value lists are generated from the code consta
   assert.ok(guide.content.includes(join("subagents", "schema-reference.md")), "the guide names the packaged schema reference path");
 });
 
-test("every field-table type matches the shape the parser actually accepts", async () => {
-  const { __testables, subagentFieldValueType } = await load(join(packageRoot, "src", "subagents", "definitions.ts"));
+test("every field-table type matches the shape the reader actually accepts", async () => {
+  const { SUBAGENT_FIELD_KINDS, SUBAGENT_YAML_KEY_PATTERN, subagentFieldValueType } = await load(
+    join(packageRoot, "src", "subagents", "definitions.ts"),
+  );
+  const { readYamlFields } = await load(join(packageRoot, "src", "core", "yaml-subset.ts"));
   const { subagentFieldTableRows } = await load(join(packageRoot, "src", "subagents", "config-guide.ts"));
 
-  // A row's type is a claim about what the parser takes. Feed each field a
-  // value of the wrong shape and require the parser's own rejection for that
+  // A row's type is a claim about what the reader takes. Feed each field a
+  // value of the wrong shape and require the reader's own rejection for that
   // type, so the table cannot outlive a change to the field's value type.
   const wrongShape = {
     "string": { value: "[a, b]", error: "must be a string or null" },
@@ -127,14 +130,14 @@ test("every field-table type matches the shape the parser actually accepts", asy
     const lines = ["promptVersion: 2", "name: t"];
     if (row.field !== "description") lines.push("description: d");
     lines.push(`${row.field}: ${probe.value}`);
-    const parsed = __testables.parseYamlDefinition(
-      `${lines.join("\n")}\n`,
-      "/agent/subagents/t.yaml",
-      "agent",
-    );
+    const parsed = readYamlFields(`${lines.join("\n")}\n`, {
+      source: "/agent/subagents/t.yaml",
+      fields: SUBAGENT_FIELD_KINDS,
+      keyPattern: SUBAGENT_YAML_KEY_PATTERN,
+    });
     assert.ok(
       parsed.errors.some((item) => item.includes(`field '${row.field}'`) && item.includes(probe.error)),
-      `${row.field} is typed '${row.type}' but the parser did not reject a mismatched value: ${parsed.errors.join(" | ")}`,
+      `${row.field} is typed '${row.type}' but the reader did not reject a mismatched value: ${parsed.errors.join(" | ")}`,
     );
   }
 });
