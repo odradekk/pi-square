@@ -216,7 +216,7 @@ function makeHarness(options = {}) {
   assert.equal(sent.length, 1, "the result enters the model at the turn boundary");
   assert.equal(sent[0].sendOptions.deliverAs, "steer", "a running parent is steered");
   assert.equal(sent[0].sendOptions.triggerTurn, true);
-  assert.equal(storeOps.sent[0], "shr-1", "the inbox records the pending handoff");
+  assert.equal(storeOps.sent[0], "shr-1", "the store records the pending handoff");
   assert.deepEqual(storeOps.delivered, [], "delivery is not confirmed before observation");
   controller.observeMessage({
     customType: SHADOW_NOTIFICATION_TYPE,
@@ -234,7 +234,7 @@ function makeHarness(options = {}) {
   });
   controller.enqueueResult(makeResult());
   assert.equal(sent.length, 0, "an idle parent never receives a steer at enqueue time");
-  assert.deepEqual(storeOps.degraded, ["shr-1"], "the late steer degrades in the inbox");
+  assert.deepEqual(storeOps.degraded, ["shr-1"], "the late steer degrades to inbox-only");
   assert.equal(controller.pendingCount(), 0, "a degraded result leaves the delivery machine");
 }
 
@@ -333,7 +333,7 @@ function makeHarness(options = {}) {
   assert.equal(controller.sendResultToAgent(notifyResult), true, "an explicit send promotes the result");
   assert.equal(sent.length, 1, "the explicit send reaches the model");
   assert.equal(sent[0].sendOptions.triggerTurn, true);
-  assert.deepEqual(storeOps.sent, ["shr-1"], "the explicit send transitions the inbox state");
+  assert.deepEqual(storeOps.sent, ["shr-1"], "the explicit send transitions the store state");
 }
 
 {
@@ -438,7 +438,7 @@ function makeHarness(options = {}) {
   assert.equal(controller.confirmQuietDeliveries([]), 0, "an unobserved fire-and-forget send is never confirmed");
   assert.equal(controller.pendingCount(), 1);
   assert.equal(controller.confirmQuietDeliveries(["shr-1"]), 1, "an observed persisted notification confirms the quiet send");
-  assert.deepEqual(storeOps.delivered, ["shr-1"], "the inbox records the delivered state");
+  assert.deepEqual(storeOps.delivered, ["shr-1"], "the store records the delivered state");
   assert.equal(controller.pendingCount(), 0);
   assert.equal(controller.confirmQuietDeliveries(["shr-1"]), 0, "the confirmation is single-shot");
 

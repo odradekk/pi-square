@@ -8,12 +8,18 @@
  * attention (read, dismiss, delete), the exclusive transcript-reference
  * claims that keep one authoritative result to one bounded reference (#181),
  * retention eviction, and clearing. The session-scoped in-memory store below
- * and the persistent per-session partition (`inbox-store.ts`) both implement
- * this same interface in full: persistence is an internal strategy of each
- * implementation, never a capability gap exposed through optional members,
- * so callers never probe for features and never branch on a `persistent`
- * flag — a persistent partition's `clear()` is a deliberate no-op, which is
- * what makes the unconditional reset correct.
+ * and the persistent per-session partition (`result-partition.ts`) both
+ * implement the full operation surface: persistence is an internal strategy
+ * of each implementation, never a capability gap exposed through optional
+ * members, so callers never probe for features and never branch on a
+ * `persistent` flag — a persistent partition's `clear()` is a deliberate
+ * no-op, which is what makes the unconditional reset correct. One creation
+ * difference is deliberate and predates this contract: the partition store
+ * requires the effective `validationSchema` (it re-validates the payload
+ * against it on every load) and persists the full metadata set, while the
+ * in-memory fallback neither re-validates nor retains the runtime-only
+ * metadata fields (`lifecycle`, `toolCalls`, `trajectoryTruncated`,
+ * `requests`) on its entities.
  *
  * `subscribe` fans out synchronously after each single-result
  * delivery/attention transition the runtime historically surfaced to its
@@ -99,7 +105,7 @@ export interface ShadowResultEntity extends ShadowResultMetadata {
 }
 
 /** Default in-memory retention; the persistent store keeps the same bound. */
-export const SHADOW_INBOX_DEFAULT_MAX_RESULTS = 100;
+export const SHADOW_RESULT_STORE_DEFAULT_MAX_RESULTS = 100;
 
 /** One recorded retention eviction, surfaced to manager diagnostics. */
 export interface ShadowResultStoreEvictionEvent {
@@ -110,7 +116,12 @@ export interface ShadowResultStoreEvictionEvent {
 }
 
 export interface ShadowResultStoreAddInput extends ShadowResultMetadata {
-  /** Effective validated schema persisted only as the disk re-validation contract. */
+  /**
+   * Effective validated schema. The partition store requires it — a missing
+   * schema or a payload/schema mismatch makes its `add` throw — and persists
+   * it as the disk re-validation contract; the in-memory store ignores its
+   * absence. The runtime always supplies it.
+   */
   validationSchema?: ShadowOutputSchema;
   shadowId: string;
   shadowName: string;
@@ -123,11 +134,18 @@ export interface ShadowResultStoreAddInput extends ShadowResultMetadata {
 
 /**
  * The single Shadow result store contract. Every member is required and both
- * implementations (in-memory below, persistent partition in `inbox-store.ts`)
- * honor the full surface; there is no capability-probing and no persistence
- * branching at call sites.
+ * implementations (in-memory below, persistent partition in
+ * `result-partition.ts`) honor the full operation surface; there is no
+ * capability-probing and no persistence branching at call sites.
  */
 export interface ShadowResultStore {
+  /**
+   * Creates one result with `delivery: "notified"` and `attention: "unread"`.
+   * The partition store validates the payload against
+   * `input.validationSchema` (required there) and persists the full metadata
+   * set; the in-memory fallback accepts the same input without re-validating
+   * and stores only the presentation metadata (see the module note).
+   */
   add(input: ShadowResultStoreAddInput): ShadowResultEntity;
   list(): ShadowResultEntity[];
   /**
@@ -191,6 +209,34 @@ export interface ShadowResultStore {
   subscribe(listener: () => void): () => void;
 }
 
+/**
+ * Shared subscription fan-out for the result-store implementations: `emit`
+ * notifies every subscriber of one completed transition, containing observer
+ * failures so a broken listener never affects result state; `subscribe`
+ * returns the unsubscribe.
+ */
+export function createShadowResultStoreFanout(): {
+  emit(): void;
+  subscribe(listener: () => void): () => void;
+} {
+  const subscribers = new Set<() => void>();
+  return {
+    emit() {
+      for (const subscriber of subscribers) {
+        try {
+          subscriber();
+        } catch {
+          // A broken observer never affects result state.
+        }
+      }
+    },
+    subscribe(listener) {
+      subscribers.add(listener);
+      return () => subscribers.delete(listener);
+    },
+  };
+}
+
 /** Retention order: oldest resolved (read, dismissed, or delivered) first. */
 export function evictionCandidate(entries: readonly ShadowResultEntity[]): ShadowResultEntity | undefined {
   return [...entries]
@@ -208,8 +254,8 @@ export function evictionCandidate(entries: readonly ShadowResultEntity[]): Shado
  */
 export function createShadowResultStore(options?: { maxResults?: number; makeId?: () => string }): ShadowResultStore {
   const maxResults = Math.min(
-    SHADOW_INBOX_DEFAULT_MAX_RESULTS,
-    Math.max(1, Math.trunc(options?.maxResults ?? SHADOW_INBOX_DEFAULT_MAX_RESULTS)),
+    SHADOW_RESULT_STORE_DEFAULT_MAX_RESULTS,
+    Math.max(1, Math.trunc(options?.maxResults ?? SHADOW_RESULT_STORE_DEFAULT_MAX_RESULTS)),
   );
   const makeId = options?.makeId ?? (() => `shr-${randomUUID()}`);
   const entries: ShadowResultEntity[] = [];
@@ -217,18 +263,8 @@ export function createShadowResultStore(options?: { maxResults?: number; makeId?
   // fallback store lives in one process, so a plain set coordinates every
   // overlapping subscriber and runtime rebind sharing this instance.
   const referenceClaims = new Set<string>();
-  const subscribers = new Set<() => void>();
   const clone = <T>(value: T): T => structuredClone(value);
-
-  const emit = () => {
-    for (const subscriber of subscribers) {
-      try {
-        subscriber();
-      } catch {
-        // A broken observer never affects result state.
-      }
-    }
-  };
+  const { emit, subscribe } = createShadowResultStoreFanout();
 
   const evictIfNeeded = () => {
     while (entries.length > maxResults) {
@@ -350,9 +386,6 @@ export function createShadowResultStore(options?: { maxResults?: number; makeId?
     clear() {
       entries.length = 0;
     },
-    subscribe(listener) {
-      subscribers.add(listener);
-      return () => subscribers.delete(listener);
-    },
+    subscribe,
   };
 }

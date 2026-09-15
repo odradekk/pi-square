@@ -40,7 +40,7 @@ import type { EffectiveShadowDefinition } from "./definitions";
 import { buildShadowUserPrompt, canonicalSchemaJson, type ShadowTrajectory } from "./prompt";
 import type { ShadowModelResolution } from "./resolve";
 import { SUBMIT_SHADOW_RESULT_DESCRIPTION, SUBMIT_SHADOW_RESULT_PARAMETERS } from "./result";
-import { finalizeShadowDebugRun, openShadowDebugSessionManager, shadowDebugRunDir } from "./inbox-store";
+import { finalizeShadowDebugRun, openShadowDebugSessionManager, shadowDebugRunDir } from "./result-partition";
 import type { ShadowTriggerKind, ShadowTriggerReason } from "./scheduler";
 import type { ShadowToolEnvelope } from "./tools";
 import { createSubmitShadowResultTool, SUBMIT_SHADOW_RESULT_TOOL } from "./result";
@@ -457,9 +457,10 @@ export function createShadowRuntime(input: {
   };
   // Result-store transitions reached from outside the runtime (manager
   // attention actions, the confirmed-delivery machine) fan out to runtime
-  // observers through the same notify path the forwarders used to drive.
+  // observers through the same notify path the forwarders used to drive. The
+  // pairing lives and is discarded together: session replacement drops the
+  // runtime and its store as one unit, so the subscription ends with both.
   store.subscribe(() => notify());
-
 
   function startManualRun(request: ShadowManualRunRequest): ManualRunStart {
     return startRun(request, "manual");

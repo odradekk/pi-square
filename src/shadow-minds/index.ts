@@ -57,7 +57,7 @@ import {
   createPersistentShadowResultStore,
   reconcileShadowPartitions,
   sweepShadowDebugRetention,
-} from "./inbox-store";
+} from "./result-partition";
 import {
   createShadowRuntime,
   shadowCohortHash,
@@ -361,9 +361,12 @@ function composeShadowRun(input: {
 
 /**
  * The result store each registered state currently writes to, keyed weakly so
- * parallel registrations (and test harnesses) stay separate. The runtime
- * owns no forwarders, so the manager services reach the store through this
- * map rather than through the state container.
+ * parallel registrations (and test harnesses) stay separate. This is
+ * scaffolding for the state-shape split (#373): the natural home for the
+ * store is the in-session state container, which #373 owns; until then the
+ * manager services reach the store through this map rather than through the
+ * state container. A missing entry is a programming error, not a runtime
+ * condition.
  */
 const resultStores = new WeakMap<ShadowMindsState, ShadowResultStore>();
 
@@ -486,7 +489,10 @@ export default function registerShadowMinds(
   runtimeDeps?: ShadowRuntimeDeps,
 ): ShadowMindsState {
   const effectiveConfig = (): ShadowMindsConfig => config?.().shadowMinds ?? DEFAULT_CONFIG.shadowMinds;
-  let currentStore: ShadowResultStore = createShadowResultStore({});
+  // Every makeRuntime call assigns this before any other read; the definite-
+  // assignment assertion stands in for what control-flow analysis cannot see
+  // through the makeRuntime call itself.
+  let currentStore!: ShadowResultStore;
   const makeRuntime = (store?: ShadowResultStore): ShadowRuntime => {
     // An explicit store is always tracked so old-task downgrades reach the
     // in-memory fallback of non-persisted sessions too.
@@ -574,10 +580,13 @@ export default function registerShadowMinds(
       },
     };
   };
+  // The first store/runtime pair is created before the state object so
+  // `currentStore` is definitely assigned by the time the state exists.
+  const initialRuntime = makeRuntime();
   const state: ShadowMindsState = {
     registry: { definitions: [], invalid: [], diagnostics: [] },
     cwd: process.cwd(),
-    runtime: makeRuntime(),
+    runtime: initialRuntime,
     scheduler: makeScheduler(),
     currentParentRun: () => parentRunSeq,
     captureTaskSnapshot(commandCtx: ExtensionCommandContext): ShadowTaskSnapshot {

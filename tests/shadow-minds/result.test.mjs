@@ -100,7 +100,6 @@ async function execute(tool, payload) {
   assert.deepEqual(accepted, [{ summary: "One clear finding." }]);
 }
 
-
 {
   const accepted = [];
   const tool = makeTool(DEFAULT_OUTPUT_SCHEMA, accepted);
@@ -125,8 +124,12 @@ async function execute(tool, payload) {
   assert.ok(fallback.startsWith("{"), "otherwise canonical JSON is used");
   assert.ok(summarizeShadowResult({ summary: "y".repeat(400) }).length <= SHADOW_RESULT_SUMMARY_MAX_CHARS);
   assert.equal(SHADOW_RESULT_SUMMARY_MAX_CHARS, 300);
-}
 
+  // Result summaries are display lines: credentials never survive sanitization.
+  const redacted = summarizeShadowResult({ summary: "Authorization: Bearer RESULTSECRET api_key=SECOND" });
+  assert.doesNotMatch(redacted, /RESULTSECRET|SECOND/);
+  assert.match(redacted, /\[REDACTED\]/);
+}
 
 {
   const left = { z: 1, nested: { b: 2, a: 1 } };
@@ -134,6 +137,5 @@ async function execute(tool, payload) {
   assert.equal(canonicalPayloadJson(left), canonicalPayloadJson(right));
   assert.equal(summarizeShadowResult(left), summarizeShadowResult(right), "fallback summaries are canonical across key order");
 }
-
 
 console.log("shadow-minds result tests: OK");

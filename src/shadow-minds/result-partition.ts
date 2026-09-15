@@ -40,7 +40,8 @@ import { join, resolve } from "node:path";
 import { identityOf, sameFileIdentity, type FileIdentity } from "../core/safe-write";
 import { canonicalSchemaJson } from "./prompt";
 import {
-  SHADOW_INBOX_DEFAULT_MAX_RESULTS,
+  SHADOW_RESULT_STORE_DEFAULT_MAX_RESULTS,
+  createShadowResultStoreFanout,
   evictionCandidate,
   type ShadowResultAttention,
   type ShadowResultDelivery,
@@ -68,8 +69,8 @@ import {
 export const SHADOW_PARTITION_DIR = ".pi-square-shadow";
 
 /** Package hard caps for inbox retention. */
-export const SHADOW_INBOX_MAX_RESULTS_HARD = 100;
-export const SHADOW_INBOX_MAX_BYTES_HARD = 16 * 1024 * 1024;
+export const SHADOW_RESULT_STORE_MAX_RESULTS_HARD = 100;
+export const SHADOW_RESULT_STORE_MAX_BYTES_HARD = 16 * 1024 * 1024;
 
 const REFERENCE_CLAIM_MAX_BYTES = 1_024;
 const INDEX_SUMMARY_MAX_CHARS = 160;
@@ -287,7 +288,7 @@ function validatePersistedIndex(value: unknown): StoredIndex | undefined {
   if (!Number.isInteger(record.maxBytes) || (record.maxBytes as number) < 1) return undefined;
   if (!Array.isArray(record.results) || !Array.isArray(record.events)) return undefined;
   const results: StoredIndexEntry[] = [];
-  for (const entry of record.results.slice(0, SHADOW_INBOX_MAX_RESULTS_HARD)) {
+  for (const entry of record.results.slice(0, SHADOW_RESULT_STORE_MAX_RESULTS_HARD)) {
     if (!entry || typeof entry !== "object") return undefined;
     const item = entry as Record<string, unknown>;
     if (!isBoundedString(item.id, ID_MAX_CHARS)) return undefined;
@@ -319,8 +320,8 @@ function validatePersistedIndex(value: unknown): StoredIndex | undefined {
   return {
     version: 1,
     sessionId: record.sessionId,
-    maxResults: Math.min(record.maxResults as number, SHADOW_INBOX_MAX_RESULTS_HARD),
-    maxBytes: Math.min(record.maxBytes as number, SHADOW_INBOX_MAX_BYTES_HARD),
+    maxResults: Math.min(record.maxResults as number, SHADOW_RESULT_STORE_MAX_RESULTS_HARD),
+    maxBytes: Math.min(record.maxBytes as number, SHADOW_RESULT_STORE_MAX_BYTES_HARD),
     updatedAt: isFiniteNonNegative(record.updatedAt) ? record.updatedAt : 0,
     results,
     events,
@@ -362,12 +363,12 @@ export function createPersistentShadowResultStore(options: PersistentShadowResul
   const now = options.now ?? (() => Date.now());
   const makeId = options.makeId ?? (() => `shr-${randomUUID()}`);
   const maxResults = Math.min(
-    SHADOW_INBOX_MAX_RESULTS_HARD,
-    Math.max(1, Math.trunc(options.maxResults ?? SHADOW_INBOX_DEFAULT_MAX_RESULTS)),
+    SHADOW_RESULT_STORE_MAX_RESULTS_HARD,
+    Math.max(1, Math.trunc(options.maxResults ?? SHADOW_RESULT_STORE_DEFAULT_MAX_RESULTS)),
   );
   const maxBytes = Math.min(
-    SHADOW_INBOX_MAX_BYTES_HARD,
-    Math.max(1, Math.trunc(options.maxBytes ?? SHADOW_INBOX_MAX_BYTES_HARD)),
+    SHADOW_RESULT_STORE_MAX_BYTES_HARD,
+    Math.max(1, Math.trunc(options.maxBytes ?? SHADOW_RESULT_STORE_MAX_BYTES_HARD)),
   );
 
   const diagnostics: string[] = [];
@@ -375,16 +376,7 @@ export function createPersistentShadowResultStore(options: PersistentShadowResul
   const loaded = new Map<string, LoadedEntity>();
 
   const clone = <T>(value: T): T => structuredClone(value);
-  const subscribers = new Set<() => void>();
-  const emit = () => {
-    for (const subscriber of subscribers) {
-      try {
-        subscriber();
-      } catch {
-        // A broken observer never affects result state.
-      }
-    }
-  };
+  const { emit, subscribe } = createShadowResultStoreFanout();
 
   const entityPath = (id: string): string => join(resultsDir, `${requireSafePathSegment(id, "result id")}.json`);
   const referencesDir = join(partition, "references");
@@ -835,10 +827,7 @@ export function createPersistentShadowResultStore(options: PersistentShadowResul
     diagnostics(): string[] {
       return [...diagnostics];
     },
-    subscribe(listener: () => void): () => void {
-      subscribers.add(listener);
-      return () => subscribers.delete(listener);
-    },
+    subscribe,
   };
 }
 

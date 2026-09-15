@@ -17,7 +17,7 @@ const {
   finalizeShadowDebugRun,
   sweepShadowDebugRetention,
   listShadowDebugRuns,
-} = await load(join(packageRoot, "src", "shadow-minds", "inbox-store.ts"));
+} = await load(join(packageRoot, "src", "shadow-minds", "result-partition.ts"));
 
 const roots = [];
 
@@ -564,4 +564,4 @@ function addResult(inbox, index, overrides = {}) {
 
 for (const root of roots) rmSync(root, { recursive: true, force: true });
 
-console.log("shadow-minds inbox-store tests: OK");
+console.log("shadow-minds result-partition tests: OK");

@@ -9,7 +9,7 @@
  * rejections are returned for an in-run retry, and only a valid submission
  * terminates the run. Results land in the session result store
  * (`result-store.ts`), which owns their full lifecycle; the recoverable
- * persistent partition arrives with #157 (`inbox-store.ts`).
+ * persistent partition arrives with #157 (`result-partition.ts`).
  */
 
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";

@@ -475,7 +475,7 @@ function baseRequest(overrides = {}) {
 // ── Session isolation and frozen authorization ─────────────────────
 
 {
-  // Existing inbox state is session-scoped and cleared on reset.
+  // Existing store state is session-scoped and cleared on reset.
   const fake = makeFake({ submit: JSON.stringify({ summary: "old session" }) });
   const runtime = createShadowRuntime({ config: () => config(), deps: fake.deps });
   await runtime.startManualRun(baseRequest()).done;
@@ -486,7 +486,7 @@ function baseRequest(overrides = {}) {
 
 {
   // A late result tool call from the previous epoch is refused and cannot
-  // write into the new session inbox.
+  // write into the new session store.
   let release;
   let oldTool;
   const fake = makeFake({
@@ -674,10 +674,10 @@ function baseRequest(overrides = {}) {
   ]);
 }
 
-// ── persistent inbox and debug wiring (#157) ─────────────────────
+// ── persistent store and debug wiring (#157) ─────────────────────
 
 {
-  // An injected persistent inbox survives runtime resets; the memory
+  // An injected persistent store survives runtime resets; the memory
   // fallback is wiped by the same reset.
   const fake = makeFake({ submit: JSON.stringify({ summary: "persisted finding" }) });
   const runtime = createShadowRuntime({ config: () => config(), deps: fake.deps });
@@ -693,7 +693,7 @@ function baseRequest(overrides = {}) {
   await second.startManualRun(baseRequest()).done;
   assert.equal(second.snapshot().results.length, 1);
   second.reset("session switch");
-  assert.equal(second.snapshot().results.length, 1, "a persistent inbox survives the reset");
+  assert.equal(second.snapshot().results.length, 1, "a persistent store survives the reset");
 }
 
 {

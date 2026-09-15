@@ -8,7 +8,7 @@ const load = jiti(import.meta.url, { moduleCache: false });
 const packageRoot = resolve(import.meta.dirname, "..", "..");
 
 const { createShadowResultStore } = await load(join(packageRoot, "src", "shadow-minds", "result-store.ts"));
-const { createPersistentShadowResultStore } = await load(join(packageRoot, "src", "shadow-minds", "inbox-store.ts"));
+const { createPersistentShadowResultStore } = await load(join(packageRoot, "src", "shadow-minds", "result-partition.ts"));
 
 const roots = [];
 
@@ -122,6 +122,7 @@ function runResultStoreContract(name, makeStore) {
     const entity = addResult(store, 1, { configuredDelivery: "steer" });
     assert.equal(store.markDelivered(entity.id), false, `${name}: a notified result cannot be confirmed delivered`);
     assert.equal(store.send(entity.id), true);
+    assert.equal(store.send(entity.id), false, `${name}: a second send is refused while pending`);
     assert.equal(store.markDelivered(entity.id), true, `${name}: a pending result confirms delivered`);
     assert.equal(store.markDelivered(entity.id), false, `${name}: confirmation is idempotent-refused`);
     assert.equal(store.list()[0].delivery, "delivered");
@@ -245,6 +246,57 @@ runResultStoreContract("persistent result store", (options) => {
   return createPersistentShadowResultStore({ sessionDir, sessionId: "sess-1", ...options });
 });
 
+// ── Implementation-specific strategy: creation differences ──────────
+
+{
+  // The in-memory fallback neither re-validates nor retains the runtime-only
+  // metadata fields on its entities.
+  const store = createShadowResultStore();
+  const plain = store.add({ shadowId: "s0", shadowName: "S0", payload: { summary: "plain" }, createdAt: 0 });
+  assert.equal(plain.summary, "plain", "the memory fallback accepts a result without a validation schema");
+  const entity = store.add({
+    shadowId: "s",
+    shadowName: "S",
+    payload: { summary: "x" },
+    validationSchema: CONTRACT_SCHEMA,
+    createdAt: 1,
+    lifecycle: "submitted",
+    toolCalls: 3,
+    trajectoryTruncated: true,
+    requests: [{ input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: 0 }],
+  });
+  assert.equal(entity.lifecycle, undefined, "the memory fallback does not retain runtime-only metadata");
+  assert.equal(entity.toolCalls, undefined);
+  assert.equal(store.list().find((entry) => entry.id === entity.id).requests, undefined);
+}
+
+{
+  // The partition store requires the effective validation schema and
+  // persists the full metadata set for disk re-validation.
+  const { sessionDir } = makeSessionRoot();
+  const store = createPersistentShadowResultStore({ sessionDir, sessionId: "sess-1" });
+  assert.throws(
+    () => store.add({ shadowId: "s", shadowName: "S", payload: { summary: "x" }, createdAt: 1 }),
+    /validation schema is invalid/,
+    "the partition store refuses a result without its validation schema",
+  );
+  const entity = store.add({
+    shadowId: "s",
+    shadowName: "S",
+    payload: { summary: "x" },
+    validationSchema: CONTRACT_SCHEMA,
+    createdAt: 1,
+    lifecycle: "submitted",
+    toolCalls: 3,
+    trajectoryTruncated: true,
+    requests: [{ input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: 0 }],
+  });
+  assert.equal(entity.lifecycle, "submitted", "the partition store persists the full metadata set");
+  assert.equal(entity.toolCalls, 3);
+  assert.equal(entity.trajectoryTruncated, true);
+  assert.equal(entity.requests.length, 1);
+  assert.ok(entity.schemaHash, "the partition store derives the bound schema hash");
+}
 // ── Implementation-specific strategy: clearing ──────────────────────
 
 {
