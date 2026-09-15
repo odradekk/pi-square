@@ -29,7 +29,7 @@ try {
     const boundary = text.includes("FINAL RECALL") ? "final" : tools.includes("verify_stage") ? "work" : "verified";
     if (!failures.has(boundary)) {
       failures.add(boundary);
-      return fauxAssistantMessage("", { stopReason: "error", errorMessage: boundary === "work" ? "Connection error." : "terminated" });
+      return fauxAssistantMessage("", { stopReason: "error", errorMessage: { work: "read ECONNRESET", verified: "write EPIPE", final: "UND_ERR_SOCKET: socket closed" }[boundary] });
     }
     if (text.includes("FINAL RECALL")) {
       assert.deepEqual(tools, []);
@@ -44,6 +44,7 @@ try {
   assert.equal(result.recall.correct, 8);
   assert.equal(result.metrics.providerErrors, 3);
   assert.equal(result.metrics.retryScheduled, 3);
+  assert.equal(result.metrics.retryContinuations, 3);
   assert.equal(result.metrics.retryRecovered, 3);
   assert.equal(prompts.length, 8);
   for (let i=0;i<8;i++) assert.match(prompts[i], new RegExp(`STAGE ${i+1}`));
@@ -89,7 +90,7 @@ try {
         assert.equal(events.some(event => event.kind === "stage-start" && event.stage === 2), false);
       }
       return fauxAssistantMessage(failureBoundary === "verified" ? "Interrupted partial response." : "", {
-        stopReason: "error", errorMessage: failureBoundary === "recorded" ? "terminated" : "Connection error.",
+        stopReason: "error", errorMessage: failureBoundary === "recorded" ? "read tcp 192.0.2.1:59696->198.51.100.2:443: read: connection reset by peer" : "Connection error.",
       });
     }
     if (finalRecall) {
@@ -175,6 +176,7 @@ try {
   assert.equal(events.filter(event => event.kind === "flag-issued").length, 8, "recovery never reissues a flag");
   assert.equal(result.metrics.providerErrors, retainImplementation ? 3 : 0);
   assert.equal(result.metrics.retryScheduled, retainImplementation ? 3 : 0);
+  assert.equal(result.metrics.retryContinuations, retainImplementation ? 3 : 0);
   assert.equal(result.metrics.retryRecovered, retainImplementation ? 3 : 0);
   if (retainImplementation) assert.ok(result.coverage.rebuilds >= 2);
   else assert.equal(result.coverage.appends, 8);
@@ -229,8 +231,12 @@ try {
   console.log("progressive shared-runtime concurrency and single deadline passed");
 } finally { rmSync(parallelRoot, { recursive: true, force: true }); }
 
+// Authentication diagnostics stay terminal even when they quote a socket error.
+const authSocketErrors = Object.fromEntries(["ECONNRESET", "ECONNABORTED", "EPIPE", "ETIMEDOUT", "UND_ERR_SOCKET", "connection reset by peer", "broken pipe"]
+  .map((socket, index) => [`auth-wording-${index}`, `${["Incorrect API key provided", "API key not valid", "invalid token"][index % 3]}: ${socket}`]));
+
 // Retry waits share the original deadline and preserve every failed response.
-for (const stop of ["timeout", "cancelled", "auth", "quota", "overflow", "infrastructure", "response-infrastructure", "wrong-recall"]) {
+for (const stop of ["timeout", "cancelled", "auth", "auth-message", "auth-credentials", "forbidden", "quota", "billing", "overflow", "unknown", "infrastructure", "response-infrastructure", "wrong-recall", ...Object.keys(authSocketErrors)]) {
   const retryRoot = mkdtempSync(join(tmpdir(), "progressive-retry-test-"));
   try {
     writeFileSync(join(retryRoot, "auth.json"), "{}\n");
@@ -249,8 +255,12 @@ for (const stop of ["timeout", "cancelled", "auth", "quota", "overflow", "infras
         return context.tools?.some(tool => tool.name === "verify_stage")
           ? fauxAssistantMessage(fauxToolCall("verify_stage", {}), { stopReason: "toolUse" }) : fauxAssistantMessage("I do not remember");
       }
-      return fauxAssistantMessage("Partial upstream response.", { stopReason: "error", errorMessage:
-        stop === "auth" ? "401 Unauthorized" : stop === "quota" ? "429 insufficient_quota" : stop === "overflow" ? "maximum context length exceeded" : "Connection error." });
+      return fauxAssistantMessage("Partial upstream response.", { stopReason: "error", errorMessage: authSocketErrors[stop] ?? (
+        stop === "auth" ? "401 Unauthorized: read ECONNRESET" : stop === "auth-message" ? "Authentication error: connection reset by peer"
+          : stop === "auth-credentials" ? "invalid authentication credentials: ECONNRESET" : stop === "forbidden" ? "403 Forbidden: connection reset by peer"
+          : stop === "quota" ? "429 insufficient_quota: read ECONNRESET" : stop === "billing" ? "billing limit exceeded: write EPIPE"
+          : stop === "overflow" ? "maximum context length exceeded: connection reset by peer" : stop === "unknown" ? "Unrecognized provider failure"
+          : ["read ECONNABORTED", "write: broken pipe", "connect ETIMEDOUT"][calls % 3]) });
     }));
     const result = await runProgressiveSession({ directory: join(retryRoot, "arm"), arm: "native", task, model, modelRuntime: runtime, signal: controller.signal, clock,
       retryDelay: async (_ms, _value, { signal }) => {
@@ -258,7 +268,7 @@ for (const stop of ["timeout", "cancelled", "auth", "quota", "overflow", "infras
         signal.throwIfAborted();
       },
       onEvent(event) {
-        if (stop === "infrastructure" && event.kind === "request") throw new Error("local observer failed: Connection error.");
+        if (stop === "infrastructure" && event.kind === "request") throw new Error("local observer failed: read ECONNRESET");
         if (stop === "response-infrastructure" && event.kind === "response") throw new Error("local response observer failed");
         if (event.kind === "provider-retry") scheduled++;
       } });
@@ -291,3 +301,113 @@ assert.equal(gradeRecall(JSON.stringify(exactAnswer), recallFlags).complete, tru
 assert.equal(gradeRecall(JSON.stringify({ ...exactAnswer, 4: "wrong" }), recallFlags).correct, 7);
 assert.equal(gradeRecall(JSON.stringify({ ...exactAnswer, extra: "unexpected" }), recallFlags).complete, false);
 assert.equal(gradeRecall("I do not remember", recallFlags).complete, false);
+
+// A large completed work exchange crosses the exception threshold while the
+// current Pi turn still has its old executable tool snapshot. No paid calls.
+for (const rebuild of [false, true]) {
+const emergencyRoot = mkdtempSync(join(tmpdir(), "progressive-emergency-test-"));
+try {
+  writeFileSync(join(emergencyRoot, "auth.json"), "{}\n");
+  const runtime = await ModelRuntime.create({ authPath: join(emergencyRoot, "auth.json"), modelsPath: null, allowModelNetwork: false, refreshOnCreate: false });
+  const faux = fauxProvider({ provider: "emergency-test", api: "emergency-test", models: [{ id: "test", contextWindow: 256_000, maxTokens: 8192, reasoning: true }] });
+  runtime.registerNativeProvider(faux.provider);
+  // Faux cache writes overlap its input count; disable that synthetic cache so
+  // this case measures the real projection rather than fake residual pressure.
+  const streamSimple = runtime.streamSimple.bind(runtime);
+  runtime.streamSimple = (model, context, options) => streamSimple(model, context, { ...options, cacheRetention: "none" });
+  const model = { ...runtime.getModel("emergency-test", "test"), thinkingLevelMap: { max: "high" } };
+  const flags = Array.from({ length: 8 }, (_, i) => `emergency-project-fact-${i}`);
+  const known = {}, events = [];
+  let workCalls = 0, deferrals = 0, emergencyCalls = 0, resumed = false, reinsertedSource = false, pendingSeen = false, seeded = false;
+  const task = { flags, openingPrompt: "Complete the stage and preserve identifiers.", setupFiles: { "cli.mjs": "console.log('{}')" }, prompt: stage => `STAGE ${stage}`, verify: async () => ({ ok: true, failures: [] }) };
+  faux.setResponses(Array.from({ length: 100 }, () => context => {
+    try {
+    const tools = context.tools?.map(tool => tool.name) ?? [];
+    const body = message => typeof message.content === "string" ? message.content : message.content.map(part => part.text ?? "").join("\n");
+    const last = context.messages.at(-1), text = body(last);
+    if (text.includes("FINAL RECALL")) {
+      assert.equal(tools.includes("compact_to_memory_block"), false);
+      assert.equal(tools.includes("bash"), false);
+      return fauxAssistantMessage(JSON.stringify(known));
+    }
+    if (text.includes("coordinator will enable compact_to_memory_block")) {
+      assert.deepEqual(tools, []);
+      assert.equal(events.filter(event => event.kind === "flag-issued").length, 1);
+      assert.equal(context.messages.some(message => body(message).startsWith("Context Memory: compression is due")), false);
+      deferrals++;
+      return fauxAssistantMessage("Stopping for emergency maintenance.");
+    }
+    if (text.startsWith("Context safety exception: pause stage work and call")) {
+      assert.equal(tools.includes("compact_to_memory_block"), true);
+      assert.equal(tools.includes("bash"), false);
+      assert.equal(tools.includes("verify_stage"), false);
+      emergencyCalls++;
+      if (emergencyCalls === 1) return fauxAssistantMessage("", { stopReason: "error", errorMessage: "503 temporary upstream error" });
+      if (emergencyCalls === 2) return fauxAssistantMessage(fauxToolCall("compact_to_memory_block", { markdown: "" }), { stopReason: "toolUse" });
+      return fauxAssistantMessage(fauxToolCall("compact_to_memory_block", { markdown: `The workspace has cli.mjs. The large diagnostic output was inspected. Stage 2 is unfinished. Preserve prior project facts: ${JSON.stringify(known)}` }), { stopReason: "toolUse" });
+    }
+    if (text.includes("A real compaction call was recorded and is awaiting application")) {
+      assert.equal(tools.includes("compact_to_memory_block"), false);
+      assert.equal(tools.includes("verify_stage"), false);
+      assert.equal(events.filter(event => event.kind === "flag-issued").length, 1);
+      pendingSeen = true;
+      return fauxAssistantMessage("Waiting for application.");
+    }
+    if (tools.includes("verify_stage")) {
+      assert.equal(tools.includes("compact_to_memory_block"), false);
+      const currentStage = events.filter(event => event.kind === "stage-start").at(-1).stage;
+      if (currentStage === 1 && !seeded) {
+        seeded = true;
+        return fauxAssistantMessage(fauxToolCall("bash", { command: "node -e 'console.log(\"y\".repeat(50000))'" }), { stopReason: "toolUse" });
+      }
+      if (currentStage === 2 && workCalls++ < 2) return fauxAssistantMessage([
+        // Cross the pressure threshold only after a second exchange makes the
+        // large result eligible; the latest tool batch is protected by Memory.
+        ...(workCalls === 2 ? [{ type: "text", text: "Checkpoint analysis: " + "z".repeat(160000) }] : []),
+        fauxToolCall("bash", { command: workCalls === 1 ? "node -e 'console.log(\"x\".repeat(540000))'" : "node -e 'console.log(\"work checkpoint\")'" }),
+      ], { stopReason: "toolUse" });
+      if (currentStage === 2 && !resumed) {
+        assert.equal(events.filter(event => event.kind === "emergency-compaction-applied").length, 1);
+        assert.equal(events.filter(event => event.kind === "stage-start").length, 2);
+        assert.equal(events.filter(event => event.kind === "flag-issued").length, 1);
+        resumed = true;
+      }
+      return fauxAssistantMessage(fauxToolCall("verify_stage", {}), { stopReason: "toolUse" });
+    }
+    if (tools.includes("close_stage")) {
+      const verified = [...context.messages].reverse().find(message => message.role === "toolResult" && message.toolName === "verify_stage");
+      const result = JSON.parse(body(verified)); known[result.stage] = result.flag;
+      return fauxAssistantMessage(fauxToolCall("close_stage", {}), { stopReason: "toolUse" });
+    }
+    if (tools.includes("compact_to_memory_block")) return fauxAssistantMessage(fauxToolCall("compact_to_memory_block", { markdown: `Project facts: ${JSON.stringify(known)}${rebuild && Object.keys(known).length === 1 ? "\nPrior diagnostic notes: " + "retained details ".repeat(700) : ""}` }), { stopReason: "toolUse" });
+    return fauxAssistantMessage("Waiting for the coordinator.");
+    } catch (error) { console.error(error); throw error; }
+  }));
+  const result = await runProgressiveSession({ directory: join(emergencyRoot, "arm"), arm: "memory", task, model, modelRuntime: runtime, retryDelay: async () => {}, onEvent: event => events.push(event),
+    contextModifierFactory: (pi, { sessionManager }) => pi.on("context", event => {
+      if (!reinsertedSource && events.some(item => item.kind === "emergency-compaction-recorded")) {
+        reinsertedSource = true;
+        const branch = sessionManager.getBranch();
+        const source = branch.find(entry => entry.type === "message" && entry.message.role === "toolResult" && entry.message.content.some(part => part.text?.includes("x".repeat(100))));
+        assert.ok(source, "a newly covered tool source exists after the prior stage block");
+        const producer = branch.find(entry => entry.type === "message" && entry.message.role === "assistant" && entry.message.content.some(part => part.type === "toolCall" && part.id === source.message.toolCallId));
+        return { messages: [producer.message, source.message, ...event.messages] };
+      }
+    }) });
+  assert.equal(result.status, "coverage-incomplete", JSON.stringify(result));
+  assert.equal(result.recall.correct, 8);
+  assert.equal(result.coverage.stageGates, 8);
+  assert.deepEqual(result.emergencyCompaction, { requested: 1, recorded: 1, applied: 1, refused: 1, appends: rebuild ? 0 : 1, rebuilds: rebuild ? 1 : 0 });
+  assert.equal(result.coverage.appends, 8, "the emergency append is not mandatory-stage coverage");
+  assert.equal(result.metrics.nativeCompactions, 0);
+  assert.equal(result.metrics.providerErrors, 1);
+  assert.equal(result.metrics.retryRecovered, 1);
+  assert.equal(deferrals, 1); assert.equal(emergencyCalls, 3); assert.equal(resumed, true); assert.equal(pendingSeen, true);
+  assert.equal(events.filter(event => event.kind === "flag-issued").length, 8);
+  const evidence = [...readEvidence(result.evidence.file)];
+  const requested = evidence.find(event => event.kind === "emergency-compaction-requested").data;
+  assert.ok(requested.estimatedTokens >= requested.thresholdTokens && requested.estimatedTokens < requested.safetyBoundTokens);
+  console.log("progressive emergency compaction handshake, application and stage isolation passed");
+} finally { rmSync(emergencyRoot, { recursive: true, force: true }); }
+
+}

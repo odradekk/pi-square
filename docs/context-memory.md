@@ -852,10 +852,12 @@ rewrite existing Memory blocks.
 
 #359 replaces continuity as the routine real-model experiment. Run
 `npm run qualify:progressive -- --real --pilot` from a clean checkout on Linux
-with Bubblewrap installed. The configured model must be exactly
-`cpa/deepseek-v4.1-flash` with thinking `max`; both arms use 500,000 tokens.
-The Memory arm disables native auto-compaction and uses a 2% (10,000-token)
-Memory budget. Its maintenance threshold is 10,001 tokens, immediately above
+with Bubblewrap installed. The selected model must be configured and authenticated: `cpa/deepseek-v4.1-flash`
+by default, or `cpa/glm-5.3-flash` via `--model glm-5.3-flash` on each pilot, freeze,
+and formal command. Each model runs both arms with thinking `max` and a
+256,000-token context window.
+The Memory arm disables native auto-compaction and uses a 2% (5,120-token)
+Memory budget. Its maintenance threshold is 5,121 tokens, immediately above
 that budget, so production source serving can prepare rebuilds at mandatory stage
 gates before normal interactive pressure would trigger maintenance. This changes
 the experiment configuration, not production source or compaction rules.
@@ -875,7 +877,7 @@ credentials or the other arm. Final recall disables workspace and verification
 tools: Memory may use source search/reading or answer directly from injected
 blocks, while native has no tools.
 
-Memory compaction is unavailable during stage work. A pass opens compact and
+Memory compaction is normally unavailable during stage work. A pass opens compact and
 asks for a real closing snapshot before compression. Production eligibility,
 source serving, pairing, protected working sets, net benefit and capacity checks
 remain intact. Recording alone cannot advance the task: a subsequent provider-bound
@@ -886,6 +888,18 @@ flags, and at least one append and two rebuilds actually applied. Natural recent
 copies do not invalidate an otherwise correct answer. Insufficient rebuild coverage
 is reported separately from forgetting; a stage blocked by a production refusal
 retains its diagnostics and remains subject to the same total deadline.
+
+An emergency exception opens compaction during stage work when the production
+snapshot estimates the full request, including pending rebuild originals, at or
+above 70% of the safety input budget (167,731 tokens with the current 256,000-token
+window and 16,384-token reserve). This requires current, unsuppressed maintenance
+that passes the production fit checks. Workspace and verification tools pause;
+if compact is absent from the frozen tool snapshot, the harness defers it to the
+next prompt. The same stage resumes only after a subsequent request applies a new
+carrier and removes a newly covered source. Emergency compactions have separate
+counters and do not release flags, advance gates, or satisfy the required stage
+append/rebuild coverage. Native and final-recall tool policies stay unchanged.
+Production capacity checks still apply, so oversized originals can still stop a run.
 
 Arms run concurrently and independently; formal pairs run sequentially. Native
 failure does not prevent Memory success. Review the pilot before using the offline

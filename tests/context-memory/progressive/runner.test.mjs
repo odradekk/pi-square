@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { lstatSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createAttempt, freezePilot, requireFreeze, runFormal, runPair, taskDigest } from "./runner.mjs";
+import { createAttempt, freezePilot, requireFreeze, runFormal, runPair, taskDigest, resolveRuntime } from "./runner.mjs";
 import { createProgressiveReport, reportMarkdown } from "./qualify.mjs";
 import { readEvidence } from "./evidence.mjs";
 import { cacheUsageObservation } from "./session.mjs";
@@ -16,6 +16,7 @@ assert.deepEqual(cacheUsageObservation({ cacheRead: 7, cacheWrite: 3, cacheRepor
 const deferred = () => { let resolve; const promise = new Promise(done => { resolve = done; }); return { promise, resolve }; };
 const completed = arm => ({ arm, status: "passed", stages: Array.from({ length: 8 }, (_, index) => ({ stage: index + 1, passed: true, startedAtMs: index * 100, passedAtMs: index * 100 + 50, ...(arm === "memory" ? { appliedAtMs: index * 100 + 75 } : {}) })),
   recall: { correct: 8, complete: true }, coverage: { stageGates: 8, appends: 1, rebuilds: 2 },
+  emergencyCompaction: { requested: 2, recorded: 2, applied: 2, refused: 1, appends: 1, rebuilds: 1, privatePrompt: "must-not-leak" },
   metrics: { providerErrors: 3, retryScheduled: 3, retryContinuations: 3, retryRecovered: 2, requests: 9, tools: 16, input: 100, output: 20, usageReportedRequests: 9, cacheRead: 5, cacheWrite: 2, cacheReadReportedRequests: 9, cacheWriteReportedRequests: 9, toolBytes: 400,
     toolCategories: { compaction: { count: 3, bytes: 120, elapsedMs: 30 }, retrieval: { count: 2, bytes: 80, elapsedMs: 20 } } },
   elapsedMs: 1234, evidence: { sha256: `${arm}-sha`, bytes: 200, records: 10, file: `/private/${arm}` } });
@@ -55,17 +56,34 @@ try {
   const pins = { commit: "a".repeat(40), tree: "b".repeat(40), progressiveDigest: taskDigest(), node: process.version,
     packageVersion: "12.1.0", piVersion: "0.84.2", model: { provider: "cpa", id: "deepseek-v4.1-flash", api: "test" },
     modelConfigurationSha256: "c".repeat(64), thinking: { requested: "max", generationValue: "high", mapping: { max: "high" } },
-    config: { contextWindow: 500000, thinkingLevel: "max", memoryBudgetPercent: 2, timeoutMs: 3600000 } };
+    config: { contextWindow: 256000, thinkingLevel: "max", memoryBudgetPercent: 2, timeoutMs: 3600000 } };
   const pilotReport = createProgressiveReport({ kind: "pilot", pairs: [pair], pins });
   const manifestPath = join(root, "freeze.json");
   const manifest = freezePilot({ pilotReport, pins, path: manifestPath });
   assert.deepEqual(requireFreeze(manifestPath, pins), manifest);
+  assert.throws(() => requireFreeze(manifestPath, { ...pins, config: { ...pins.config, contextWindow: 500000 } }), /does not match/);
   assert.throws(() => freezePilot({ pilotReport: { ...pilotReport, kind: "formal" }, pins, path: join(root, "bad-kind") }), /one-pair/);
   assert.throws(() => freezePilot({ pilotReport: { ...pilotReport, pairs: [pair, pair] }, pins, path: join(root, "bad-count") }), /one-pair/);
   assert.throws(() => freezePilot({ pilotReport, pins: { ...pins, commit: "changed" }, path: join(root, "drift") }), /pins/);
   assert.throws(() => requireFreeze(manifestPath, { ...pins, modelConfigurationSha256: "changed" }), /does not match/);
 
   assert.throws(() => requireFreeze(manifestPath, { ...pins, config: { ...pins.config, recovery: { initialDelayMs: 1000, maxDelayMs: 30000 } } }), /does not match/);
+
+  const glmPins = { ...pins, model: { ...pins.model, id: "glm-5.3-flash" } };
+  const glmReport = { ...pilotReport, pins: glmPins };
+  const glmManifestPath = join(root, "glm-freeze.json");
+  freezePilot({ pilotReport: glmReport, pins: glmPins, path: glmManifestPath });
+  assert.equal(requireFreeze(glmManifestPath, glmPins).pins.model.id, "glm-5.3-flash");
+  assert.throws(() => requireFreeze(glmManifestPath, pins), /does not match/);
+  assert.throws(() => freezePilot({ pilotReport: glmReport, pins, path: join(root, "wrong-model") }), /pins/);
+  const fakeRuntime = { getModel(provider, id) { return { provider, id, reasoning: true, thinkingLevelMap: { max: "high" }, contextWindow: 500000 }; }, async getAuth() { return "test-only"; } };
+  assert.equal((await resolveRuntime({ runtime: fakeRuntime })).model.id, "deepseek-v4.1-flash");
+  assert.equal((await resolveRuntime({ runtime: fakeRuntime, modelId: "glm-5.3-flash" })).model.id, "glm-5.3-flash");
+  for (const modelId of ["deepseek-v4.1-flash", "glm-5.3-flash"]) {
+    assert.equal((await resolveRuntime({ runtime: fakeRuntime, modelId })).model.contextWindow, 256000, "experiment window overrides the provider's larger configured window");
+  }
+  await assert.rejects(resolveRuntime({ runtime: fakeRuntime, modelId: "unknown" }), /unsupported/);
+  await assert.rejects(resolveRuntime({ runtime: { ...fakeRuntime, async getAuth() { return null; } }, modelId: "glm-5.3-flash" }), /authentication/);
 
   const report = createProgressiveReport({ kind: "formal", pairs: formal, manifest, pins });
   assert.equal(report.totals.result, "pass"); assert.equal(report.totals.memoryQualified, 3); assert.equal(report.totals.requests, 54);
@@ -80,6 +98,13 @@ try {
     assert.equal(report.pairs[0].arms.memory.metrics[key], completed("memory").metrics[key], "successful runs retain upstream failure and recovery counters");
   }
   assert.match(reportMarkdown(report), /Provider errors/);
+  assert.deepEqual(report.pairs[0].arms.memory.emergencyCompaction, { requested: 2, recorded: 2, applied: 2, refused: 1, appends: 1, rebuilds: 1 });
+  assert.match(reportMarkdown(report), /Emergency requested/);
+  assert.doesNotMatch(JSON.stringify(report), /must-not-leak/);
+  const emergencyOnly = completed("memory"); emergencyOnly.coverage.rebuilds = 0;
+  assert.equal(createProgressiveReport({ kind: "pilot", pairs: [{ ...pair, arms: { memory: emergencyOnly } }], pins }).totals.memoryQualified, 0, "emergency rebuilds never substitute for required stage rebuilds");
+  const beforeEmergency = completed("memory"); delete beforeEmergency.emergencyCompaction;
+  assert.equal(createProgressiveReport({ kind: "pilot", pairs: [{ ...pair, arms: { memory: beforeEmergency } }], pins }).pairs[0].arms.memory.emergencyCompaction, null);
   const historical = completed("memory"); delete historical.metrics.providerErrors;
   assert.equal(createProgressiveReport({ kind: "pilot", pairs: [{ ...pair, arms: { memory: historical } }], pins }).pairs[0].arms.memory.metrics.providerErrors, null, "missing historical counters remain unknown");
   const failedStage = completed("memory"); failedStage.stages[7] = { stage: 8, passed: false };

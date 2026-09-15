@@ -37,7 +37,7 @@ export function createProgressiveReport({ kind, pairs, manifest = null, pins }) 
     arms: Object.fromEntries(Object.entries(pair.arms).map(([name, arm]) => [name, {
       status: arm.status, stagesPassed: arm.stages?.filter(stage => stage.passed).length ?? 0, stages: safeStages(arm.stages),
       recall: arm.recall ? { correct: arm.recall.correct, complete: arm.recall.complete } : null,
-      coverage: arm.coverage ?? null, metrics: safeMetrics(arm.metrics), elapsedMs: arm.elapsedMs ?? null,
+      coverage: arm.coverage ?? null, emergencyCompaction: arm.emergencyCompaction ? Object.fromEntries(["requested", "recorded", "applied", "refused", "appends", "rebuilds"].map(key => [key, finite(arm.emergencyCompaction[key])])) : null, metrics: safeMetrics(arm.metrics), elapsedMs: arm.elapsedMs ?? null,
       evidence: evidence(arm.evidence), problems: arm.problems ?? null, nativeReplay: arm.nativeReplay ?? null, terminal: arm.terminal ?? null,
       diagnostic: arm.diagnostic ?? null,
     }])) }));
@@ -69,6 +69,11 @@ export function reportMarkdown(report) {
   for (const pair of report.pairs) for (const name of ["memory", "native"]) {
     const metrics = pair.arms[name].metrics;
     lines.push(`| ${pair.id} | ${name} | ${metrics?.providerErrors ?? "unavailable"} | ${metrics?.retryScheduled ?? "unavailable"} | ${metrics?.retryContinuations ?? "unavailable"} | ${metrics?.retryRecovered ?? "unavailable"} |`);
+  }
+  lines.push("", "| Pair | Arm | Emergency requested | Recorded | Applied | Refused | Appends | Rebuilds |", "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |");
+  for (const pair of report.pairs) for (const name of ["memory", "native"]) {
+    const counts = pair.arms[name].emergencyCompaction;
+    lines.push(`| ${pair.id} | ${name} | ${["requested", "recorded", "applied", "refused", "appends", "rebuilds"].map(key => counts?.[key] ?? "unavailable").join(" | ")} |`);
   }
   return `${lines.join("\n")}\n`;
 }

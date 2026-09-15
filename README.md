@@ -624,7 +624,8 @@ The current real-model experiment is `npm run qualify:progressive -- --real --pi
 (#359). It compares isolated Memory and Pi native auto-compaction arms concurrently
 through eight progressively revealed coding stages. Hidden cumulative tests release
 random project facts, followed by stage compaction gates and final exact recall.
-Both arms use `cpa/deepseek-v4.1-flash`, thinking `max`, and a 500K context window;
+The default model is `cpa/deepseek-v4.1-flash`; select GLM with `--model glm-5.3-flash`.
+Each model runs both arms with thinking `max` and a 256K context window;
 Memory has a 2% budget. Each arm has one total hour, with no request or tool-call
 count limit. Linux Bubblewrap isolation and a clean checkout are required.
 After reviewing the pilot, freeze its identity and run three fresh formal pairs as
