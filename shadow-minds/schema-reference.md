@@ -117,7 +117,7 @@ through the production parser.
       "entryPattern": "exact provider/model-id or *"
     },
     "model": {
-      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}\\/[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$"
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}\\/[A-Za-z0-9][A-Za-z0-9._/-]{0,197}$"
     },
     "thinking": {
       "enum": ["off", "minimal", "low", "medium", "high", "xhigh", "max"]
