@@ -8,20 +8,20 @@ import jiti from "jiti";
 import {
   createPromptSnapshot,
   getRunSubagentTaskCalls,
+  loadAbortModule,
   loadBackgroundModule,
   loadDeliveryModule,
-  loadToolModule,
   run,
   setRunSubagentTaskMock,
   test,
   waitFor,
 } from "./lib/test-helpers.mjs";
 
-const { registerSubagentTool } = await loadToolModule();
-const { cancelBackgroundJobs, createBackgroundState, createQueuedJob, notifyBackgroundChange } = await loadBackgroundModule();
+const { registerAbortSubagentTool } = await loadAbortModule();
+const { cancelBackgroundJobs, createBackgroundState, createQueuedJob, notifyBackgroundChange, startBackgroundJob } = await loadBackgroundModule();
 const { createDeliveryController } = await loadDeliveryModule();
 const loadLocal = jiti(import.meta.url, { moduleCache: false });
-const { createSubagentBlockingCallRegistry } = await loadLocal(join(
+const { createSubagentBlockingCallRegistry, registerWaitSubagentTool } = await loadLocal(join(
   import.meta.dirname, "..", "..", "src", "subagents", "wait.ts",
 ));
 
@@ -63,7 +63,10 @@ function createHarness(options = {}) {
   });
   state.background.delivery = delivery;
   const registry = createSubagentBlockingCallRegistry();
-  registerSubagentTool(pi.api, state, undefined, registry);
+  // Wait and abort register through their own module interfaces — the same
+  // pairing the tool entry uses — and share one blocking-call registry.
+  registerWaitSubagentTool(pi.api, state, registry);
+  registerAbortSubagentTool(pi.api, state, registry);
   const abortTool = pi.tools.get("abort_subagent");
   assert.ok(abortTool, "abort_subagent is registered");
   return {
@@ -89,6 +92,21 @@ function createHarness(options = {}) {
         parentSessionId: PARENT_SESSION,
         promptSnapshot: createPromptSnapshot(),
         ...overrides,
+      });
+    },
+    /** Starts a queued job through the real background lifecycle seam so the
+     * abort tool can be exercised against running and cancelling targets
+     * without entering through the delegate tool. */
+    start(n) {
+      const job = state.background.jobs.get(id(n));
+      assert.ok(job, `job ${n} exists`);
+      startBackgroundJob({
+        pi: pi.api,
+        state: state.background,
+        job,
+        ctx: {},
+        task: job.details.task,
+        parentSessionId: PARENT_SESSION,
       });
     },
     /** Deterministic terminal transition mirroring the lifecycle's completion
@@ -173,11 +191,9 @@ function deferredRun() {
 
 // ─── Registration and schema ─────────────────────────────────────────
 
-test("registerSubagentTool exposes abort_subagent beside delegate, resume, and wait", () => {
+test("registerAbortSubagentTool exposes abort_subagent with the strict ids schema", () => {
   const probe = createHarness();
-  assert.deepEqual([...probe.pi.tools.keys()], [
-    "wait_subagent", "delegate_subagent", "resume_subagent", "abort_subagent",
-  ]);
+  assert.deepEqual([...probe.pi.tools.keys()], ["wait_subagent", "abort_subagent"]);
   const schema = probe.abortTool.parameters;
   assert.equal(schema.type, "object");
   assert.equal(schema.additionalProperties, false);
@@ -295,9 +311,9 @@ test("a running target passes through cancelling and the tool waits for aborted"
   const deferred = deferredRun();
   setRunSubagentTaskMock(deferred.impl);
   const probe = createHarness({ busy: true });
-  const delegate = probe.pi.tools.get("delegate_subagent");
-  const queued = await delegate.execute("call", { task: "work" }, undefined, undefined, probe.ctx);
-  const publicId = queued.details.id;
+  probe.queue(1);
+  probe.start(1);
+  const publicId = id(1);
   await waitFor(() => probe.state.background.jobs.get(publicId)?.status === "running", "job running");
 
   let settled = false;
@@ -327,9 +343,9 @@ test("a cancelling target is a valid active target and the tool waits for aborte
   const deferred = deferredRun();
   setRunSubagentTaskMock(deferred.impl);
   const probe = createHarness({ busy: true });
-  const delegate = probe.pi.tools.get("delegate_subagent");
-  const queued = await delegate.execute("call", { task: "work" }, undefined, undefined, probe.ctx);
-  const publicId = queued.details.id;
+  probe.queue(1);
+  probe.start(1);
+  const publicId = id(1);
   await waitFor(() => probe.state.background.jobs.get(publicId)?.status === "running", "job running");
 
   // The manager Cancel seam moves the run to cancelling while it stays in flight.
@@ -356,9 +372,9 @@ test("once abort linearizes, it wins a simultaneous natural-completion race", as
     }, { once: true });
   }));
   const probe = createHarness({ busy: true });
-  const delegate = probe.pi.tools.get("delegate_subagent");
-  const queued = await delegate.execute("call", { task: "work" }, undefined, undefined, probe.ctx);
-  const publicId = queued.details.id;
+  probe.queue(1);
+  probe.start(1);
+  const publicId = id(1);
   await waitFor(() => probe.state.background.jobs.get(publicId)?.status === "running", "job running");
 
   const result = await probe.abortTool.execute("abort", { ids: [publicId] }, undefined, undefined, probe.ctx);
@@ -454,9 +470,9 @@ test("interrupting the abort tool's own wait does not retract the sent signals",
   const deferred = deferredRun();
   setRunSubagentTaskMock(deferred.impl);
   const probe = createHarness({ busy: true });
-  const delegate = probe.pi.tools.get("delegate_subagent");
-  const queued = await delegate.execute("call", { task: "work" }, undefined, undefined, probe.ctx);
-  const publicId = queued.details.id;
+  probe.queue(1);
+  probe.start(1);
+  const publicId = id(1);
   await waitFor(() => probe.state.background.jobs.get(publicId)?.status === "running", "job running");
 
   const controller = new AbortController();
@@ -498,9 +514,9 @@ test("session replacement terminates the abort wait while the aborts stand", asy
   const deferred = deferredRun();
   setRunSubagentTaskMock(deferred.impl);
   const probe = createHarness({ busy: true });
-  const delegate = probe.pi.tools.get("delegate_subagent");
-  const queued = await delegate.execute("call", { task: "work" }, undefined, undefined, probe.ctx);
-  const publicId = queued.details.id;
+  probe.queue(1);
+  probe.start(1);
+  const publicId = id(1);
   await waitFor(() => probe.state.background.jobs.get(publicId)?.status === "running", "job running");
 
   const pending = probe.abortTool.execute("abort", { ids: [publicId] }, undefined, undefined, probe.ctx);
