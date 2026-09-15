@@ -31,7 +31,7 @@ const FINAL_RECALL = 'FINAL RECALL: Return only a JSON object mapping the stage 
 // and let Pi's quota/billing exclusions inspect the rest of the error text.
 function isRetryableProviderError(message) {
   const errorMessage = message.errorMessage ?? "";
-  if (/^\s*(?:401|403)\b|\b(?:unauthorized|forbidden|invalid[_ -]api[_ -]key|authentication[_ -](?:failed|failure|error)|invalid[_ -](?:authentication[_ -])?credentials)\b/i.test(errorMessage)) return false;
+  if (/^\s*(?:401|403)\b|\b(?:unauthorized|forbidden|(?:invalid|incorrect)[_ -]api[_ -]key|api[_ -]key (?:is )?not valid|invalid[_ -]token|authentication[_ -](?:failed|failure|error)|invalid[_ -](?:authentication[_ -])?credentials)\b/i.test(errorMessage)) return false;
   return isRetryableAssistantError({ ...message, errorMessage: errorMessage.replace(
     /\b(?:ECONNRESET|ECONNABORTED|EPIPE|ETIMEDOUT|UND_ERR_SOCKET)\b|connection reset by peer|broken pipe/gi, "Connection error.") });
 }

@@ -231,8 +231,12 @@ try {
   console.log("progressive shared-runtime concurrency and single deadline passed");
 } finally { rmSync(parallelRoot, { recursive: true, force: true }); }
 
+// Authentication diagnostics stay terminal even when they quote a socket error.
+const authSocketErrors = Object.fromEntries(["ECONNRESET", "ECONNABORTED", "EPIPE", "ETIMEDOUT", "UND_ERR_SOCKET", "connection reset by peer", "broken pipe"]
+  .map((socket, index) => [`auth-wording-${index}`, `${["Incorrect API key provided", "API key not valid", "invalid token"][index % 3]}: ${socket}`]));
+
 // Retry waits share the original deadline and preserve every failed response.
-for (const stop of ["timeout", "cancelled", "auth", "auth-message", "auth-credentials", "forbidden", "quota", "billing", "overflow", "unknown", "infrastructure", "response-infrastructure", "wrong-recall"]) {
+for (const stop of ["timeout", "cancelled", "auth", "auth-message", "auth-credentials", "forbidden", "quota", "billing", "overflow", "unknown", "infrastructure", "response-infrastructure", "wrong-recall", ...Object.keys(authSocketErrors)]) {
   const retryRoot = mkdtempSync(join(tmpdir(), "progressive-retry-test-"));
   try {
     writeFileSync(join(retryRoot, "auth.json"), "{}\n");
@@ -251,12 +255,12 @@ for (const stop of ["timeout", "cancelled", "auth", "auth-message", "auth-creden
         return context.tools?.some(tool => tool.name === "verify_stage")
           ? fauxAssistantMessage(fauxToolCall("verify_stage", {}), { stopReason: "toolUse" }) : fauxAssistantMessage("I do not remember");
       }
-      return fauxAssistantMessage("Partial upstream response.", { stopReason: "error", errorMessage:
+      return fauxAssistantMessage("Partial upstream response.", { stopReason: "error", errorMessage: authSocketErrors[stop] ?? (
         stop === "auth" ? "401 Unauthorized: read ECONNRESET" : stop === "auth-message" ? "Authentication error: connection reset by peer"
           : stop === "auth-credentials" ? "invalid authentication credentials: ECONNRESET" : stop === "forbidden" ? "403 Forbidden: connection reset by peer"
           : stop === "quota" ? "429 insufficient_quota: read ECONNRESET" : stop === "billing" ? "billing limit exceeded: write EPIPE"
           : stop === "overflow" ? "maximum context length exceeded: connection reset by peer" : stop === "unknown" ? "Unrecognized provider failure"
-          : ["read ECONNABORTED", "write: broken pipe", "connect ETIMEDOUT"][calls % 3] });
+          : ["read ECONNABORTED", "write: broken pipe", "connect ETIMEDOUT"][calls % 3]) });
     }));
     const result = await runProgressiveSession({ directory: join(retryRoot, "arm"), arm: "native", task, model, modelRuntime: runtime, signal: controller.signal, clock,
       retryDelay: async (_ms, _value, { signal }) => {
