@@ -55,11 +55,12 @@ try {
   const pins = { commit: "a".repeat(40), tree: "b".repeat(40), progressiveDigest: taskDigest(), node: process.version,
     packageVersion: "12.1.0", piVersion: "0.84.2", model: { provider: "cpa", id: "deepseek-v4.1-flash", api: "test" },
     modelConfigurationSha256: "c".repeat(64), thinking: { requested: "max", generationValue: "high", mapping: { max: "high" } },
-    config: { contextWindow: 500000, thinkingLevel: "max", memoryBudgetPercent: 2, timeoutMs: 3600000 } };
+    config: { contextWindow: 256000, thinkingLevel: "max", memoryBudgetPercent: 2, timeoutMs: 3600000 } };
   const pilotReport = createProgressiveReport({ kind: "pilot", pairs: [pair], pins });
   const manifestPath = join(root, "freeze.json");
   const manifest = freezePilot({ pilotReport, pins, path: manifestPath });
   assert.deepEqual(requireFreeze(manifestPath, pins), manifest);
+  assert.throws(() => requireFreeze(manifestPath, { ...pins, config: { ...pins.config, contextWindow: 500000 } }), /does not match/);
   assert.throws(() => freezePilot({ pilotReport: { ...pilotReport, kind: "formal" }, pins, path: join(root, "bad-kind") }), /one-pair/);
   assert.throws(() => freezePilot({ pilotReport: { ...pilotReport, pairs: [pair, pair] }, pins, path: join(root, "bad-count") }), /one-pair/);
   assert.throws(() => freezePilot({ pilotReport, pins: { ...pins, commit: "changed" }, path: join(root, "drift") }), /pins/);
@@ -74,9 +75,12 @@ try {
   assert.equal(requireFreeze(glmManifestPath, glmPins).pins.model.id, "glm-5.3-flash");
   assert.throws(() => requireFreeze(glmManifestPath, pins), /does not match/);
   assert.throws(() => freezePilot({ pilotReport: glmReport, pins, path: join(root, "wrong-model") }), /pins/);
-  const fakeRuntime = { getModel(provider, id) { return { provider, id, reasoning: true, thinkingLevelMap: { max: "high" } }; }, async getAuth() { return "test-only"; } };
+  const fakeRuntime = { getModel(provider, id) { return { provider, id, reasoning: true, thinkingLevelMap: { max: "high" }, contextWindow: 500000 }; }, async getAuth() { return "test-only"; } };
   assert.equal((await resolveRuntime({ runtime: fakeRuntime })).model.id, "deepseek-v4.1-flash");
   assert.equal((await resolveRuntime({ runtime: fakeRuntime, modelId: "glm-5.3-flash" })).model.id, "glm-5.3-flash");
+  for (const modelId of ["deepseek-v4.1-flash", "glm-5.3-flash"]) {
+    assert.equal((await resolveRuntime({ runtime: fakeRuntime, modelId })).model.contextWindow, 256000, "experiment window overrides the provider's larger configured window");
+  }
   await assert.rejects(resolveRuntime({ runtime: fakeRuntime, modelId: "unknown" }), /unsupported/);
   await assert.rejects(resolveRuntime({ runtime: { ...fakeRuntime, async getAuth() { return null; } }, modelId: "glm-5.3-flash" }), /authentication/);
 

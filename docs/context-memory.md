@@ -852,10 +852,12 @@ rewrite existing Memory blocks.
 
 #359 replaces continuity as the routine real-model experiment. Run
 `npm run qualify:progressive -- --real --pilot` from a clean checkout on Linux
-with Bubblewrap installed. The configured model must be exactly
-`cpa/deepseek-v4.1-flash` with thinking `max`; both arms use 500,000 tokens.
-The Memory arm disables native auto-compaction and uses a 2% (10,000-token)
-Memory budget. Its maintenance threshold is 10,001 tokens, immediately above
+with Bubblewrap installed. The selected model must be configured and authenticated: `cpa/deepseek-v4.1-flash`
+by default, or `cpa/glm-5.3-flash` via `--model glm-5.3-flash` on each pilot, freeze,
+and formal command. Each model runs both arms with thinking `max` and a
+256,000-token context window.
+The Memory arm disables native auto-compaction and uses a 2% (5,120-token)
+Memory budget. Its maintenance threshold is 5,121 tokens, immediately above
 that budget, so production source serving can prepare rebuilds at mandatory stage
 gates before normal interactive pressure would trigger maintenance. This changes
 the experiment configuration, not production source or compaction rules.

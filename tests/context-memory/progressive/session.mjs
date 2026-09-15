@@ -18,7 +18,7 @@ const { deriveCurrentMemory } = await load("../../../src/context-memory/derive.t
 const { MEMORY_SUMMARY_WRAPPER, MEMORY_BLOCK_SEPARATOR } = await load("../../../src/context-memory/format.ts");
 const MEMORY_TOOLS = ["compact_to_memory_block", "read_memory_source", "search_memory_source"];
 
-export const CONFIG = Object.freeze({ contextWindow: 500_000, thinkingLevel: "max", memoryBudgetPercent: 2, memoryCompressionThreshold: Object.freeze({ tokens: 10_001 }), timeoutMs: 3_600_000,
+export const CONFIG = Object.freeze({ contextWindow: 256_000, thinkingLevel: "max", memoryBudgetPercent: 2, memoryCompressionThreshold: Object.freeze({ tokens: 5_121 }), timeoutMs: 3_600_000,
   recovery: Object.freeze({ initialDelayMs: 1_000, maxDelayMs: 30_000 }) });
 const textOf = message => typeof message?.content === "string" ? message.content : (message?.content ?? []).filter(p => p.type === "text").map(p => p.text).join("\n");
 const resultOf = (data, isError = false) => ({ content: [{ type: "text", text: JSON.stringify(data) }], details: data, ...(isError ? { isError } : {}) });
