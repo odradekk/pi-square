@@ -25,6 +25,8 @@ export type ShadowOutputSchema =
       enum?: unknown[];
     };
 
+import { SHADOW_DEFINITION_BOUNDS } from "./definition-bounds";
+
 /**
  * The bounds one output schema is validated against. The single source for
  * both enforcement (`validateOutputSchema`) and documentation (the definition
@@ -63,8 +65,10 @@ const NUMBER_SCHEMA_KEYS = new Set(["type", "enum", "minimum", "maximum"]);
 const SCALAR_SCHEMA_KEYS = new Set(["type", "enum"]);
 const ARRAY_SCHEMA_KEYS = new Set(["type", "enum", "items", "minItems", "maxItems"]);
 const OBJECT_SCHEMA_KEYS = new Set(["type", "enum", "properties", "required", "additionalProperties"]);
-/** Property names must stay inside the YAML-safe schema key subset. */
-const SCHEMA_KEY_PATTERN = /^[A-Za-z0-9_][A-Za-z0-9_-]*$/;
+// Property names must stay inside the YAML-safe key subset, the same shape
+// the YAML-subset parser accepts for frontmatter keys; the subset is owned
+// by the shared definition bounds entry.
+const SCHEMA_KEY_PATTERN = SHADOW_DEFINITION_BOUNDS.yamlKeys.pattern;
 
 /**
  * Validates a candidate output schema against the bounded subset. Returns one
