@@ -225,7 +225,13 @@ function fakePi() {
       sendMessage(message, options) { events.push(["guide", message, options]); },
       sendUserMessage(message, options) { events.push(["user", message, options]); },
       appendEntry(type, data) { entries.push({ type, data }); },
-      on(event, handler) { handlers.set(event, handler); },
+      // Pi invokes every handler registered for one event; compose so a
+      // second subscriber (the delivery lifecycle subscription) never
+      // displaces the first.
+      on(event, handler) {
+        const previous = handlers.get(event);
+        handlers.set(event, previous ? (e, c) => { previous(e, c); handler(e, c); } : handler);
+      },
     },
   };
 }

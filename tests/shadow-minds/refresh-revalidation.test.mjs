@@ -221,7 +221,13 @@ function queuePendingMutation(harness) {
     const pi = {
       registerCommand: (name, definition) => harness.commands.set(name, definition),
       registerMessageRenderer: (name, renderer) => harness.renderers.set(name, renderer),
-      on: (event, handler) => harness.handlers.set(event, handler),
+      // Pi invokes every handler registered for one event; compose so a
+      // second subscriber (the delivery lifecycle subscription) never
+      // displaces the first.
+      on: (event, handler) => {
+        const previous = harness.handlers.get(event);
+        harness.handlers.set(event, previous ? (e, c) => { previous(e, c); handler(e, c); } : handler);
+      },
       sendMessage: (message, options) => harness.events.push(["guide", message, options]),
       sendUserMessage: (message, options) => harness.events.push(["user", message, options]),
       appendEntry: (type, data) => harness.entries.push({ type, data }),
