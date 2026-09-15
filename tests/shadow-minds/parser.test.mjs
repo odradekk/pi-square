@@ -4,7 +4,9 @@ import { join } from "node:path";
 import jiti from "jiti";
 
 const load = jiti(import.meta.url, { moduleCache: false });
-const { parseShadowDefinitionFile } = await load(join(import.meta.dirname, "..", "..", "src", "shadow-minds", "parser.ts"));
+const { parseShadowDefinitionFile, validateShadowDefinitionFields } = await load(
+  join(import.meta.dirname, "..", "..", "src", "shadow-minds", "parser.ts"),
+);
 const { DEFAULT_OUTPUT_SCHEMA, validateOutputSchema } = await load(
   join(import.meta.dirname, "..", "..", "src", "shadow-minds", "output-schema.ts"),
 );
@@ -381,5 +383,55 @@ assert.ok(validateShadowPayload(DEFAULT_OUTPUT_SCHEMA, { summary: 5 }).length >=
     "hash-probe.md",
   );
 }
+
+// ── Typed field validation consumed by the serializer ───────────────
+
+{
+  const valid = {
+    id: "typed",
+    name: "Typed",
+    priority: 3,
+    triggers: ["tool_turn", "completion"],
+    triggerInstructions: { tool_turn: "Check grounding.", failure: null },
+    delivery: "steer",
+    completionGate: false,
+    parentModels: ["cpa/model", "*"],
+    model: "cpa/model",
+    thinking: "high",
+    timeoutSeconds: 90,
+    maxTurns: 4,
+    maxToolCalls: 8,
+    tools: ["read", "grep"],
+    requiredTools: ["read"],
+    debug: false,
+    body,
+  };
+  assert.deepEqual(validateShadowDefinitionFields(valid), [], "a complete valid layer validates clean");
+  const cleared = { ...valid, outputSchema: null, triggers: [], tools: [] };
+  assert.deepEqual(validateShadowDefinitionFields(cleared), [], "clearing forms stay valid");
+  const withSchema = { ...valid, outputSchema: { type: "object", additionalProperties: false, properties: { summary: { type: "string" } }, required: ["summary"] } };
+  assert.deepEqual(validateShadowDefinitionFields(withSchema), [], "a bounded output schema stays valid");
+}
+assert.ok(validateShadowDefinitionFields({ id: "has space" }).some((error) => /id/.test(error)), "id shape is enforced");
+assert.ok(validateShadowDefinitionFields({ id: "x", name: "n".repeat(121) }).some((error) => /name/.test(error)), "name length is enforced");
+assert.ok(validateShadowDefinitionFields({ id: "x", priority: 1001 }).some((error) => /priority/.test(error)), "priority range is enforced");
+assert.ok(validateShadowDefinitionFields({ id: "x", triggers: ["tool_turn", "tool_turn"] }).some((error) => /duplicate trigger/.test(error)), "duplicate triggers are enforced");
+assert.ok(validateShadowDefinitionFields({ id: "x", triggerInstructions: { heartbeat: "x" } }).some((error) => /heartbeat/.test(error)), "unknown instruction keys are enforced");
+assert.ok(
+  validateShadowDefinitionFields({ id: "x", triggerInstructions: { failure: "x".repeat(8001) } }).some((error) => /8,?000/.test(error)),
+  "instruction length is enforced",
+);
+assert.ok(validateShadowDefinitionFields({ id: "x", delivery: "shout" }).some((error) => /delivery/.test(error)), "delivery enum is enforced");
+assert.ok(validateShadowDefinitionFields({ id: "x", parentModels: ["cpa/a", "cpa/a"] }).some((error) => /duplicate/.test(error)), "duplicate parentModels are enforced");
+assert.ok(validateShadowDefinitionFields({ id: "x", parentModels: ["**"] }).some((error) => /parentModels/.test(error)), "parentModels entry shape is enforced");
+assert.ok(validateShadowDefinitionFields({ id: "x", model: "not-a-reference" }).some((error) => /model/.test(error)), "model reference shape is enforced");
+assert.ok(validateShadowDefinitionFields({ id: "x", thinking: "ultra" }).some((error) => /thinking/.test(error)), "thinking levels are enforced");
+assert.ok(validateShadowDefinitionFields({ id: "x", timeoutSeconds: 0 }).some((error) => /timeoutSeconds/.test(error)), "budget floors are enforced");
+assert.ok(validateShadowDefinitionFields({ id: "x", maxTurns: 33 }).some((error) => /maxTurns/.test(error)), "budget ceilings are enforced");
+assert.ok(validateShadowDefinitionFields({ id: "x", tools: ["read", "read"] }).some((error) => /duplicate/.test(error)), "duplicate tools are enforced");
+assert.ok(validateShadowDefinitionFields({ id: "x", tools: ["Read"] }).some((error) => /tools/.test(error)), "tool name shape is enforced");
+assert.ok(validateShadowDefinitionFields({ id: "x", outputSchema: { type: "array" } }).some((error) => /root/.test(error)), "output schemas are validated");
+assert.ok(validateShadowDefinitionFields({ id: "x", body: "" }).some((error) => /body/.test(error)), "empty bodies are enforced");
+assert.ok(validateShadowDefinitionFields({ id: "x", body: "y".repeat(24_001) }).some((error) => /24,?000/.test(error)), "body length is enforced");
 
 console.log("shadow-minds parser tests: OK");

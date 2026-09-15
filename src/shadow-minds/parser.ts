@@ -113,13 +113,110 @@ export interface ParsedShadowDefinition {
   contentHash: string;
 }
 
+/**
+ * Validates one definition layer's fields against the same bounds and
+ * vocabularies `parseShadowDefinitionFile` enforces, as a typed counterpart
+ * of the raw-frontmatter normalization below. Returns one message per
+ * violation; an empty array means the fields are acceptable to serialize
+ * and parse. Callers consume this validation result instead of restating
+ * individual bounds.
+ */
+export function validateShadowDefinitionFields(fields: ShadowDefinitionFields): string[] {
+  const bounds = SHADOW_DEFINITION_BOUNDS;
+  const errors: string[] = [];
+  if (typeof fields.id !== "string" || !bounds.id.pattern.test(fields.id)) {
+    errors.push(`id must match ${bounds.id.pattern}`);
+  }
+  if (fields.name !== undefined && (typeof fields.name !== "string" || fields.name.length < 1 || fields.name.length > bounds.name.maxChars)) {
+    errors.push(`name must be a string between 1 and ${bounds.name.maxChars} characters when present`);
+  }
+  if (fields.priority !== undefined && (!Number.isInteger(fields.priority) || fields.priority < bounds.priority.min || fields.priority > bounds.priority.max)) {
+    errors.push(`priority must be an integer between ${bounds.priority.min} and ${bounds.priority.max}`);
+  }
+  if (fields.triggers !== undefined) {
+    if (fields.triggers.some((trigger) => !(SHADOW_TRIGGERS as readonly string[]).includes(trigger))) {
+      errors.push(`triggers entries must be one of ${SHADOW_TRIGGERS.join(", ")}`);
+    }
+    if (new Set(fields.triggers).size !== fields.triggers.length) {
+      errors.push("duplicate trigger in triggers");
+    }
+  }
+  if (fields.triggerInstructions !== undefined) {
+    for (const [key, value] of Object.entries(fields.triggerInstructions)) {
+      if (!(SHADOW_TRIGGERS as readonly string[]).includes(key)) {
+        errors.push(`unknown triggerInstructions key '${key}'`);
+        continue;
+      }
+      if (value !== null && (typeof value !== "string" || value.length === 0 || value.length > bounds.triggerInstructions.valueMaxChars)) {
+        errors.push(`triggerInstructions.${key} must be a non-empty string or null of at most ${bounds.triggerInstructions.valueMaxChars} characters`);
+      }
+    }
+  }
+  if (fields.delivery !== undefined && !SHADOW_DELIVERIES.includes(fields.delivery)) {
+    errors.push("delivery must be steer, wake, or notify");
+  }
+  if (fields.parentModels !== undefined) {
+    if (fields.parentModels.length > bounds.parentModels.maxEntries) {
+      errors.push(`parentModels allows at most ${bounds.parentModels.maxEntries} entries`);
+    }
+    if (new Set(fields.parentModels).size !== fields.parentModels.length) {
+      errors.push("duplicate parentModels entry");
+    }
+    if (!fields.parentModels.every((entry) => entry === "*" || (entry.length <= bounds.modelReference.maxChars && bounds.modelReference.pattern.test(entry)))) {
+      errors.push("parentModels entries must be exact 'provider/model-id' references or '*'");
+    }
+  }
+  if (fields.model !== undefined && (typeof fields.model !== "string" || !bounds.modelReference.pattern.test(fields.model))) {
+    errors.push("model must be an exact 'provider/model-id' reference");
+  }
+  if (fields.thinking !== undefined && !SHADOW_THINKING_LEVELS.includes(fields.thinking)) {
+    errors.push(`thinking must be one of ${SHADOW_THINKING_LEVELS.join(", ")}`);
+  }
+  for (const key of ["timeoutSeconds", "maxTurns", "maxToolCalls"] as const) {
+    const value = fields[key];
+    if (value === undefined) continue;
+    const max = key === "timeoutSeconds"
+      ? SHADOW_MINDS_RUN_TIMEOUT_HARD_MAX_SECONDS
+      : key === "maxTurns" ? SHADOW_MINDS_MODEL_TURNS_HARD_MAX : SHADOW_MINDS_TOOL_CALLS_HARD_MAX;
+    if (!Number.isInteger(value) || value < bounds.runBudgets.min || value > max) {
+      errors.push(`${key} must be an integer between ${bounds.runBudgets.min} and ${max}`);
+    }
+  }
+  for (const key of ["tools", "requiredTools"] as const) {
+    const value = fields[key];
+    if (value === undefined) continue;
+    const fieldBounds = bounds[key];
+    if (value.length > fieldBounds.maxEntries) {
+      errors.push(`${key} allows at most ${fieldBounds.maxEntries} entries`);
+    }
+    if (new Set(value).size !== value.length) {
+      errors.push(`duplicate ${key} entry`);
+    }
+    if (!value.every((entry) => fieldBounds.entryPattern.test(entry))) {
+      errors.push(`${key} entries must be lowercase snake-case tool names`);
+    }
+  }
+  if (fields.outputSchema !== undefined && fields.outputSchema !== null) {
+    errors.push(...validateOutputSchema(fields.outputSchema));
+  }
+  if (fields.body !== undefined) {
+    if (typeof fields.body !== "string" || fields.body.trim() === "") {
+      errors.push("body must be a non-empty string when present");
+    } else if (fields.body.length > bounds.body.maxChars) {
+      errors.push(`body exceeds ${bounds.body.maxChars} characters`);
+    }
+  }
+  return errors;
+}
+
+
 export function parseShadowDefinitionFile(
   source: string,
   content: string,
 ): { definition?: ParsedShadowDefinition; errors: string[] } {
   const byteLength = Buffer.byteLength(content, "utf8");
-  if (byteLength > SHADOW_DEFINITION_BOUNDS.fileMaxBytes) {
-    return { errors: [`${source}: file exceeds the ${SHADOW_DEFINITION_BOUNDS.fileMaxBytes / 1024} KiB bound (${byteLength} bytes)`] };
+  if (byteLength > SHADOW_DEFINITION_BOUNDS.file.maxBytes) {
+    return { errors: [`${source}: file exceeds the ${SHADOW_DEFINITION_BOUNDS.file.maxBytes / 1024} KiB bound (${byteLength} bytes)`] };
   }
   const lines = content.split(/\r?\n/);
   if (lines[0] !== "---") {
@@ -190,7 +287,9 @@ function parseYamlSubset(source: string, lines: string[]): { value?: { [key: str
   return { value: value as { [key: string]: YamlValue }, errors: [] };
 }
 
-const KEY_PATTERN = /^[A-Za-z0-9_][A-Za-z0-9_-]*$/;
+// Frontmatter keys accept the same YAML-safe subset as output-schema property
+// names; the subset is owned by the shared definition bounds entry.
+const KEY_PATTERN = SHADOW_DEFINITION_BOUNDS.yamlKeys.pattern;
 
 /**
  * Parses consecutive map entries at `indent` starting from `start`. Returns
@@ -552,7 +651,7 @@ function normalizeDefinitionFields(
       if (new Set(list).size !== list.length) {
         errors.push(`${source}: duplicate parentModels entry`);
       }
-      if (!list.every((entry) => entry === "*" || (entry.length <= 200 && bounds.modelReferencePattern.test(entry)))) {
+      if (!list.every((entry) => entry === "*" || (entry.length <= bounds.modelReference.maxChars && bounds.modelReference.pattern.test(entry)))) {
         errors.push(`${source}: parentModels entries must be exact 'provider/model-id' references or '*'`);
       }
       if (errors.length === 0) fields.parentModels = list;
@@ -561,7 +660,7 @@ function normalizeDefinitionFields(
 
   const model = frontmatter.model;
   if (model !== undefined) {
-    if (typeof model !== "string" || !bounds.modelReferencePattern.test(model)) {
+    if (typeof model !== "string" || !bounds.modelReference.pattern.test(model)) {
       errors.push(`${source}: model must be an exact 'provider/model-id' reference`);
     } else {
       fields.model = model;
@@ -580,24 +679,24 @@ function normalizeDefinitionFields(
 
   const timeoutSeconds = frontmatter.timeoutSeconds;
   if (timeoutSeconds !== undefined) {
-    if (typeof timeoutSeconds !== "number" || !Number.isInteger(timeoutSeconds) || timeoutSeconds < bounds.runBudgetMin || timeoutSeconds > SHADOW_MINDS_RUN_TIMEOUT_HARD_MAX_SECONDS) {
-      errors.push(`${source}: timeoutSeconds must be an integer between ${bounds.runBudgetMin} and ${SHADOW_MINDS_RUN_TIMEOUT_HARD_MAX_SECONDS}`);
+    if (typeof timeoutSeconds !== "number" || !Number.isInteger(timeoutSeconds) || timeoutSeconds < bounds.runBudgets.min || timeoutSeconds > SHADOW_MINDS_RUN_TIMEOUT_HARD_MAX_SECONDS) {
+      errors.push(`${source}: timeoutSeconds must be an integer between ${bounds.runBudgets.min} and ${SHADOW_MINDS_RUN_TIMEOUT_HARD_MAX_SECONDS}`);
     } else {
       fields.timeoutSeconds = timeoutSeconds;
     }
   }
   const maxTurns = frontmatter.maxTurns;
   if (maxTurns !== undefined) {
-    if (typeof maxTurns !== "number" || !Number.isInteger(maxTurns) || maxTurns < bounds.runBudgetMin || maxTurns > SHADOW_MINDS_MODEL_TURNS_HARD_MAX) {
-      errors.push(`${source}: maxTurns must be an integer between ${bounds.runBudgetMin} and ${SHADOW_MINDS_MODEL_TURNS_HARD_MAX}`);
+    if (typeof maxTurns !== "number" || !Number.isInteger(maxTurns) || maxTurns < bounds.runBudgets.min || maxTurns > SHADOW_MINDS_MODEL_TURNS_HARD_MAX) {
+      errors.push(`${source}: maxTurns must be an integer between ${bounds.runBudgets.min} and ${SHADOW_MINDS_MODEL_TURNS_HARD_MAX}`);
     } else {
       fields.maxTurns = maxTurns;
     }
   }
   const maxToolCalls = frontmatter.maxToolCalls;
   if (maxToolCalls !== undefined) {
-    if (typeof maxToolCalls !== "number" || !Number.isInteger(maxToolCalls) || maxToolCalls < bounds.runBudgetMin || maxToolCalls > SHADOW_MINDS_TOOL_CALLS_HARD_MAX) {
-      errors.push(`${source}: maxToolCalls must be an integer between ${bounds.runBudgetMin} and ${SHADOW_MINDS_TOOL_CALLS_HARD_MAX}`);
+    if (typeof maxToolCalls !== "number" || !Number.isInteger(maxToolCalls) || maxToolCalls < bounds.runBudgets.min || maxToolCalls > SHADOW_MINDS_TOOL_CALLS_HARD_MAX) {
+      errors.push(`${source}: maxToolCalls must be an integer between ${bounds.runBudgets.min} and ${SHADOW_MINDS_TOOL_CALLS_HARD_MAX}`);
     } else {
       fields.maxToolCalls = maxToolCalls;
     }
@@ -605,10 +704,10 @@ function normalizeDefinitionFields(
 
   const tools = frontmatter.tools;
   if (tools !== undefined) {
-    const list = expectStringList(source, "tools", tools, errors, bounds.toolListsMaxEntries);
+    const list = expectStringList(source, "tools", tools, errors, bounds.tools.maxEntries);
     if (list) {
       if (new Set(list).size !== list.length) errors.push(`${source}: duplicate tools entry`);
-      if (!list.every((entry) => bounds.toolNamePattern.test(entry))) {
+      if (!list.every((entry) => bounds.tools.entryPattern.test(entry))) {
         errors.push(`${source}: tools entries must be lowercase snake-case tool names`);
       }
       if (errors.length === 0) fields.tools = list;
@@ -616,10 +715,10 @@ function normalizeDefinitionFields(
   }
   const requiredTools = frontmatter.requiredTools;
   if (requiredTools !== undefined) {
-    const list = expectStringList(source, "requiredTools", requiredTools, errors, bounds.toolListsMaxEntries);
+    const list = expectStringList(source, "requiredTools", requiredTools, errors, bounds.requiredTools.maxEntries);
     if (list) {
       if (new Set(list).size !== list.length) errors.push(`${source}: duplicate requiredTools entry`);
-      if (!list.every((entry) => bounds.toolNamePattern.test(entry))) {
+      if (!list.every((entry) => bounds.requiredTools.entryPattern.test(entry))) {
         errors.push(`${source}: requiredTools entries must be lowercase snake-case tool names`);
       }
       if (errors.length === 0) fields.requiredTools = list;
