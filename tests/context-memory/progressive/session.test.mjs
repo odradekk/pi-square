@@ -29,7 +29,7 @@ try {
     const boundary = text.includes("FINAL RECALL") ? "final" : tools.includes("verify_stage") ? "work" : "verified";
     if (!failures.has(boundary)) {
       failures.add(boundary);
-      return fauxAssistantMessage("", { stopReason: "error", errorMessage: boundary === "work" ? "Connection error." : "terminated" });
+      return fauxAssistantMessage("", { stopReason: "error", errorMessage: { work: "read ECONNRESET", verified: "write EPIPE", final: "UND_ERR_SOCKET: socket closed" }[boundary] });
     }
     if (text.includes("FINAL RECALL")) {
       assert.deepEqual(tools, []);
@@ -44,6 +44,7 @@ try {
   assert.equal(result.recall.correct, 8);
   assert.equal(result.metrics.providerErrors, 3);
   assert.equal(result.metrics.retryScheduled, 3);
+  assert.equal(result.metrics.retryContinuations, 3);
   assert.equal(result.metrics.retryRecovered, 3);
   assert.equal(prompts.length, 8);
   for (let i=0;i<8;i++) assert.match(prompts[i], new RegExp(`STAGE ${i+1}`));
@@ -89,7 +90,7 @@ try {
         assert.equal(events.some(event => event.kind === "stage-start" && event.stage === 2), false);
       }
       return fauxAssistantMessage(failureBoundary === "verified" ? "Interrupted partial response." : "", {
-        stopReason: "error", errorMessage: failureBoundary === "recorded" ? "terminated" : "Connection error.",
+        stopReason: "error", errorMessage: failureBoundary === "recorded" ? "read tcp 192.0.2.1:59696->198.51.100.2:443: read: connection reset by peer" : "Connection error.",
       });
     }
     if (finalRecall) {
@@ -175,6 +176,7 @@ try {
   assert.equal(events.filter(event => event.kind === "flag-issued").length, 8, "recovery never reissues a flag");
   assert.equal(result.metrics.providerErrors, retainImplementation ? 3 : 0);
   assert.equal(result.metrics.retryScheduled, retainImplementation ? 3 : 0);
+  assert.equal(result.metrics.retryContinuations, retainImplementation ? 3 : 0);
   assert.equal(result.metrics.retryRecovered, retainImplementation ? 3 : 0);
   if (retainImplementation) assert.ok(result.coverage.rebuilds >= 2);
   else assert.equal(result.coverage.appends, 8);
@@ -230,7 +232,7 @@ try {
 } finally { rmSync(parallelRoot, { recursive: true, force: true }); }
 
 // Retry waits share the original deadline and preserve every failed response.
-for (const stop of ["timeout", "cancelled", "auth", "quota", "overflow", "infrastructure", "response-infrastructure", "wrong-recall"]) {
+for (const stop of ["timeout", "cancelled", "auth", "auth-message", "auth-credentials", "forbidden", "quota", "billing", "overflow", "unknown", "infrastructure", "response-infrastructure", "wrong-recall"]) {
   const retryRoot = mkdtempSync(join(tmpdir(), "progressive-retry-test-"));
   try {
     writeFileSync(join(retryRoot, "auth.json"), "{}\n");
@@ -250,7 +252,11 @@ for (const stop of ["timeout", "cancelled", "auth", "quota", "overflow", "infras
           ? fauxAssistantMessage(fauxToolCall("verify_stage", {}), { stopReason: "toolUse" }) : fauxAssistantMessage("I do not remember");
       }
       return fauxAssistantMessage("Partial upstream response.", { stopReason: "error", errorMessage:
-        stop === "auth" ? "401 Unauthorized" : stop === "quota" ? "429 insufficient_quota" : stop === "overflow" ? "maximum context length exceeded" : "Connection error." });
+        stop === "auth" ? "401 Unauthorized: read ECONNRESET" : stop === "auth-message" ? "Authentication error: connection reset by peer"
+          : stop === "auth-credentials" ? "invalid authentication credentials: ECONNRESET" : stop === "forbidden" ? "403 Forbidden: connection reset by peer"
+          : stop === "quota" ? "429 insufficient_quota: read ECONNRESET" : stop === "billing" ? "billing limit exceeded: write EPIPE"
+          : stop === "overflow" ? "maximum context length exceeded: connection reset by peer" : stop === "unknown" ? "Unrecognized provider failure"
+          : ["read ECONNABORTED", "write: broken pipe", "connect ETIMEDOUT"][calls % 3] });
     }));
     const result = await runProgressiveSession({ directory: join(retryRoot, "arm"), arm: "native", task, model, modelRuntime: runtime, signal: controller.signal, clock,
       retryDelay: async (_ms, _value, { signal }) => {
@@ -258,7 +264,7 @@ for (const stop of ["timeout", "cancelled", "auth", "quota", "overflow", "infras
         signal.throwIfAborted();
       },
       onEvent(event) {
-        if (stop === "infrastructure" && event.kind === "request") throw new Error("local observer failed: Connection error.");
+        if (stop === "infrastructure" && event.kind === "request") throw new Error("local observer failed: read ECONNRESET");
         if (stop === "response-infrastructure" && event.kind === "response") throw new Error("local response observer failed");
         if (event.kind === "provider-retry") scheduled++;
       } });

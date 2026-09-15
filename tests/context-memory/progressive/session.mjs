@@ -25,6 +25,16 @@ const resultOf = (data, isError = false) => ({ content: [{ type: "text", text: J
 const WORK_CONTINUATION = "Continue implementing the current stage and call verify_stage. The next stage remains unavailable until verification passes.";
 const FINAL_RECALL = 'FINAL RECALL: Return only a JSON object mapping the stage numbers "1" through "8" to their exact released project identifiers. Include every stage. Do not explain. The workspace and verifier are now unavailable.';
 
+// Pi 0.84.2 misses raw socket-reset/pipe errors emitted by some gateways.
+// Normalize only for classification; retain the original response in evidence
+// and let Pi's quota/billing exclusions inspect the rest of the error text.
+function isRetryableProviderError(message) {
+  const errorMessage = message.errorMessage ?? "";
+  if (/^\s*(?:401|403)\b|\b(?:unauthorized|forbidden|invalid[_ -]api[_ -]key|authentication[_ -](?:failed|failure|error)|invalid[_ -](?:authentication[_ -])?credentials)\b/i.test(errorMessage)) return false;
+  return isRetryableAssistantError({ ...message, errorMessage: errorMessage.replace(
+    /\b(?:ECONNRESET|ECONNABORTED|EPIPE|ETIMEDOUT|UND_ERR_SOCKET)\b|connection reset by peer|broken pipe/gi, "Connection error.") });
+}
+
 /** One clock owns all task, verifier, maintenance, and final-recall work. */
 export function armDeadline(clock = globalThis) {
   const controller = new AbortController();
@@ -286,7 +296,7 @@ export async function runProgressiveSession({ directory, arm, task, model, model
         combined.throwIfAborted();
         if (infrastructureError) throw infrastructureError;
         if (!providerFailed) { if (promptError) throw promptError; return; }
-        if (!isRetryableAssistantError(providerFailure) || isContextOverflow(providerFailure, CONFIG.contextWindow)) {
+        if (!isRetryableProviderError(providerFailure) || isContextOverflow(providerFailure, CONFIG.contextWindow)) {
           terminalProviderError = promptError ?? new Error("provider-response-error");
           throw terminalProviderError;
         }
