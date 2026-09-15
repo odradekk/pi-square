@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import type { SubagentDefinition } from "./definitions";
 import type { ParentContextMessage } from "./context";
-import type { PromptManifest, PromptSourceRef, SubagentPromptSnapshot } from "./types";
+import type { PromptManifest, PromptSourceRef, SubagentPromptSnapshot } from "./run-types";
 
 export const SUBAGENT_GOVERNANCE_VERSION = 1 as const;
 export const SUBAGENT_PROMPT_CONTRACT_VERSION = 3 as const;

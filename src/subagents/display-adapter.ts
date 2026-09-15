@@ -2,7 +2,8 @@ import type { AgentToolResult, ToolDefinition } from "@earendil-works/pi-coding-
 import { decorateToolDefinition, type DisplayRuntimeProvider, type InternalToolDisplayAdapter } from "../display/tool-renderer";
 import type { DisplayActivityItem, DisplayDescriptionV1, DisplayRow, DisplaySection, DisplayTone, OperationalLifecycle, OperationalQualifier } from "../display/types";
 import { toolEventDisplay } from "./tool-display";
-import type { SubagentRunDetails, SubagentTimelineItem } from "./types";
+import type { SubagentTimelineItem } from "./display-types";
+import type { SubagentRunDetails } from "./run-types";
 
 function record(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)

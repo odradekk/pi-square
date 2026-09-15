@@ -1,6 +1,6 @@
 import { catalogToolNames } from "../display/catalog";
 import { sanitizeSubagentDisplay } from "./display";
-import type { SubagentTimelineItem } from "./types";
+import type { SubagentTimelineItem } from "./display-types";
 
 export interface ToolEventDisplay {
   tool: string;

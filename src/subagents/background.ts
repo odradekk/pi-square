@@ -14,7 +14,7 @@ import type {
   SubagentPhase,
   SubagentPromptSnapshot,
   SubagentRunDetails,
-} from "./types";
+} from "./run-types";
 
 /** Mutable runtime record for one session-owned background subagent job. */
 export interface BackgroundJob {

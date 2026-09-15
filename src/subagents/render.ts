@@ -14,7 +14,7 @@ import { DEFAULT_DISPLAY_POLICY } from "../display/types";
 import { sanitizeSubagentDisplay } from "./display";
 import { parseV5NotificationDetails } from "./delivery";
 import { describeSubagentRun } from "./display-adapter";
-import type { SubagentNotificationDetails } from "./types";
+import type { SubagentNotificationDetails } from "./notification-types";
 
 export { sanitizeSubagentDisplay } from "./display";
 

@@ -28,7 +28,8 @@ import {
   registerWaitSubagentTool,
   type SubagentBlockingCallRegistry,
 } from "./wait";
-import type { SubagentNotificationDetails, SubagentRunDetails } from "./types";
+import type { SubagentNotificationDetails } from "./notification-types";
+import type { SubagentRunDetails } from "./run-types";
 
 export interface SubagentRuntimeState {
   registry: SubagentRegistry;

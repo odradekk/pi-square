@@ -42,7 +42,8 @@ import { compileFreshPrompt, finalizePromptSnapshot, hashPromptValue } from "./p
 import { formatToolCall } from "./tool-display";
 import { resolveSubagentTools } from "./tool-policy";
 import { ALLOWED_EFFORTS, type AllowedEffort } from "./efforts";
-import type { ActiveSubagentConfig, SubagentPromptSnapshot, SubagentRunDetails, SubagentTimelineItem } from "./types";
+import type { SubagentTimelineItem } from "./display-types";
+import type { ActiveSubagentConfig, SubagentPromptSnapshot, SubagentRunDetails } from "./run-types";
 
 const MAX_TIMELINE_ITEMS = 120;
 const MAX_TIMELINE_TEXT = 1600;

@@ -2,7 +2,7 @@ import { closeSync, constants, fstatSync, lstatSync, openSync, readSync } from "
 import type { Stats } from "node:fs";
 
 import { resolveChildSessionFile } from "./artifacts";
-import type { SubagentRunDetails } from "./types";
+import type { SubagentRunDetails } from "./run-types";
 
 /**
  * The artifact identity boundary for a child's native session file

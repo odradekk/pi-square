@@ -43,7 +43,7 @@ import type {
   SubagentAbortDetails,
   SubagentAbortRunSummary,
   SubagentResultStatus,
-} from "./types";
+} from "./notification-types";
 import type { SubagentRuntimeState } from "./tool";
 
 /** Budget for the task line inside abort details; matches the delivery task line. */

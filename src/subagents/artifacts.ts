@@ -16,7 +16,7 @@ import { dropChildPartition } from "../anchored-edit/partitions";
 import { subagentsStateRoot } from "./agent-paths";
 import { createSubagentError, normalizeSubagentError, SubagentError } from "./errors";
 import { openChildSessionFile, sameFileIdentity, type SessionFileIo, type SessionFilePathStat } from "./session-file";
-import type { SubagentRunDetails } from "./types";
+import type { SubagentRunDetails } from "./run-types";
 
 const PUBLIC_ID_PATTERN = /^subagent_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const TRANSIENT_FS_CODES = new Set(["EAGAIN", "EBUSY", "EMFILE", "ENFILE", "ETIMEDOUT"]);
