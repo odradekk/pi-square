@@ -106,10 +106,9 @@ test("the guide's field table and value lists are generated from the code consta
 });
 
 test("every field-table type matches the shape the reader actually accepts", async () => {
-  const { SUBAGENT_FIELD_KINDS, SUBAGENT_YAML_KEY_PATTERN, subagentFieldValueType } = await load(
+  const { readYamlFields, SUBAGENT_FIELD_KINDS, SUBAGENT_YAML_KEY_PATTERN, subagentFieldValueType } = await load(
     join(packageRoot, "src", "subagents", "definitions.ts"),
   );
-  const { readYamlFields } = await load(join(packageRoot, "src", "core", "yaml-subset.ts"));
   const { subagentFieldTableRows } = await load(join(packageRoot, "src", "subagents", "config-guide.ts"));
 
   // A row's type is a claim about what the reader takes. Feed each field a

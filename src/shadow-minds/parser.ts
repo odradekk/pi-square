@@ -27,7 +27,7 @@ import {
   SHADOW_MINDS_RUN_TIMEOUT_HARD_MAX_SECONDS,
   SHADOW_MINDS_TOOL_CALLS_HARD_MAX,
 } from "../core/config";
-import { parseYamlSubset as readYamlSubset, type YamlSubsetEntry, type YamlSubsetFinding } from "../core/yaml-subset";
+import { parseYamlSubset, type YamlSubsetEntry, type YamlSubsetFinding } from "../core/yaml-subset";
 import { SHADOW_DEFINITION_BOUNDS } from "./definition-bounds";
 import { validateOutputSchema, type ShadowOutputSchema } from "./output-schema";
 
@@ -219,7 +219,6 @@ export function validateShadowDefinitionFields(fields: ShadowDefinitionFields): 
   return errors;
 }
 
-
 export function parseShadowDefinitionFile(
   source: string,
   content: string,
@@ -242,7 +241,7 @@ export function parseShadowDefinitionFile(
   if (closing === -1) {
     return { errors: [`${source}: frontmatter is missing its closing '---' delimiter`] };
   }
-  const parsed = parseYamlSubset(source, lines.slice(1, closing));
+  const parsed = readFrontmatterFields(source, lines.slice(1, closing));
   if (parsed.errors.length > 0) return { errors: parsed.errors };
   // The body is canonicalized to its edge-trimmed Markdown form: leading and
   // trailing blank lines are insignificant in a responsibility prompt, and one
@@ -438,8 +437,8 @@ function walkEntryValue(source: string, entry: YamlSubsetEntry, errors: string[]
  * file, then each entry converts with the Shadow scalar rules. Returns the
  * same field map `normalizeDefinitionFields` has always consumed.
  */
-function parseYamlSubset(source: string, lines: string[]): { value?: { [key: string]: YamlValue }; errors: string[] } {
-  const document = readYamlSubset(lines.join("\n"), {
+function readFrontmatterFields(source: string, lines: string[]): { value?: { [key: string]: YamlValue }; errors: string[] } {
+  const document = parseYamlSubset(lines.join("\n"), {
     keyPattern: SHADOW_DEFINITION_BOUNDS.yamlKeys.pattern,
     lineBase: 2,
   });

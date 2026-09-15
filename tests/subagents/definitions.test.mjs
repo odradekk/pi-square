@@ -220,6 +220,75 @@ test("uppercase null and tilde spellings are rejected instead of becoming litera
   assert.deepEqual(arrayNullItem.layer?.patch.tools, ["read"]);
 });
 
+test("a dash-led line without the item space is not a list item", () => {
+  // The subset admits exactly `-` and `- item`; `-item` never opens a list
+  // and, after items started, ends the list and reports the bare line.
+  for (const [label, text] of [
+    ["first item", `promptVersion: 2\nname: t\ndescription: d\ntools:\n  -bash\n`],
+    ["after items", `promptVersion: 2\nname: t\ndescription: d\ntools:\n  - read\n  -bash\n`],
+  ]) {
+    const parsed = __testables.parseYamlDefinition(text, "/agent/subagents/t.yaml", "agent");
+    assert.equal(parsed.layer, undefined, `${label} must not admit the layer`);
+    assert.ok(
+      parsed.errors.some((item) => item.includes("unsupported YAML line") && item.includes("-bash")),
+      `${label}: ${parsed.errors.join(" | ")}`,
+    );
+  }
+});
+
+test("a whitespace-only line is not content and not an error", () => {
+  // A tab-only line used to reject the whole file with an empty
+  // unsupported-line message; whitespace-only lines now carry nothing.
+  const parsed = __testables.parseYamlDefinition(
+    `promptVersion: 2\nname: t\ndescription: d\ntools:\n  - bash\n\t\n`,
+    "/agent/subagents/t.yaml",
+    "agent",
+  );
+  assert.deepEqual(parsed.errors, []);
+  assert.deepEqual(parsed.layer?.patch.tools, ["bash"]);
+});
+
+test("a whole-line comment inside a block list does not terminate it", () => {
+  // Comments are author documentation everywhere: items on both sides of a
+  // comment line stay in the list, and a blank line before the comment is
+  // the named blank-line-in-list error, not a swallowed remainder.
+  const transparent = __testables.parseYamlDefinition(
+    `promptVersion: 2\nname: t\ndescription: d\ntools:\n  - read\n  # note\n  - grep\n`,
+    "/agent/subagents/t.yaml",
+    "agent",
+  );
+  assert.deepEqual(transparent.errors, []);
+  assert.deepEqual(transparent.layer?.patch.tools, ["read", "grep"]);
+
+  const blankBeforeComment = __testables.parseYamlDefinition(
+    `promptVersion: 2\nname: t\ndescription: d\ntools:\n  - read\n\n  # note\n  - grep\n`,
+    "/agent/subagents/t.yaml",
+    "agent",
+  );
+  assert.equal(blankBeforeComment.layer, undefined);
+  assert.ok(
+    blankBeforeComment.errors.some((item) => item.includes("blank line inside the block list")),
+    blankBeforeComment.errors.join(" | "),
+  );
+});
+
+test("a column-zero item after indented items is rejected instead of swallowed", () => {
+  // The column-zero indentation rule already applied to a list's first
+  // item; it now applies mid-list too, instead of silently absorbing the
+  // item into the list.
+  const parsed = __testables.parseYamlDefinition(
+    `promptVersion: 2\nname: t\ndescription: d\ntools:\n  - read\n- grep\n`,
+    "/agent/subagents/t.yaml",
+    "agent",
+  );
+  assert.equal(parsed.layer, undefined);
+  assert.ok(
+    parsed.errors.some((item) => item.includes("list items must be indented")),
+    parsed.errors.join(" | "),
+  );
+  assert.ok(!parsed.errors.some((item) => item.includes("unsupported YAML line")), parsed.errors.join(" | "));
+});
+
 test("blank lines inside a block list are rejected instead of truncating it", () => {
   for (const [label, text] of [
     ["mid-list", `promptVersion: 2\nname: t\ndescription: d\ntools:\n  - read\n\n  - grep\n`],

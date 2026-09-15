@@ -11,7 +11,12 @@ import {
 } from "node:fs";
 import { dirname, extname, join, resolve } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
-import { readYamlFields, type YamlFieldKind, type YamlSubsetFinding } from "../core/yaml-subset";
+import {
+  parseYamlSubset,
+  type YamlScalar,
+  type YamlSubsetEntry,
+  type YamlSubsetFinding,
+} from "../core/yaml-subset";
 import { getPackagePath } from "../core/paths";
 
 export type SubagentDefinitionSource = "package" | "agent" | "project";
@@ -162,18 +167,18 @@ function findNearestProjectSubagentsDir(cwd: string): string | null {
   }
 }
 
-
-
 /** One shared message for every blank line that breaks a block list open. */
 function blankLineInListMessage(filePath: string, line: number, key: string): string {
   return `${filePath}: line ${line}: blank line inside the block list for '${key}' — remove blank lines between or before list items`;
 }
 
-
-
-function parseBoolean(value: unknown, fieldName: string, filePath: string): { value?: boolean | null; error?: string } {
+/**
+ * Parses a boolean field's scalar spelling. The field-kind table in
+ * `readYamlFields` guarantees only a string or a clear marker reaches this
+ * point; any other spelling rejects with the subset's named error.
+ */
+function parseBoolean(value: string | null, fieldName: string, filePath: string): { value?: boolean | null; error?: string } {
   if (value === null) return { value: null };
-  if (typeof value !== "string") return { error: `${filePath}: field '${fieldName}' must be true, false, or null` };
   const normalized = value.trim().toLowerCase();
   if (normalized === "true") return { value: true };
   if (normalized === "false") return { value: false };
@@ -182,6 +187,221 @@ function parseBoolean(value: unknown, fieldName: string, filePath: string): { va
 
 function hashContent(content: string): string {
   return createHash("sha256").update(content, "utf8").digest("hex");
+}
+
+// ── Definition text → fields ─────────────────────────────────────────
+//
+// The shared subset reader (`../core/yaml-subset`) owns the structural
+// layer; this profile applies the subagent definition policy on top: the
+// field-kind table, the named unknown/duplicate/shape errors, and the
+// scalar rules (inline comments, null spellings, quote stripping, `\n`
+// escapes). Values convert only when clean; the layer semantics below
+// consume the resulting fields.
+
+/** The value shape a definition field accepts in the subagent subset. */
+export type YamlFieldKind = "string" | "list" | "boolean";
+
+/** A field read through `readYamlFields`; `value` is null for a clear marker. */
+export interface YamlField {
+  key: string;
+  line: number;
+  value: string | string[] | null;
+}
+
+export interface YamlFieldOptions {
+  /** Label prepended to every error message. */
+  source: string;
+  /** Every accepted field and the shape its value must have. */
+  fields: Readonly<Record<string, YamlFieldKind>>;
+  /** The accepted key shape; see `parseYamlSubset`. */
+  keyPattern: RegExp;
+  /** 1-based number of `text`'s first line; defaults to 1. */
+  lineBase?: number;
+}
+
+export interface YamlFieldsResult {
+  fields: YamlField[];
+  errors: string[];
+  /** The structural findings; the caller maps the ones it names to errors. */
+  findings: YamlSubsetFinding[];
+}
+
+/** One shared message for every inline-comment rejection in the subagent subset. */
+const INLINE_COMMENT_MESSAGE = "inline comments are not supported — quote the value to keep a literal '#' or move the comment to its own line";
+
+/**
+ * Index where an inline comment starts inside one YAML-subset value, or -1.
+ * A `#` starts a comment when it begins the value or follows a space or tab,
+ * matching standard YAML; quoted strings never contain a comment.
+ */
+function findInlineComment(value: string): number {
+  let quote: string | null = null;
+  for (let index = 0; index < value.length; index += 1) {
+    const ch = value[index] ?? "";
+    if (quote) {
+      if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === `"` || ch === `'`) {
+      quote = ch;
+      continue;
+    }
+    if (ch === "#" && (index === 0 || value[index - 1] === " " || value[index - 1] === "\t")) return index;
+  }
+  return -1;
+}
+
+function isQuotedScalar(value: string): boolean {
+  const trimmed = value.trim();
+  return (trimmed.startsWith(`"`) && trimmed.endsWith(`"`)) || (trimmed.startsWith(`'`) && trimmed.endsWith(`'`));
+}
+
+/**
+ * Rejects misspelled null spellings — every casing of `null` other than the
+ * exact lowercase word and tilde lookalikes such as `～` — instead of
+ * silently storing them as literal strings. `null` and `~` are
+ * case-sensitive in this subset; quoted strings are literal by design and
+ * stay untouched.
+ */
+function nullSpellingProblem(value: string): string | undefined {
+  const trimmed = value.trim();
+  if (isQuotedScalar(trimmed)) return undefined;
+  if (trimmed !== "null" && trimmed.toLowerCase() === "null") {
+    return "null spellings are case-sensitive; write lowercase null or ~";
+  }
+  if (trimmed === "〜" || trimmed === "～") {
+    return "tilde null must be the ASCII ~ character";
+  }
+  return undefined;
+}
+
+/** Strips one pair of matching quotes when they wrap the whole value. */
+function stripQuotes(value: string): string {
+  const trimmed = value.trim();
+  if (isQuotedScalar(trimmed)) return trimmed.slice(1, -1);
+  return trimmed;
+}
+
+/**
+ * The subagent subset's scalar conversion: exact lowercase `null` and ASCII
+ * `~` clear, other spellings stay literal, quotes are stripped, and `\n`
+ * escapes resolve.
+ */
+function convertScalarText(raw: string): string | null {
+  const trimmed = raw.trim();
+  if (trimmed === "null" || trimmed === "~") return null;
+  return stripQuotes(trimmed).replace(/\\n/g, "\n");
+}
+
+/**
+ * Applies the subagent scalar policy to one scalar token: inline comments
+ * and misspelled null spellings reject with the subset's named errors, then
+ * the text converts. Returns null alongside a recorded error.
+ */
+function convertScalar(source: string, scalar: YamlScalar, errors: string[]): string | null {
+  if (findInlineComment(scalar.raw) >= 0) {
+    errors.push(`${source}: line ${scalar.line}: ${INLINE_COMMENT_MESSAGE}`);
+    return null;
+  }
+  const spellingProblem = nullSpellingProblem(scalar.raw);
+  if (spellingProblem !== undefined) {
+    errors.push(`${source}: line ${scalar.line}: '${scalar.raw}' — ${spellingProblem}`);
+    return null;
+  }
+  return convertScalarText(scalar.raw);
+}
+
+function fieldKindError(source: string, key: string, kind: YamlFieldKind): string {
+  const expectation = kind === "string" ? "a string or null" : kind === "list" ? "an array or null" : "true, false, or null";
+  return `${source}: field '${key}' must be ${expectation}`;
+}
+
+/**
+ * Converts one entry's value with the subagent scalar policy and returns the
+ * field value. `kind` is undefined for names the field table does not
+ * declare: the value still converts so its policy errors surface, but no
+ * shape check applies. Returns undefined once the conversion recorded an
+ * error; the shape check runs only on clean conversions.
+ */
+function convertEntryValue(
+  source: string,
+  entry: YamlSubsetEntry,
+  errors: string[],
+  kind: YamlFieldKind | undefined,
+): string | string[] | null | undefined {
+  const value = entry.value;
+  if (value.kind === "empty") return null;
+  const before = errors.length;
+  let converted: string | string[] | null = null;
+  if (value.kind === "scalar") {
+    converted = convertScalar(source, value.scalar, errors);
+  } else if (value.kind === "flow-list" && !value.closed) {
+    // An unclosed `[` is a plain scalar in this subset, never a list.
+    converted = convertScalar(source, { raw: value.raw, line: entry.line }, errors);
+  } else if (value.kind === "block") {
+    if (value.indicator !== "|" && value.indicator !== ">") {
+      errors.push(`${source}: line ${entry.line}: block scalar '${value.indicator}' carries an unsupported chomping or indentation indicator — use '|' or '>' alone`);
+    } else {
+      converted = value.content || null;
+    }
+  } else if (value.kind === "flow-list" || value.kind === "block-list") {
+    const items: string[] = [];
+    for (const item of value.items) {
+      // A first item with no text never opened a list in this subset; it
+      // reports as the bare line instead of silently clearing the field.
+      if (value.kind === "block-list" && items.length === 0 && item.raw === "") {
+        errors.push(`${source}: unsupported YAML line ${item.line}: -`);
+      }
+      const itemValue = convertScalar(source, item, errors);
+      if (typeof itemValue === "string" && itemValue.trim()) items.push(itemValue.trim());
+    }
+    converted = items;
+  }
+  // Map values (and blocks rejected above) convert to nothing; the shape
+  // check below names the field when one applies.
+  if (errors.length !== before) return undefined;
+  if (kind === undefined) return converted;
+  if (value.kind === "map") {
+    errors.push(fieldKindError(source, entry.key, kind));
+    return undefined;
+  }
+  const shape = (value.kind === "flow-list" && value.closed) || value.kind === "block-list" ? "list" : "scalar";
+  if (shape === "list" ? kind !== "list" : kind === "list" && converted !== null) {
+    errors.push(fieldKindError(source, entry.key, kind));
+    return undefined;
+  }
+  return converted;
+}
+
+/**
+ * Reads subagent definition text into typed fields. Unknown fields, duplicate
+ * fields, and values whose shape does not match the declared field kind
+ * reject with the subagent subset's named errors; scalar values, list items,
+ * and block scalars convert with the subagent scalar policy. Structural
+ * findings are returned for the caller to name or ignore.
+ */
+export function readYamlFields(text: string, options: YamlFieldOptions): YamlFieldsResult {
+  const document = parseYamlSubset(text, { keyPattern: options.keyPattern, lineBase: options.lineBase });
+  const fields: YamlField[] = [];
+  const errors: string[] = [];
+  const seen = new Set<string>();
+  for (const entry of document.entries) {
+    const known = Object.hasOwn(options.fields, entry.key);
+    if (!known) errors.push(`${options.source}: unknown field '${entry.key}'`);
+    if (seen.has(entry.key)) errors.push(`${options.source}: duplicate field '${entry.key}'`);
+    seen.add(entry.key);
+    // Values convert even for unknown or repeated keys so every policy error
+    // (an inline comment, a misspelled null, a chomping indicator) names its
+    // line; only clean conversions of known fields become fields, and a
+    // repeated key keeps its last clean conversion.
+    const before = errors.length;
+    const converted = convertEntryValue(options.source, entry, errors, known ? options.fields[entry.key]! : undefined);
+    if (!known || errors.length !== before) continue;
+    const existing = fields.findIndex((field) => field.key === entry.key);
+    if (existing >= 0) fields.splice(existing, 1);
+    fields.push({ key: entry.key, line: entry.line, value: converted! });
+  }
+  return { fields, errors, findings: document.findings };
 }
 
 /**
@@ -193,9 +413,9 @@ export const SUBAGENT_YAML_KEY_PATTERN = /^[A-Za-z][A-Za-z0-9_-]*$/;
 
 /**
  * Every field the subagent subset accepts and the value shape each must
- * have, keyed by field name. `readYamlFields` in `../core/yaml-subset`
- * applies this table, so the parser, the configuration guide's generated
- * field table (`./config-guide`), and the reader cannot drift apart (#370).
+ * have, keyed by field name. The `readYamlFields` profile below applies this
+ * table, so the parser, the configuration guide's generated field table
+ * (`./config-guide`), and the reader cannot drift apart (#370).
  */
 export const SUBAGENT_FIELD_KINDS: Readonly<Record<string, YamlFieldKind>> = Object.freeze({
   promptVersion: "string",
@@ -270,27 +490,18 @@ function parseYamlDefinition(
   const patch: Partial<SubagentDefinitionPatch> = { promptVersion: 2, name };
   for (const field of DEFINITION_FIELDS) {
     if (!seen.has(field)) continue;
+    // readYamlFields guarantees each field's shape — string fields hold a
+    // string or null, list fields a string[] or null — so only the boolean
+    // spelling can still reject here.
     const value = data[field];
     if (STRING_FIELDS.has(field)) {
-      if (value !== null && typeof value !== "string") {
-        allErrors.push(`${filePath}: field '${field}' must be a string or null`);
-      } else {
-        (patch as Record<string, unknown>)[field] = typeof value === "string" ? value.trim() || null : null;
-      }
-      continue;
-    }
-    if (ARRAY_FIELDS.has(field)) {
-      if (value !== null && !Array.isArray(value)) {
-        allErrors.push(`${filePath}: field '${field}' must be an array or null`);
-      } else {
-        (patch as Record<string, unknown>)[field] = value === null
-          ? null
-          : [...new Set(value.map((item) => item.trim()).filter(Boolean))];
-      }
-      continue;
-    }
-    if (BOOLEAN_FIELDS.has(field)) {
-      const parsed = parseBoolean(value, field, filePath);
+      (patch as Record<string, unknown>)[field] = typeof value === "string" ? value.trim() || null : null;
+    } else if (ARRAY_FIELDS.has(field)) {
+      (patch as Record<string, unknown>)[field] = value === null
+        ? null
+        : [...new Set((value as string[]).map((item) => item.trim()).filter(Boolean))];
+    } else {
+      const parsed = parseBoolean(value as string | null, field, filePath);
       if (parsed.error) allErrors.push(parsed.error);
       else (patch as Record<string, unknown>)[field] = parsed.value;
     }

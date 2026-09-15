@@ -15,41 +15,29 @@
  *
  * The two definition formats differ on policy, not structure: which scalar
  * spellings are rejected, how scalars are typed, and which constructs each
- * format accepts. The reader therefore separates structure from policy:
+ * format accepts. The reader therefore owns structure only and leaves
+ * policy to the callers: `parseYamlSubset` turns text into an ordered entry
+ * tree plus findings — structural observations (an unexpected indent, a tab,
+ * a blank line inside a block list, an unterminated quote in a flow list)
+ * that each caller either escalates into one of its named errors or
+ * deliberately ignores. Values keep their raw spelling: a scalar token
+ * carries the text exactly as written, so callers apply their own scalar
+ * policy (typing, escape handling, comment and null-spelling rules) without
+ * the reader erasing the distinction between quoted and plain text.
  *
- * - `parseYamlSubset` turns text into an ordered entry tree plus findings —
- *   structural observations (an unexpected indent, a tab, a blank line inside
- *   a block list, an unterminated quote in a flow list) that each caller
- *   either escalates into one of its named errors or deliberately ignores.
- *   Values keep their raw spelling: a scalar token carries the text exactly
- *   as written and its quote style, so callers apply their own scalar policy
- *   (typing, escape handling, comment and null-spelling rules) without the
- *   reader erasing the distinction between quoted and plain text.
- * - `readYamlFields` is the field-reading profile subagent definitions use:
- *   it applies the caller-supplied field kinds (string, string list,
- *   boolean), reports unknown and duplicate fields and kind mismatches in
- *   the subagent subset's wording, and converts values with the subagent
- *   scalar policy (inline-comment and null-spelling rejection, quote
- *   stripping, `\n` escapes). Shadow Minds applies its own scalar policy in
- *   its parser and does not use this profile.
- *
- * Neither function layers, merges, or validates definition semantics; the
- * owning modules keep those rules.
+ * Neither caller layers, merges, or validates definition semantics here;
+ * the owning modules keep those rules.
  */
 
 // ── Scalar tokens ─────────────────────────────────────────────────────
 
-/** How one scalar was quoted in the source text. */
-export type YamlScalarQuote = "none" | "single" | "double";
-
 /**
  * One scalar exactly as written. `raw` keeps the source spelling (quotes
  * included for quoted scalars) so callers can apply quote-sensitive policy;
- * `quote` records the detected style, `line` the 1-based source line.
+ * `line` is the 1-based source line.
  */
 export interface YamlScalar {
   raw: string;
-  quote: YamlScalarQuote;
   line: number;
 }
 
@@ -64,20 +52,20 @@ export type YamlSubsetValue =
   /**
    * A one-line `[a, b]` flow list. `closed` is false when the line opens `[`
    * without closing it; callers treat an unclosed opener as a plain scalar
-   * (subagent subset) or reject it (Shadow subset). `unbalanced` reports a
-   * quote left open across the list text.
+   * (subagent subset) or reject it (Shadow subset). A quote left open across
+   * the list text is reported as an "unbalanced-quote" finding.
    */
-  | { kind: "flow-list"; raw: string; closed: boolean; items: YamlScalar[]; unbalanced: boolean }
+  | { kind: "flow-list"; raw: string; closed: boolean; items: YamlScalar[] }
   /** A `- item` block list; items keep their raw spelling. */
   | { kind: "block-list"; items: YamlScalar[] }
   /**
    * A `|` or `>` block scalar. `indicator` is the full spelling (`|`, `>`,
    * or an unsupported chomping/indentation form such as `|-`), `content` the
    * extracted body: only lines indented past the field line are content, the
-   * first such line sets the body indent, blank interior lines survive, and
-   * `>` folds to one squashed line. Both forms clip to the body's edge trim.
+   * first such line sets the body indent, blank interior lines survive, `>`
+   * folds to one squashed line, and both forms clip to the body's edge trim.
    */
-  | { kind: "block"; indicator: string; folded: boolean; content: string }
+  | { kind: "block"; indicator: string; content: string }
   /** A nested map block; entries keep document order. */
   | { kind: "map"; entries: YamlSubsetEntry[] };
 
@@ -161,7 +149,9 @@ function toRawLines(text: string, lineBase: number): RawLine[] {
 }
 
 function isBlank(line: RawLine): boolean {
-  return line.text === "";
+  // Whitespace-only lines carry no content; a tab-only line is still named
+  // by the scan-phase tab finding above, so no observation is lost.
+  return line.text.trim() === "";
 }
 
 function isComment(line: RawLine): boolean {
@@ -190,12 +180,8 @@ function skipBlock(lines: RawLine[], from: number, indent: number): number {
   return index;
 }
 
-function tokenizeScalar(raw: string, line: number): YamlScalar {
-  const quoted =
-    raw.length >= 2 &&
-    (raw[0] === '"' || raw[0] === "'") &&
-    raw[0] === raw[raw.length - 1];
-  return { raw, quote: quoted ? (raw[0] === '"' ? "double" : "single") : "none", line };
+function scalarAt(raw: string, line: number): YamlScalar {
+  return { raw, line };
 }
 
 /**
@@ -236,10 +222,9 @@ interface ReaderContext {
 }
 
 function isListMarker(text: string): boolean {
-  // The subagent subset accepts any `-`-led line as an item (`-item` too);
-  // the Shadow subset names items that are not exactly `- ` through the
-  // "list-item-shape" finding instead.
-  return text.startsWith("-");
+  // The subset admits exactly `-` and `- `; a `-item` line without the space
+  // is not an item and stays an ordinary (rejected) line.
+  return text === "-" || text.startsWith("- ");
 }
 
 function parseBlockList(ctx: ReaderContext, start: number, listIndent: number, parentIndent: number, key: string): { items: YamlScalar[]; next: number } {
@@ -249,9 +234,10 @@ function parseBlockList(ctx: ReaderContext, start: number, listIndent: number, p
     const line = ctx.lines[index]!;
     if (isBlank(line)) {
       // A blank run followed by more items is named by the subagent subset;
-      // otherwise the list simply ends at the blank.
+      // whole-line comments inside the run are author documentation, not
+      // list content. Anything else ends the list at the blank.
       let afterBlanks = index;
-      while (afterBlanks < ctx.lines.length && isBlank(ctx.lines[afterBlanks]!)) afterBlanks += 1;
+      while (afterBlanks < ctx.lines.length && (isBlank(ctx.lines[afterBlanks]!) || isComment(ctx.lines[afterBlanks]!))) afterBlanks += 1;
       const next = ctx.lines[afterBlanks];
       if (next && isListMarker(next.text)) {
         ctx.findings.push({ line: line.number, code: "blank-line-in-list", detail: key });
@@ -266,10 +252,10 @@ function parseBlockList(ctx: ReaderContext, start: number, listIndent: number, p
       continue;
     }
     if (isListMarker(line.text) && line.indent > parentIndent) {
-      if (line.indent !== listIndent || (line.text !== "-" && !line.text.startsWith("- "))) {
+      if (line.indent !== listIndent) {
         ctx.findings.push({ line: line.number, code: "list-item-shape", detail: line.text });
       }
-      items.push(tokenizeScalar(line.text.replace(/^-\s*/, ""), line.number));
+      items.push({ raw: line.text === "-" ? "" : line.text.slice(2).trim(), line: line.number });
       index += 1;
       continue;
     }
@@ -373,7 +359,9 @@ function parseEntries(ctx: ReaderContext, start: number, indent: number, depth: 
           index = skipBlock(ctx.lines, child, indent);
         } else {
           const nested = parseEntries(ctx, child, childLine.indent, depth + 1);
-          value = { kind: "map", entries: nested.entries };
+          // A block that produced no entries carried only rejected lines, so
+          // the field reads as absent rather than as an empty map.
+          value = nested.entries.length === 0 ? { kind: "empty" } : { kind: "map", entries: nested.entries };
           index = nested.next;
         }
       }
@@ -381,7 +369,7 @@ function parseEntries(ctx: ReaderContext, start: number, indent: number, depth: 
       if (rest.endsWith("]")) {
         const inner = rest.slice(1, -1).trim();
         if (inner === "") {
-          value = { kind: "flow-list", raw: rest, closed: true, items: [], unbalanced: false };
+          value = { kind: "flow-list", raw: rest, closed: true, items: [] };
         } else {
           const split = splitFlowItems(inner);
           if (split.unbalanced) {
@@ -391,12 +379,11 @@ function parseEntries(ctx: ReaderContext, start: number, indent: number, depth: 
             kind: "flow-list",
             raw: rest,
             closed: true,
-            items: split.items.map((item) => tokenizeScalar(item, line.number)),
-            unbalanced: split.unbalanced,
+            items: split.items.map((item) => scalarAt(item, line.number)),
           };
         }
       } else {
-        value = { kind: "flow-list", raw: rest, closed: false, items: [], unbalanced: false };
+        value = { kind: "flow-list", raw: rest, closed: false, items: [] };
       }
       index += 1;
     } else if (/^[|>][-+0-9]*$/.test(rest)) {
@@ -404,10 +391,10 @@ function parseEntries(ctx: ReaderContext, start: number, indent: number, depth: 
       const content = rest.startsWith(">")
         ? block.contentLines.join(" ").replace(/\s+/g, " ").trim()
         : block.contentLines.join("\n").trim();
-      value = { kind: "block", indicator: rest, folded: rest.startsWith(">"), content };
+      value = { kind: "block", indicator: rest, content };
       index = block.next;
     } else {
-      value = { kind: "scalar", scalar: tokenizeScalar(rest, line.number) };
+      value = { kind: "scalar", scalar: scalarAt(rest, line.number) };
       index += 1;
     }
     entries.push({ key, line: line.number, value });
@@ -438,213 +425,4 @@ export function parseYamlSubset(text: string, options: YamlSubsetOptions): YamlS
     entries = parseEntries(ctx, start, 0, 0).entries;
   }
   return { entries, findings: ctx.findings };
-}
-
-// ── Subagent definition field profile ────────────────────────────────
-
-/** The value shape a definition field accepts in the subagent subset. */
-export type YamlFieldKind = "string" | "list" | "boolean";
-
-/** A field read through `readYamlFields`; `value` is null for a clear marker. */
-export interface YamlField {
-  key: string;
-  line: number;
-  value: string | string[] | null;
-}
-
-export interface YamlFieldOptions {
-  /** Label prepended to every error message. */
-  source: string;
-  /** Every accepted field and the shape its value must have. */
-  fields: Readonly<Record<string, YamlFieldKind>>;
-  /** The accepted key shape; see `parseYamlSubset`. */
-  keyPattern: RegExp;
-  /** 1-based number of `text`'s first line; defaults to 1. */
-  lineBase?: number;
-}
-
-export interface YamlFieldsResult {
-  fields: YamlField[];
-  errors: string[];
-  /** The structural findings; the caller maps the ones it names to errors. */
-  findings: YamlSubsetFinding[];
-}
-
-/** One shared message for every inline-comment rejection in the subagent subset. */
-const INLINE_COMMENT_MESSAGE = "inline comments are not supported — quote the value to keep a literal '#' or move the comment to its own line";
-
-/**
- * Index where an inline comment starts inside one YAML-subset value, or -1.
- * A `#` starts a comment when it begins the value or follows a space or tab,
- * matching standard YAML; quoted strings never contain a comment.
- */
-function findInlineComment(value: string): number {
-  let quote: string | null = null;
-  for (let index = 0; index < value.length; index += 1) {
-    const ch = value[index] ?? "";
-    if (quote) {
-      if (ch === quote) quote = null;
-      continue;
-    }
-    if (ch === `"` || ch === `'`) {
-      quote = ch;
-      continue;
-    }
-    if (ch === "#" && (index === 0 || value[index - 1] === " " || value[index - 1] === "\t")) return index;
-  }
-  return -1;
-}
-
-function isQuotedScalar(value: string): boolean {
-  const trimmed = value.trim();
-  return (trimmed.startsWith(`"`) && trimmed.endsWith(`"`)) || (trimmed.startsWith(`'`) && trimmed.endsWith(`'`));
-}
-
-/**
- * Rejects misspelled null spellings — every casing of `null` other than the
- * exact lowercase word and tilde lookalikes such as `～` — instead of
- * silently storing them as literal strings. `null` and `~` are
- * case-sensitive in this subset; quoted strings are literal by design and
- * stay untouched.
- */
-function nullSpellingProblem(value: string): string | undefined {
-  const trimmed = value.trim();
-  if (isQuotedScalar(trimmed)) return undefined;
-  if (trimmed !== "null" && trimmed.toLowerCase() === "null") {
-    return "null spellings are case-sensitive; write lowercase null or ~";
-  }
-  if (trimmed === "〜" || trimmed === "～") {
-    return "tilde null must be the ASCII ~ character";
-  }
-  return undefined;
-}
-
-/** Strips one pair of matching quotes when they wrap the whole value. */
-function stripQuotes(value: string): string {
-  const trimmed = value.trim();
-  if (isQuotedScalar(trimmed)) return trimmed.slice(1, -1);
-  return trimmed;
-}
-
-/**
- * The subagent subset's scalar conversion: exact lowercase `null` and ASCII
- * `~` clear, other spellings stay literal, quotes are stripped, and `\n`
- * escapes resolve.
- */
-function convertScalarText(raw: string): string | null {
-  const trimmed = raw.trim();
-  if (trimmed === "null" || trimmed === "~") return null;
-  return stripQuotes(trimmed).replace(/\\n/g, "\n");
-}
-
-/**
- * Applies the subagent scalar policy to one scalar token: inline comments
- * and misspelled null spellings reject with the subset's named errors, then
- * the text converts. Returns null alongside a recorded error.
- */
-function convertScalar(source: string, scalar: YamlScalar, errors: string[]): string | null {
-  if (findInlineComment(scalar.raw) >= 0) {
-    errors.push(`${source}: line ${scalar.line}: ${INLINE_COMMENT_MESSAGE}`);
-    return null;
-  }
-  const spellingProblem = nullSpellingProblem(scalar.raw);
-  if (spellingProblem !== undefined) {
-    errors.push(`${source}: line ${scalar.line}: '${scalar.raw}' — ${spellingProblem}`);
-    return null;
-  }
-  return convertScalarText(scalar.raw);
-}
-
-function fieldKindError(source: string, key: string, kind: YamlFieldKind): string {
-  const expectation = kind === "string" ? "a string or null" : kind === "list" ? "an array or null" : "true, false, or null";
-  return `${source}: field '${key}' must be ${expectation}`;
-}
-
-
-/**
- * Reads subagent definition text into typed fields. Unknown fields, duplicate
- * fields, and values whose shape does not match the declared field kind
- * reject with the subagent subset's named errors; scalar values, list items,
- * and block scalars convert with the subagent scalar policy. Structural
- * findings are returned for the caller to name or ignore.
- */
-/**
- * Converts one entry's value with the subagent scalar policy and returns the
- * field value. `kind` is undefined for names the field table does not
- * declare: the value still converts so its policy errors surface, but no
- * shape check applies. Returns undefined once the conversion recorded an
- * error; the shape check runs only on clean conversions.
- */
-function convertEntryValue(
-  source: string,
-  entry: YamlSubsetEntry,
-  errors: string[],
-  kind: YamlFieldKind | undefined,
-): string | string[] | null | undefined {
-  const value = entry.value;
-  if (value.kind === "empty") return null;
-  const before = errors.length;
-  let converted: string | string[] | null = null;
-  if (value.kind === "scalar") {
-    converted = convertScalar(source, value.scalar, errors);
-  } else if (value.kind === "flow-list" && !value.closed) {
-    // An unclosed `[` is a plain scalar in this subset, never a list.
-    converted = convertScalar(source, { raw: value.raw, quote: "none", line: entry.line }, errors);
-  } else if (value.kind === "block") {
-    if (value.indicator !== "|" && value.indicator !== ">") {
-      errors.push(`${source}: line ${entry.line}: block scalar '${value.indicator}' carries an unsupported chomping or indentation indicator — use '|' or '>' alone`);
-    } else {
-      converted = value.content || null;
-    }
-  } else if (value.kind === "flow-list" || value.kind === "block-list") {
-    const items: string[] = [];
-    for (const item of value.items) {
-      // A first item with no text never opened a list in this subset; it
-      // reports as the bare line instead of silently clearing the field.
-      if (value.kind === "block-list" && items.length === 0 && item.raw === "") {
-        errors.push(`${source}: unsupported YAML line ${item.line}: -`);
-      }
-      const itemValue = convertScalar(source, item, errors);
-      if (typeof itemValue === "string" && itemValue.trim()) items.push(itemValue.trim());
-    }
-    converted = items;
-  }
-  // Map values (and blocks rejected above) convert to nothing; the shape
-  // check below names the field when one applies.
-  if (errors.length !== before) return undefined;
-  if (kind === undefined) return converted;
-  if (value.kind === "map") {
-    errors.push(fieldKindError(source, entry.key, kind));
-    return undefined;
-  }
-  const shape = value.kind === "flow-list" || value.kind === "block-list" ? "list" : "scalar";
-  if (shape === "list" ? kind !== "list" : kind === "list" && converted !== null) {
-    errors.push(fieldKindError(source, entry.key, kind));
-    return undefined;
-  }
-  return converted;
-}
-
-export function readYamlFields(text: string, options: YamlFieldOptions): YamlFieldsResult {
-  const document = parseYamlSubset(text, { keyPattern: options.keyPattern, lineBase: options.lineBase });
-  const fields: YamlField[] = [];
-  const errors: string[] = [];
-  const seen = new Set<string>();
-  for (const entry of document.entries) {
-    const known = Object.hasOwn(options.fields, entry.key);
-    if (!known) errors.push(`${options.source}: unknown field '${entry.key}'`);
-    if (seen.has(entry.key)) errors.push(`${options.source}: duplicate field '${entry.key}'`);
-    seen.add(entry.key);
-    // Values convert even for unknown or repeated keys so every policy error
-    // (an inline comment, a misspelled null, a chomping indicator) names its
-    // line; only clean conversions of known fields become fields, and a
-    // repeated key keeps its last clean conversion.
-    const before = errors.length;
-    const converted = convertEntryValue(options.source, entry, errors, known ? options.fields[entry.key]! : undefined);
-    if (!known || errors.length !== before) continue;
-    const existing = fields.findIndex((field) => field.key === entry.key);
-    if (existing >= 0) fields.splice(existing, 1);
-    fields.push({ key: entry.key, line: entry.line, value: converted! });
-  }
-  return { fields, errors, findings: document.findings };
 }

@@ -384,6 +384,39 @@ assert.ok(validateShadowPayload(DEFAULT_OUTPUT_SCHEMA, { summary: 5 }).length >=
   );
 }
 
+// ── Block lists across blanks and whole-line comments (#370) ─────────
+
+// Whole-line comments are author documentation even inside a block list:
+// a blank line followed by a comment and then the next item continues the
+// list instead of orphaning the item.
+{
+  const annotated = parseOk(file([
+    "promptVersion: 1",
+    "id: probe",
+    "name: Probe",
+    "triggers:",
+    "  - completion",
+    "",
+    "  # a documented whole-line comment inside the list",
+    "  - failure",
+  ].join("\n")));
+  assert.deepEqual(annotated.fields.triggers, ["completion", "failure"]);
+}
+
+// A blank run alone skips the same way: items on both sides survive.
+{
+  const acrossBlanks = parseOk(file([
+    "promptVersion: 1",
+    "id: probe",
+    "name: Probe",
+    "tools:",
+    "  - read",
+    "",
+    "  - grep",
+  ].join("\n")));
+  assert.deepEqual(acrossBlanks.fields.tools, ["read", "grep"]);
+}
+
 // ── Typed field validation consumed by the serializer ───────────────
 
 {
