@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { closeSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -16,6 +16,7 @@ const {
   projectSessionEntries,
 } = await load(join(packageRoot, "src", "subagents", "child-history.ts"));
 const { ensureArtifactsDir, initializeSessionFile, writeRunState } = await load(join(packageRoot, "src", "subagents", "artifacts.ts"));
+const { NODE_SESSION_FILE_IO, openChildSessionFile } = await load(join(packageRoot, "src", "subagents", "session-file.ts"));
 const { createPromptSnapshot } = await load(join(packageRoot, "tests", "subagents", "lib", "test-helpers.mjs"));
 
 const ID = "subagent_00000000-0000-4000-8000-000000000001";
@@ -80,32 +81,6 @@ function recursiveListing(directory) {
   walk(directory);
   return out.sort();
 }
-
-/** Positioned sync read mirroring the production descriptor-bound seam. */
-function realReadRange(file, start, end) {
-  const descriptor = openSync(file, "r");
-  try {
-    const stats = fstatSync(descriptor);
-    const length = Math.max(0, Math.min(end, stats.size) - start);
-    if (length <= 0) {
-      return { stat: { size: stats.size, dev: stats.dev, ino: stats.ino }, data: Buffer.alloc(0) };
-    }
-    const buffer = Buffer.alloc(length);
-    let read = 0;
-    while (read < buffer.length) {
-      const bytes = readSync(descriptor, buffer, read, buffer.length - read, start + read);
-      if (bytes <= 0) break;
-      read += bytes;
-    }
-    return {
-      stat: { size: stats.size, dev: stats.dev, ino: stats.ino },
-      data: read === buffer.length ? buffer : buffer.subarray(0, read),
-    };
-  } finally {
-    closeSync(descriptor);
-  }
-}
-
 /** One user/assistant pair with stable per-entry ids. */
 function pair(base, text) {
   return [
@@ -385,15 +360,16 @@ test("a concurrent append leaves older offsets stable and is discoverable on the
 test("a transient read failure retries successfully and clears the bounded error", () => {
   const testRoot = root();
   try {
-    writeArtifacts(testRoot, conversation(12));
+    const { sessionFile } = writeArtifacts(testRoot, conversation(12));
     let failReads = 1;
     const io = {
-      readRange: (file, start, end) => {
-        if (failReads > 0 && end < statSync(file).size) {
+      ...NODE_SESSION_FILE_IO,
+      read(descriptor, buffer, offset, length, position) {
+        if (failReads > 0 && position + length < statSync(sessionFile).size) {
           failReads -= 1;
           throw Object.assign(new Error("EBUSY"), { code: "EBUSY" });
         }
-        return realReadRange(file, start, end);
+        return NODE_SESSION_FILE_IO.read(descriptor, buffer, offset, length, position);
       },
     };
     const pager = createChildHistory(ID, { observedAt: OBSERVED_AT, pageBytes: 600, io });
@@ -413,12 +389,13 @@ test("a successful newer retry clears its error when it confirms EOF", () => {
   const testRoot = root();
   try {
     writeArtifacts(testRoot, conversation(1));
-    let reads = 0;
+    let fstats = 0;
     const io = {
-      readRange: (file, start, end) => {
-        reads += 1;
-        if (reads === 3) throw Object.assign(new Error("EBUSY"), { code: "EBUSY" });
-        return realReadRange(file, start, end);
+      ...NODE_SESSION_FILE_IO,
+      fstat(descriptor) {
+        fstats += 1;
+        if (fstats === 3) throw Object.assign(new Error("EBUSY"), { code: "EBUSY" });
+        return NODE_SESSION_FILE_IO.fstat(descriptor);
       },
     };
     const pager = createChildHistory(ID, { observedAt: OBSERVED_AT, pageBytes: 4096, io });
@@ -430,8 +407,6 @@ test("a successful newer retry clears its error when it confirms EOF", () => {
     rmSync(testRoot, { recursive: true, force: true });
   }
 });
-
-
 test("the loaded window stays bounded and reloads evicted pages on demand", () => {
   const testRoot = root();
   try {

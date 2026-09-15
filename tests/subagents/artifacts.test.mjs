@@ -29,7 +29,6 @@ const {
   withTransientFsRetries,
   fsRetryCount,
   resolveDirectRegularSessionFile,
-  validateRunArtifactsWithReadIo,
 } = artifacts.__testables;
 
 const ID = "subagent_00000000-0000-4000-8000-000000000001";
@@ -270,17 +269,17 @@ test("session path resolution rejects mutable intermediate path components", () 
   );
 });
 
-test("resume validation never reads a session path replaced after open", () => {
+test("resume validation maps a session-file identity refusal to SESSION_HISTORY_UNAVAILABLE", () => {
   const root = makeTempRoot();
   try {
     const { value } = createValidArtifacts(root);
-    const stable = { dev: 1, ino: 2, isFile: () => true };
-    const replacement = { dev: 1, ino: 3, isFile: () => true };
+    const stable = { dev: 1, ino: 2, size: 3, isFile: () => true };
+    const replacement = { dev: 1, ino: 3, size: 3, isFile: () => true };
     let observations = 0;
     let read = false;
     let closed = false;
     assert.throws(
-      () => validateRunArtifactsWithReadIo(ID, {
+      () => validateRunArtifacts(ID, {
         lstat(candidate) {
           assert.equal(candidate, value.sessionFile);
           observations += 1;
@@ -294,19 +293,23 @@ test("resume validation never reads a session path replaced after open", () => {
           assert.equal(descriptor, 7);
           return stable;
         },
-        readFile() {
+        read() {
           read = true;
-          return "replacement content";
+          return 0;
         },
         close(descriptor) {
           assert.equal(descriptor, 7);
           closed = true;
         },
       }),
-      /SESSION_HISTORY_UNAVAILABLE/,
+      (error) => {
+        assert.equal(error?.info?.code, "SESSION_HISTORY_UNAVAILABLE");
+        assert.match(String(error?.info?.cause ?? ""), /changed while opening/);
+        return true;
+      },
     );
     assert.equal(read, false, "the replacement target is never read");
-    assert.equal(closed, true, "the opened descriptor is still closed on rejection");
+    assert.equal(closed, true, "the opened descriptor is still closed on refusal");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

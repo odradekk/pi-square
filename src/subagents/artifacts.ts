@@ -1,11 +1,7 @@
 import {
-  closeSync,
-  constants,
   existsSync,
-  fstatSync,
   lstatSync,
   mkdirSync,
-  openSync,
   readFileSync,
   readdirSync,
   realpathSync,
@@ -14,12 +10,12 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
-import type { Stats } from "node:fs";
 import { basename, dirname, resolve as resolvePath } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { dropChildPartition } from "../anchored-edit/partitions";
 import { subagentsStateRoot } from "./agent-paths";
 import { createSubagentError, normalizeSubagentError, SubagentError } from "./errors";
+import { openChildSessionFile, sameFileIdentity, type SessionFileIo, type SessionFilePathStat } from "./session-file";
 import type { SubagentRunDetails } from "./types";
 
 const PUBLIC_ID_PATTERN = /^subagent_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -384,10 +380,8 @@ export interface ResolvedChildSessionFile {
   sessionFile: string;
 }
 
-type SessionPathStat = Pick<Stats, "dev" | "ino" | "isFile">;
-
 interface SessionPathIo {
-  lstat(path: string): SessionPathStat;
+  lstat(path: string): SessionFilePathStat;
   realpath(path: string): string;
 }
 
@@ -395,10 +389,6 @@ const SESSION_PATH_IO: SessionPathIo = {
   lstat: lstatSync,
   realpath: realpathSync,
 };
-
-function sameFileIdentity(left: SessionPathStat, right: SessionPathStat): boolean {
-  return left.dev === right.dev && left.ino === right.ino;
-}
 
 function resolveDirectRegularSessionFile(
   recordedPath: string,
@@ -425,43 +415,6 @@ function resolveDirectRegularSessionFile(
     throw new Error("native session path changed while resolving");
   }
   return sessionFile;
-}
-
-const SESSION_READ_FLAGS = constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0);
-
-interface SessionReadIo {
-  lstat(path: string): SessionPathStat;
-  open(path: string, flags: number): number;
-  fstat(descriptor: number): SessionPathStat;
-  readFile(descriptor: number): string;
-  close(descriptor: number): void;
-}
-
-const SESSION_READ_IO: SessionReadIo = {
-  lstat: lstatSync,
-  open: openSync,
-  fstat: fstatSync,
-  readFile: (descriptor) => readFileSync(descriptor, "utf8"),
-  close: closeSync,
-};
-
-function readDirectRegularSessionFile(sessionFile: string, io: SessionReadIo = SESSION_READ_IO): string {
-  const before = io.lstat(sessionFile);
-  if (!before.isFile()) throw new Error("native session path is not a regular file");
-  const descriptor = io.open(sessionFile, SESSION_READ_FLAGS);
-  try {
-    const opened = io.fstat(descriptor);
-    const after = io.lstat(sessionFile);
-    if (
-      !opened.isFile() || !after.isFile()
-      || !sameFileIdentity(before, opened) || !sameFileIdentity(opened, after)
-    ) {
-      throw new Error("native session path changed while opening");
-    }
-    return io.readFile(descriptor);
-  } finally {
-    io.close(descriptor);
-  }
 }
 
 export function resolveChildSessionFile(id: string, operation = "resume"): ResolvedChildSessionFile {
@@ -495,10 +448,10 @@ export function resolveChildSessionFile(id: string, operation = "resume"): Resol
   }
 }
 
-function validateRunArtifactsWithReadIo(id: string, io: SessionReadIo): ValidatedRunArtifacts {
-  const { artifactsDir, details, sessionFile } = resolveChildSessionFile(id);
+export function validateRunArtifacts(id: string, io?: SessionFileIo): ValidatedRunArtifacts {
   try {
-    const rawSession = withTransientFsRetries(() => readDirectRegularSessionFile(sessionFile, io));
+    const { artifactsDir, details, handle } = openChildSessionFile(id, "resume", io);
+    const rawSession = withTransientFsRetries(() => handle.readText());
     const sessionEntries = parseSessionFileStrict(rawSession);
     if (sessionEntries[0].id !== details.sessionId) {
       throw new Error("native session ID does not match run.json");
@@ -516,10 +469,6 @@ function validateRunArtifactsWithReadIo(id: string, io: SessionReadIo): Validate
       suggestedAction: "Verify that run.json and the native JSONL session file still exist and are unmodified.",
     });
   }
-}
-
-export function validateRunArtifacts(id: string): ValidatedRunArtifacts {
-  return validateRunArtifactsWithReadIo(id, SESSION_READ_IO);
 }
 
 export function listRunDirs(): string[] {
@@ -562,5 +511,4 @@ export const __testables = {
   withTransientFsRetries,
   fsRetryCount,
   resolveDirectRegularSessionFile,
-  validateRunArtifactsWithReadIo,
 };
