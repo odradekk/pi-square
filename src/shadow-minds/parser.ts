@@ -137,6 +137,12 @@ export function validateShadowDefinitionFields(fields: ShadowDefinitionFields): 
     if (fields.triggers.some((trigger) => !(SHADOW_TRIGGERS as readonly string[]).includes(trigger))) {
       errors.push(`triggers entries must be one of ${SHADOW_TRIGGERS.join(", ")}`);
     }
+    // Unreachable while the trigger enum holds exactly maxEntries values and
+    // duplicates are rejected below; kept so the typed rule stays total when
+    // the enum grows.
+    if (fields.triggers.length > bounds.triggers.maxEntries) {
+      errors.push(`triggers allows at most ${bounds.triggers.maxEntries} entries`);
+    }
     if (new Set(fields.triggers).size !== fields.triggers.length) {
       errors.push("duplicate trigger in triggers");
     }

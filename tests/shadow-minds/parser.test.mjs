@@ -434,4 +434,60 @@ assert.ok(validateShadowDefinitionFields({ id: "x", outputSchema: { type: "array
 assert.ok(validateShadowDefinitionFields({ id: "x", body: "" }).some((error) => /body/.test(error)), "empty bodies are enforced");
 assert.ok(validateShadowDefinitionFields({ id: "x", body: "y".repeat(24_001) }).some((error) => /24,?000/.test(error)), "body length is enforced");
 
+// ── Raw and typed field validation apply one rule set ───────────────
+// `normalizeDefinitionFields` and `validateShadowDefinitionFields` are two
+// implementations of the same bounds and vocabularies; every case below
+// must be rejected by BOTH paths with the same rule message, and the valid
+// base layer must pass both.
+
+{
+  const baseFields = { id: "probe", name: "Probe", body };
+  const baseFrontmatter = ["promptVersion: 1", "id: probe", "name: Probe"];
+  const manyNames = (prefix, count) => Array.from({ length: count }, (_, i) => `${prefix}${i}`);
+  const manyQuotedModels = (count) => Array.from({ length: count }, (_, i) => `"cpa/model-${i}"`);
+  const cases = [
+    ["id shape", { id: "has space" }, ["promptVersion: 1", "id: has space", "name: Probe"], [/id must match/], undefined],
+    ["name length", { name: "n".repeat(121) }, ["promptVersion: 1", "id: probe", `name: ${"n".repeat(121)}`], [/name must be a string between/], undefined],
+    ["priority range", { priority: 1001 }, [...baseFrontmatter, "priority: 1001"], [/priority must be an integer/], undefined],
+    ["trigger enum", { triggers: ["heartbeat"] }, [...baseFrontmatter, "triggers: [heartbeat]"], [/triggers entries must be one of/], undefined],
+    ["duplicate trigger", { triggers: ["tool_turn", "tool_turn"] }, [...baseFrontmatter, "triggers: [tool_turn, tool_turn]"], [/duplicate trigger/], undefined],
+    ["trigger cap", { triggers: ["tool_turn", "failure", "mutation", "completion", "tool_turn"] }, [...baseFrontmatter, "triggers: [tool_turn, failure, mutation, completion, tool_turn]"], [/triggers allows at most/], undefined],
+    ["instruction key", { triggerInstructions: { heartbeat: "x" } }, [...baseFrontmatter, "triggerInstructions:", "  heartbeat: x"], [/unknown triggerInstructions key/], undefined],
+    ["instruction length", { triggerInstructions: { failure: "x".repeat(8001) } }, [...baseFrontmatter, "triggerInstructions:", `  failure: '${"x".repeat(8001)}'`], [/triggerInstructions\.failure/, /8,?000/], undefined],
+    ["delivery enum", { delivery: "shout" }, [...baseFrontmatter, "delivery: shout"], [/delivery must be steer/], undefined],
+    ["parentModels duplicate", { parentModels: ["cpa/a", "cpa/a"] }, [...baseFrontmatter, 'parentModels: ["cpa/a", "cpa/a"]'], [/duplicate parentModels/], undefined],
+    ["parentModels shape", { parentModels: ["**"] }, [...baseFrontmatter, 'parentModels: ["**"]'], [/parentModels entries must be exact/], undefined],
+    ["parentModels cap", { parentModels: manyNames("cpa/model-", 33) }, [...baseFrontmatter, `parentModels: [${manyQuotedModels(33).join(", ")}]`], [/parentModels allows at most/], undefined],
+    ["model shape", { model: "not-a-reference" }, [...baseFrontmatter, "model: not-a-reference"], [/model must be an exact/], undefined],
+    ["thinking enum", { thinking: "ultra" }, [...baseFrontmatter, "thinking: ultra"], [/thinking must be one of/], undefined],
+    ["timeoutSeconds floor", { timeoutSeconds: 0 }, [...baseFrontmatter, "timeoutSeconds: 0"], [/timeoutSeconds must be an integer/], undefined],
+    ["timeoutSeconds ceiling", { timeoutSeconds: 601 }, [...baseFrontmatter, "timeoutSeconds: 601"], [/timeoutSeconds must be an integer/], undefined],
+    ["maxTurns ceiling", { maxTurns: 33 }, [...baseFrontmatter, "maxTurns: 33"], [/maxTurns must be an integer/], undefined],
+    ["maxToolCalls ceiling", { maxToolCalls: 129 }, [...baseFrontmatter, "maxToolCalls: 129"], [/maxToolCalls must be an integer/], undefined],
+    ["tools cap", { tools: manyNames("tool", 17) }, [...baseFrontmatter, `tools: [${manyNames("tool", 17).join(", ")}]`], [/tools allows at most/], undefined],
+    ["duplicate tools", { tools: ["read", "read"] }, [...baseFrontmatter, "tools: [read, read]"], [/duplicate tools entry/], undefined],
+    ["tools shape", { tools: ["Read"] }, [...baseFrontmatter, "tools: [Read]"], [/tools entries must be lowercase/], undefined],
+    ["duplicate requiredTools", { requiredTools: ["read", "read"] }, [...baseFrontmatter, "requiredTools: [read, read]"], [/duplicate requiredTools entry/], undefined],
+    ["output schema root", { outputSchema: { type: "array" } }, [...baseFrontmatter, "outputSchema:", "  type: array"], [/root must be an object/], undefined],
+    ["body length", { body: "y".repeat(24_001) }, baseFrontmatter, [/body exceeds 24,?000 characters/], "y".repeat(24_001)],
+  ];
+
+  assert.deepEqual(validateShadowDefinitionFields(baseFields), [], "the valid base layer passes the typed path");
+  assert.deepEqual(
+    parseShadowDefinitionFile("probe.md", file(baseFrontmatter.join("\n"))).errors,
+    [],
+    "the valid base layer passes the raw path",
+  );
+
+  for (const [label, patch, frontmatter, patterns, docBody] of cases) {
+    const typedErrors = validateShadowDefinitionFields({ ...baseFields, ...patch });
+    assert.ok(typedErrors.length > 0, `${label}: the typed path rejects`);
+    const parsed = parseShadowDefinitionFile("probe.md", file(frontmatter.join("\n"), docBody ?? body));
+    assert.ok(!parsed.definition, `${label}: the raw path rejects`);
+    for (const pattern of patterns) {
+      assert.ok(typedErrors.some((error) => pattern.test(error)), `${label}: typed message matches ${pattern}`);
+      assert.ok(parsed.errors.some((error) => pattern.test(error)), `${label}: raw message matches ${pattern}`);
+    }
+  }
+}
 console.log("shadow-minds parser tests: OK");
