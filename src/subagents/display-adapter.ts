@@ -105,7 +105,7 @@ function activityItems(timeline: SubagentTimelineItem[]): DisplayActivityItem[] 
   if (!Array.isArray(timeline)) return [];
   return pairToolCalls(timeline).slice(-8).map((call) => {
     const startDisplay = call.startItem
-      ? managerToolArgsDisplay(String(call.startItem.tool ?? ""), call.startItem.args)
+      ? managerToolArgsDisplay(String(call.startItem.tool ?? ""), call.startItem.args, call.startItem.listCounts)
       : undefined;
     const tool = startDisplay?.tool ?? call.toolName;
     const summary = startDisplay?.summary ?? "called";
@@ -321,8 +321,11 @@ export function describeSubagentRun(
   fallbackText: string,
   args: Record<string, unknown> = {},
 ): DisplayDescriptionV1 {
-  const details = record(run);
-  const live = String(run.finalText || fallbackText || "").trim();
+  // JavaScript callers can pass null despite the declared shape; the
+  // defensive projection degrades to empty fields instead of throwing.
+  const fields = run ?? {};
+  const details = record(fields);
+  const live = String(fields.finalText || fallbackText || "").trim();
   const lc = subagentLifecycle(details, options.isError);
   const isResume = name === "resume_subagent";
   const summary = subagentSummary(details, lc.lifecycle);
@@ -340,7 +343,7 @@ export function describeSubagentRun(
   // that used to live in the collapsed body move into the inline summary. The
   // queued summary keeps the short run ID visible for named agents too,
   // because the queued outcome and the ID are one fact for the caller.
-  const queuedRunId = lc.lifecycle === "queued" ? shortId(run.id ?? args.id) : undefined;
+  const queuedRunId = lc.lifecycle === "queued" ? shortId(fields.id ?? args.id) : undefined;
   const queuedMessage = !isTerminal && lc.lifecycle === "queued"
     ? ["Queued in the parent session", queuedRunId ? `run ${queuedRunId}` : undefined].filter(Boolean).join(" · ")
     : undefined;
@@ -375,7 +378,7 @@ export function describeSubagentRun(
     expandedSections.push(...[
       taskSection(details),
       resultSection("Result", live),
-      activitySection(timelineItems(run.timeline)),
+      activitySection(timelineItems(fields.timeline)),
       refusalSection(details),
       issueSection(details),
       usageSection(details),
@@ -393,10 +396,10 @@ export function describeSubagentRun(
     metadata: [],
     rows,
     sections: options.expanded ? expandedSections : collapsedSections,
-    durationMs: typeof run.durationMs === "number" ? run.durationMs : undefined,
+    durationMs: typeof fields.durationMs === "number" ? fields.durationMs : undefined,
     summary: effectiveSummary,
-    ...(options.isError || run.phase === "failed"
-      ? { error: String(run.error || fallbackText || "Subagent failed") }
+    ...(options.isError || fields.phase === "failed"
+      ? { error: String(fields.error || fallbackText || "Subagent failed") }
       : {}),
   } satisfies DisplayDescriptionV1;
 }

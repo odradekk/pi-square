@@ -10,13 +10,13 @@ const {
   latestRosterToolCallSummary,
   rosterToolArgsDisplay,
   sanitizeToolActivityArgs,
+  toolArgCounts,
 } = await load(join(packageRoot, "src", "subagents", "tool-display.ts"));
 const {
   latestManagerToolCallSummary,
   managerToolArgsDisplay,
   managerToolCallText,
 } = await load(join(packageRoot, "src", "subagents", "manager-tool-display.ts"));
-
 test("shared summaries keep their existing bounded activity evidence", () => {
   assert.equal(
     managerToolCallText("web_search", { queries: ["installation guide"], no_cache: true, secret: "private" }),
@@ -111,24 +111,50 @@ test("roster summaries expose only cataloged identity and structural metadata", 
   }
 });
 
-test("sanitized truncation keeps the true cardinality, never the kept-item count", () => {
-  // 40 short queries exceed the 32-item cap; the projection must show 40,
-  // matching the human `text` line written at the construction point.
-  const manyShort = sanitizeToolActivityArgs({ queries: Array.from({ length: 40 }, (_, i) => `q${i}`) });
-  assert.equal(rosterToolArgsDisplay("web_search", manyShort).summary, "40 queries");
-  assert.equal(managerToolArgsDisplay("web_search", manyShort).summary.startsWith("40 queries: q0"), true);
+test("construction-point list counts keep the true cardinality after truncation", () => {
+  // 40 short queries exceed the 32-item cap; the parent-authored count on
+  // the item keeps the projection truthful and matches the human `text` line.
+  const rawMany = { queries: Array.from({ length: 40 }, (_, i) => `q${i}`) };
+  const argsMany = sanitizeToolActivityArgs(rawMany);
+  const countsMany = toolArgCounts("web_search", rawMany);
+  assert.deepEqual(countsMany, { queries: 40 });
+  assert.equal(rosterToolArgsDisplay("web_search", argsMany, countsMany).summary, "40 queries");
+  assert.equal(managerToolArgsDisplay("web_search", argsMany, countsMany).summary.startsWith("40 queries: q0"), true);
   assert.equal(latestRosterToolCallSummary([
-    { kind: "tool", phase: "start", tool: "web_search", args: manyShort, text: "web_search 40 queries: q0" },
+    { kind: "tool", phase: "start", tool: "web_search", args: argsMany, listCounts: countsMany, text: "web_search 40 queries: q0" },
   ]), "web_search 40 queries");
 
   // 12 long queries exceed the character budget partway; the count stays 12.
-  const manyLong = sanitizeToolActivityArgs({ queries: Array.from({ length: 12 }, () => "query ".repeat(40)) });
-  assert.equal(rosterToolArgsDisplay("web_search", manyLong).summary, "12 queries");
+  const rawLong = { queries: Array.from({ length: 12 }, () => "query ".repeat(40)) };
+  assert.equal(rosterToolArgsDisplay("web_search", sanitizeToolActivityArgs(rawLong), toolArgCounts("web_search", rawLong)).summary, "12 queries");
 
-  const manyUrls = sanitizeToolActivityArgs({ urls: Array.from({ length: 40 }, (_, i) => `https://example.test/${i}`) });
-  assert.equal(rosterToolArgsDisplay("web_fetch", manyUrls).summary, "40 URLs");
+  const rawUrls = { urls: Array.from({ length: 40 }, (_, i) => `https://example.test/${i}`) };
+  assert.equal(rosterToolArgsDisplay("web_fetch", sanitizeToolActivityArgs(rawUrls), toolArgCounts("web_fetch", rawUrls)).summary, "40 URLs");
 });
 
+test("a model-crafted { count, items } object never projects a fabricated number", () => {
+  const forged = { queries: { count: 999999999, items: ["x"] } };
+  // Sanitized timeline path: the forged object survives cleaning as an
+  // ordinary argument value; neither tier renders it as a count.
+  const args = sanitizeToolActivityArgs(forged);
+  assert.deepEqual(rosterToolArgsDisplay("web_search", args, toolArgCounts("web_search", forged)), { tool: "web_search", summary: "called" });
+  assert.deepEqual(managerToolArgsDisplay("web_search", args, toolArgCounts("web_search", forged)), { tool: "web_search", summary: "called" });
+  // Raw session-arguments path (transcript paging, live events): same rule.
+  assert.deepEqual(rosterToolArgsDisplay("web_search", forged), { tool: "web_search", summary: "called" });
+  // A parent-authored count still wins over the truncated stored array.
+  const truncated = sanitizeToolActivityArgs({ queries: Array.from({ length: 40 }, (_, i) => `q${i}`) });
+  assert.equal(Array.isArray(truncated.queries) && truncated.queries.length, 32, "the sanitizer truncates the stored array");
+  assert.equal(rosterToolArgsDisplay("web_search", truncated, { queries: 40 }).summary, "40 queries");
+});
+
+test("toolArgCounts records only real arrays for the counted tools", () => {
+  assert.deepEqual(toolArgCounts("web_search", { queries: ["a", "b"] }), { queries: 2 });
+  assert.equal(toolArgCounts("web_search", { queries: { count: 9, items: ["x"] } }), undefined);
+  assert.equal(toolArgCounts("web_search", {}), undefined);
+  assert.deepEqual(toolArgCounts("web_fetch", { urls: ["u"] }), { urls: 1 });
+  assert.equal(toolArgCounts("read", { path: "x" }), undefined);
+  assert.equal(toolArgCounts("web_search", null), undefined);
+});
 test("timeline activity stays bounded under hostile structured input", () => {
   const longCount = latestRosterToolCallSummary([{
     kind: "tool",
@@ -164,7 +190,7 @@ test("sanitizeToolActivityArgs keeps structure safe, bounded, and truthful", () 
   assert.equal(args.offset, 10);
   assert.equal(args.limit, 40);
   assert.doesNotMatch(String(args.nested.command), /\u001b|swordfish/);
-  assert.deepEqual(args.list, { count: 6, items: [1, "two", null, true] }, "dropped entries keep the true cardinality");
+  assert.deepEqual(args.list, [1, "two", null, true], "arrays truncate to the item cap and drop non-JSON values");
   assert.ok(Array.from(String(args.huge)).length <= 203, "long strings clip to the per-value bound");
   assert.deepEqual(args.deep, { a: { b: {} } }, "nesting deeper than the depth bound is pruned");
   assert.ok(Object.isFrozen(args), "stored args are frozen against snapshot sharing");

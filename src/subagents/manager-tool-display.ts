@@ -15,7 +15,11 @@ import { clipInline, shortenPath, toolArgListCount, toolArgListFirst, type ToolE
  *  clipping. Manager-grade only — every roster-grade surface uses the default
  *  safe projection `rosterToolArgsDisplay` instead; unknown tool names render
  *  as `called`. */
-export function managerToolArgsDisplay(toolName: string, args: any): ToolEventDisplay {
+export function managerToolArgsDisplay(
+  toolName: string,
+  args: any,
+  listCounts?: Record<string, number>,
+): ToolEventDisplay {
   let summary: string;
   switch (toolName) {
     case "read": {
@@ -49,13 +53,17 @@ export function managerToolArgsDisplay(toolName: string, args: any): ToolEventDi
       summary = shortenPath(args?.path || "...");
       break;
     case "web_search": {
-      const count = toolArgListCount(args?.queries) ?? 0;
-      summary = `${count} quer${count === 1 ? "y" : "ies"}: ${clipInline(toolArgListFirst(args?.queries) || "...", 50)}`;
+      const count = toolArgListCount(args?.queries, listCounts?.queries);
+      if (count === undefined) {
+        summary = "called";
+      } else {
+        summary = `${count} quer${count === 1 ? "y" : "ies"}: ${clipInline(toolArgListFirst(args?.queries) || "...", 50)}`;
+      }
       break;
     }
     case "web_fetch": {
-      const count = toolArgListCount(args?.urls) ?? 0;
-      summary = `${count} URL${count === 1 ? "" : "s"}`;
+      const count = toolArgListCount(args?.urls, listCounts?.urls);
+      summary = count === undefined ? "called" : `${count} URL${count === 1 ? "" : "s"}`;
       break;
     }
     case "library_search":
@@ -90,7 +98,7 @@ export function managerToolCallText(toolName: string, args: any): string {
 export function latestManagerToolCallSummary(timeline: SubagentTimelineItem[] | undefined): string {
   const item = [...(timeline ?? [])].reverse().find((entry) => entry?.kind === "tool" && entry.phase === "start");
   if (!item) return "working";
-  const display = managerToolArgsDisplay(String(item.tool ?? ""), item.args);
+  const display = managerToolArgsDisplay(String(item.tool ?? ""), item.args, item.listCounts);
   const summary = clipInline(display.summary, 120);
   return `${display.tool}${summary ? ` ${summary}` : ""}`;
 }

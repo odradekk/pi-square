@@ -88,10 +88,14 @@ export interface SubagentTimelineItem {
    *  registry, rendering anything unknown as anonymous; the manager-grade
    *  projection renders any bounded name. */
   tool?: string;
-  /** Sanitized, bounded structured argument fields for a start entry. Arrays
-   *  that outlived the sanitizer's budgets wrap as `{ count, items }` so the
-   *  persisted record keeps the true cardinality. */
+  /** Sanitized, bounded structured argument fields for a start entry. */
   args?: Record<string, unknown>;
+  /** True cardinalities of the counted list-valued argument fields, computed
+   *  at the construction point from the raw call BEFORE sanitizing
+   *  truncation. Parent-authored: the child influences these only through the
+   *  real array lengths it sent, so a model-crafted `{ count, items }`
+   *  argument object can never project a fabricated number. */
+  listCounts?: Record<string, number>;
   at?: number;
   isError?: boolean;
   /** Set on a tool end item whose call was refused by the anchored safety
