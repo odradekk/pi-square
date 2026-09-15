@@ -59,19 +59,14 @@ import {
  * forwards the child's ephemeral view events (`applyLiveEvent`) so streaming
  * assistant text and thinking render as a bounded tail below the persisted
  * window, live tool rows show running and immediately terminal states, and
- * lifecycle transitions update the open view (`updateLifecycle`). A completed
- * message is confirmed only by the persisted occurrence carrying the same
- * content projection and native timestamp whose JSONL line begins exactly at
- * the file-size floor captured immediately before Pi appends that message.
- * Pi persists each message-end before emitting the next one, so these floors
- * advance without a lifetime occurrence ledger: delayed delivery, terminal
- * reconciles that load the final entry first, pre-existing identical history,
- * repeated identical completions, and demand paging can neither duplicate nor
- * strand live content. Overflow of the bounded tail or the feed sheds oldest-
- * first with fingerprints the omission state keeps visible until persisted
- * history actually recovers them. The overlay owns no
- * timer and never repaints on its own for live events — the controller owns
- * the one coalesced repaint timer.
+ * lifecycle transitions update the open view (`updateLifecycle`). The
+ * transcript module owns the tail and the occurrence reconciliation between
+ * tail and persisted window — one occurrence never visible in both — so this
+ * file does not restate that rule. Overflow of the bounded tail or the feed
+ * sheds oldest-first with fingerprints the omission state keeps visible until
+ * persisted history actually recovers them. The overlay owns no timer and
+ * never repaints on its own for live events — the controller owns the one
+ * coalesced repaint timer.
  *
  * Since #307 the overlay also carries the cross-child reading experience:
  * Up/Down move a roster candidate, Enter re-points this same overlay at the
@@ -729,22 +724,14 @@ export class ChildTranscriptOverlay implements Component {
 
   /**
    * Reconciles the persisted window with the session file through the
-   * transcript module: retries the initial tail while it has never loaded,
-   * otherwise reads bounded newer pages the child appended. An explicitly
-   * following view stays pinned to the tail; a suspended position is
-   * preserved even when it happens to reach the current numeric bottom — live
-   * growth never resumes follow implicitly.
+   * transcript module's newer-page cascade (the module owns the page-fetch
+   * policy; this method is a forward until #371 moves the wiring). An
+   * explicitly following view stays pinned to the tail; a suspended position
+   * is preserved even when it happens to reach the current numeric bottom —
+   * live growth never resumes follow implicitly.
    */
   reconcileNow(pages = 1): void {
-    let changed = false;
-    if (this.current.initialError !== undefined) {
-      changed = this.transcript.retryInitial();
-    } else {
-      for (let page = 0; page < Math.max(1, pages); page += 1) {
-        if (!this.transcript.loadNewer()) break;
-        changed = true;
-      }
-    }
+    const changed = this.transcript.reconcileNewer(pages);
     if (changed) {
       // The module already reconciled the tail against the loaded window.
       this.current = this.transcript.snapshot();

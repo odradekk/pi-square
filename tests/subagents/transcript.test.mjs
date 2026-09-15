@@ -8,6 +8,7 @@ const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..")
 const load = jiti(import.meta.url, { moduleCache: false });
 const transcriptModule = await load(join(packageRoot, "src", "subagents", "transcript.ts"));
 const { createChildTranscript } = transcriptModule;
+const { assistantContentKey } = await load(join(packageRoot, "src", "subagents", "child-history.ts"));
 
 const tests = [];
 function test(name, fn) { tests.push({ name, fn }); }
@@ -258,6 +259,40 @@ test("a delayed duplicate completion reconciles instead of duplicating a shed oc
   assert.equal(transcript.liveTail().items.length, 0, "no second live entry");
   assert.equal(transcript.snapshot().items.length, 1, "the record still renders exactly once");
   assert.deepEqual(changes, [{ grew: false }], "the reconcile found no persisted growth");
+});
+
+test("a recoverable dropped fingerprint clears on the next module read even without a new page", () => {
+  const item = assistantItem("recovered", { entryId: "e1", timestamp: 500, byteOffset: 64 });
+  const transcript = createChildTranscript(scriptedHistory({ initial: [item] }).view);
+
+  transcript.applyLiveEvent({
+    kind: "live_events_dropped",
+    dropped: [{ kind: "message", key: assistantContentKey(item.message.content), timestamp: 500, historyFloor: 64 }],
+  });
+  assert.equal(transcript.liveTail().droppedCount, 1, "the marker appears when the feed reports the drop");
+
+  transcript.snapshot();
+  assert.equal(
+    transcript.liveTail().droppedCount,
+    0,
+    "a plain read enforces the invariant: no successful loadNewer is needed first",
+  );
+});
+
+test("reconcileNewer cascades bounded newer pages in one call", () => {
+  const history = scriptedHistory({});
+  history.stage(
+    [assistantItem("one", { entryId: "e1", timestamp: 1, byteOffset: 10 })],
+    [assistantItem("two", { entryId: "e2", timestamp: 2, byteOffset: 20 })],
+    [assistantItem("three", { entryId: "e3", timestamp: 3, byteOffset: 30 })],
+  );
+  const transcript = createChildTranscript(history.view);
+
+  assert.equal(transcript.reconcileNewer(2), true, "one call reads up to the requested page count");
+  assert.equal(transcript.snapshot().items.length, 2);
+  assert.equal(transcript.reconcileNewer(8), true, "the next call continues the cascade");
+  assert.equal(transcript.snapshot().items.length, 3);
+  assert.equal(transcript.reconcileNewer(1), false, "with nothing newer the cascade stays a quiet false");
 });
 
 // ---------------------------------------------------------------------------

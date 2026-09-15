@@ -2,7 +2,6 @@ import {
   assistantContentKey,
   callKeyOf,
   CHILD_HISTORY_READ_ERROR,
-  projectSessionEntries,
 } from "./child-history";
 import type {
   AssistantTextPart,
@@ -111,7 +110,12 @@ export type ChildTranscriptListener = (change: ChildTranscriptChange) => void;
  * forwards into until that wiring moves onto this module (#371).
  */
 export interface ChildTranscript {
-  /** The current persisted window; see {@link ChildHistorySnapshot}. */
+  /**
+   * The current persisted window; see {@link ChildHistorySnapshot}. Every
+   * read through the module observes the occurrence invariant: the tail is
+   * reconciled against this window first, so a live entry never duplicates a
+   * record the loaded window already carries.
+   */
   snapshot(): ChildHistorySnapshot;
   /** Attempt one bounded older page; false when none loaded (exhausted or failed). */
   loadOlder(): boolean;
@@ -119,6 +123,14 @@ export interface ChildTranscript {
   loadNewer(): boolean;
   /** Retry a failed initial tail load; false when there was nothing to retry. */
   retryInitial(): boolean;
+  /**
+   * The newer-page cascade behind one call: retries the initial tail while it
+   * has never loaded, otherwise reads up to `pages` bounded newer pages,
+   * reconciling after every successful load. Returns whether the window
+   * changed. Callers observe the outcome here and through {@link snapshot};
+   * this method never notifies.
+   */
+  reconcileNewer(pages?: number): boolean;
   /** The bounded live tail below the persisted window. */
   liveTail(): ChildLiveTail;
   /** Feed one ephemeral live view event into the tail and reconcile. */
@@ -212,6 +224,12 @@ export class ChildTranscriptSession implements ChildTranscript {
   private tail: LiveTail = emptyLiveTail();
   /** Highest pre-append history floor received; duplicate/stale events fail closed. */
   private latestMessageFloor = -1;
+  /**
+   * The persisted window, read at most once per event application; every
+   * successful load invalidates it. Avoids re-copying the pager's bounded
+   * item window for each reconciliation pass inside one event.
+   */
+  private cachedWindow: ChildHistorySnapshot | undefined;
   private readonly listeners = new Set<ChildTranscriptListener>();
 
   constructor(history: ChildHistoryView, options: ChildTranscriptOptions = {}) {
@@ -220,25 +238,62 @@ export class ChildTranscriptSession implements ChildTranscript {
   }
 
   snapshot(): ChildHistorySnapshot {
-    return this.history.snapshot();
+    const snapshot = this.history.snapshot();
+    this.reconcile(snapshot.items);
+    return snapshot;
   }
 
   loadOlder(): boolean {
     const loaded = this.history.loadOlder();
-    if (loaded) this.reconcile();
+    if (loaded) {
+      this.cachedWindow = undefined;
+      this.reconcile(this.windowItems());
+    }
     return loaded;
   }
 
   loadNewer(): boolean {
     const loaded = this.history.loadNewer();
-    if (loaded) this.reconcile();
+    if (loaded) {
+      this.cachedWindow = undefined;
+      this.reconcile(this.windowItems());
+    }
     return loaded;
   }
 
   retryInitial(): boolean {
     const retried = this.history.retryInitial();
-    if (retried) this.reconcile();
+    if (retried) {
+      this.cachedWindow = undefined;
+      this.reconcile(this.windowItems());
+    }
     return retried;
+  }
+
+  reconcileNewer(pages = 1): boolean {
+    let changed = false;
+    if (this.windowSnapshot().initialError !== undefined) {
+      changed = this.history.retryInitial();
+    } else {
+      for (let page = 0; page < Math.max(1, pages); page += 1) {
+        if (!this.history.loadNewer()) break;
+        changed = true;
+      }
+    }
+    if (!changed) return false;
+    this.cachedWindow = undefined;
+    this.reconcile(this.windowItems());
+    return true;
+  }
+
+  /** The persisted window, cached for one event application. */
+  private windowSnapshot(): ChildHistorySnapshot {
+    this.cachedWindow ??= this.history.snapshot();
+    return this.cachedWindow;
+  }
+
+  private windowItems(): readonly TranscriptItem[] {
+    return this.windowSnapshot().items;
   }
 
   liveTail(): ChildLiveTail {
@@ -280,7 +335,7 @@ export class ChildTranscriptSession implements ChildTranscript {
             // A delayed or duplicated completion: reconcile the persisted
             // window instead of admitting a tail entry that would duplicate
             // an occurrence that already shed.
-            this.finishEvent(this.reconcilePages(1));
+            this.notify({ grew: this.reconcileNewer(1) });
             return;
           }
           if (event.historyFloor !== undefined) this.latestMessageFloor = event.historyFloor;
@@ -294,11 +349,12 @@ export class ChildTranscriptSession implements ChildTranscript {
           // (a terminal reconcile ran before the scheduled feed flush
           // delivered it), so confirm against the current window instead of
           // waiting for the next page load.
-          this.confirmLiveMessages(this.history.snapshot().items);
-          this.finishEvent(this.reconcilePages(1), true);
+          this.confirmLiveMessages(this.windowItems());
+          this.reconcileNewer(1);
+          this.notify({ grew: true });
           return;
         }
-        this.finishEvent(this.reconcilePages(1));
+        this.notify({ grew: this.reconcileNewer(1) });
         return;
       }
       case "tool_started": {
@@ -313,14 +369,14 @@ export class ChildTranscriptSession implements ChildTranscript {
           summary: event.summary,
           startedAt: event.startedAt,
         };
-        const changed = this.reconcilePages(1);
-        if (this.toolCovered(running, this.history.snapshot().items)) {
+        const changed = this.reconcileNewer(1);
+        if (this.toolCovered(running, this.windowItems())) {
           // The persisted running row already shows the call; no live row.
-          this.finishEvent(changed);
+          this.notify({ grew: changed });
           return;
         }
         this.pushLiveItem({ kind: "tool", tool: running });
-        this.finishEvent(changed, true);
+        this.notify({ grew: true });
         return;
       }
       case "tool_finished": {
@@ -333,13 +389,13 @@ export class ChildTranscriptSession implements ChildTranscript {
           (item): item is Extract<LiveItem, { kind: "tool" }> =>
             item.kind === "tool" && item.tool.callKey === event.callKey,
         );
-        const changed = this.reconcilePages(1);
+        const changed = this.reconcileNewer(1);
         const stillLive = existing !== undefined && this.tail.items.includes(existing);
         if (stillLive) {
           // The end state shows without waiting for the toolResult append.
           existing.tool.endedAt = this.clock();
           existing.tool.isError = event.isError;
-          this.finishEvent(changed, true);
+          this.notify({ grew: true });
           return;
         }
         const finished: LiveToolState = {
@@ -349,13 +405,13 @@ export class ChildTranscriptSession implements ChildTranscript {
           endedAt: this.clock(),
           isError: event.isError,
         };
-        if (this.toolCovered(finished, this.history.snapshot().items)) {
+        if (this.toolCovered(finished, this.windowItems())) {
           // The call's own persisted row already carries the terminal state.
-          this.finishEvent(changed);
+          this.notify({ grew: changed });
           return;
         }
         this.pushLiveItem({ kind: "tool", tool: finished });
-        this.finishEvent(changed, true);
+        this.notify({ grew: true });
         return;
       }
       case "live_events_dropped":
@@ -364,51 +420,22 @@ export class ChildTranscriptSession implements ChildTranscript {
         return;
       case "run_started":
       case "tool_result_completed":
-        this.finishEvent(this.reconcilePages(1));
+        this.notify({ grew: this.reconcileNewer(1) });
         return;
       case "run_finished":
-        this.finishEvent(this.reconcilePages(8));
+        this.notify({ grew: this.reconcileNewer(8) });
         return;
     }
   }
 
   /**
-   * Delivers one notification for a fully-applied event. `visibleGrew` marks
-   * content the caller did not initiate — everything else reports only
-   * whether the event-driven reconcile found persisted growth.
-   */
-  private finishEvent(changed: boolean, visibleGrew = false): void {
-    this.notify({ grew: visibleGrew || changed });
-  }
-
-  /**
-   * Reads up to `pages` bounded newer persisted pages for one event-driven
-   * reconcile (the initial tail retries while it has never loaded). Direct
-   * page requests use the public load methods instead, which never notify.
-   */
-  private reconcilePages(pages: number): boolean {
-    let changed = false;
-    if (this.history.snapshot().initialError !== undefined) {
-      changed = this.history.retryInitial();
-    } else {
-      for (let page = 0; page < Math.max(1, pages); page += 1) {
-        if (!this.history.loadNewer()) break;
-        changed = true;
-      }
-    }
-    if (changed) this.reconcile();
-    return changed;
-  }
-
-  /**
-   * The occurrence invariant, run after every persisted window change: a live
-   * entry sheds exactly when its own persisted record enters the loaded
-   * window, and a drop fingerprint clears only for an occurrence persisted
-   * history actually recovered.
-   */
-  private reconcile(): void {
+ * The occurrence invariant, run before every persisted window is observed
+ * and after every change to it: a live entry sheds exactly when its own
+ * persisted record enters the loaded window, and a drop fingerprint clears
+ * only for an occurrence persisted history actually recovered.
+ */
+  private reconcile(items: readonly TranscriptItem[]): void {
     if (this.tail.items.length === 0 && this.tail.dropped.length === 0) return;
-    const items = this.history.snapshot().items;
     this.confirmLiveMessages(items);
     this.reconcileLiveTools(items);
     this.recoverDropped(items);
@@ -570,9 +597,9 @@ export function createChildTranscript(
   return new ChildTranscriptSession(history, options);
 }
 
-// The transcript surface for callers that build or render transcript items:
-// the viewer and the tests reach every transcript type through this module
-// instead of importing the implementation files.
-export { CHILD_HISTORY_READ_ERROR, projectSessionEntries };
+// The transcript types the viewer renders and the one read-error constant it
+// shows reach callers through this module; the projection factories stay with
+// the implementation files their callers already import.
+export { CHILD_HISTORY_READ_ERROR };
 export type { AssistantTextPart, ChildHistorySnapshot, ChildHistoryView, TranscriptItem };
 export type { ChildViewEvent } from "./live-events";
