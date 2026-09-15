@@ -3,7 +3,7 @@ import { join, resolve } from "node:path";
 
 import jiti from "jiti";
 
-import { run, test } from "./lib/test-helpers.mjs";
+import { createDeliveryEventSource, run, test } from "./lib/test-helpers.mjs";
 
 const packageRoot = resolve(import.meta.dirname, "..", "..");
 const load = jiti(import.meta.url, { moduleCache: false });
@@ -16,6 +16,7 @@ const {
   MAX_WAIT_RESERVATIONS,
   notificationResultIds,
   SUBAGENT_NOTIFICATION_TYPE,
+  subscribeDeliveryLifecycle,
 } = await load(join(packageRoot, "src", "subagents", "delivery.ts"));
 
 function runDetails(id, overrides = {}) {
@@ -392,6 +393,36 @@ test("release routes completed and failed results back and drops aborted ones", 
 
 test("the wait reservation bound matches the documented contract", () => {
   assert.equal(MAX_WAIT_RESERVATIONS, 50);
+});
+
+
+// ─── Lifecycle subscription wiring (odradekk/pi-square#369) ───────────
+//
+// The registration root hands the controller to the core's subscribe entry
+// instead of wiring each Pi event itself; these tests drive the controller
+// as the lifecycle sink through a recording event source.
+
+test("the controller receives delivery timing and confirmation through the subscribe entry", () => {
+  const probe = harness({ idle: false });
+  const events = createDeliveryEventSource();
+  subscribeDeliveryLifecycle(probe.controller, events.source);
+
+  enqueue(probe.controller, "run-wired");
+  assert.equal(probe.sent.length, 0, "a busy parent still waits for the boundary");
+  events.emit("turn_end", { message: { stopReason: "tool_use" } });
+  assert.equal(probe.sent.length, 1, "the turn boundary delivers through the subscribed wiring");
+  assert.deepEqual(probe.last().message.details.results.map((result) => result.id), ["run-wired"]);
+
+  events.emit("message_start", {
+    message: {
+      role: "custom",
+      customType: probe.last().message.customType,
+      details: probe.last().message.details,
+    },
+  });
+  assert.equal(probe.controller.pendingCount(), 0, "the transcript observation confirms through the subscribed wiring");
+  events.emit("agent_settled");
+  assert.equal(probe.sent.length, 1, "a confirmed result is never delivered again");
 });
 
 await run();

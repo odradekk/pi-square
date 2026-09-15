@@ -26,6 +26,14 @@ import {
   DEFAULT_MAX_BATCH_RESULTS,
   DEFAULT_MAX_PENDING_RESULTS,
   type ConfirmedDeliveryBatchEntry,
+  type ConfirmedDeliveryLifecycle,
+} from "../subagents/confirmed-delivery";
+export {
+  subscribeDeliveryLifecycle,
+  type ConfirmedDeliveryLifecycle,
+  type DeliveryEventSource,
+  type DeliveryLifecycleSubscribeOptions,
+  type DeliverySettleForwarding,
 } from "../subagents/confirmed-delivery";
 import { sanitizeDisplayLine, sanitizeDisplayText } from "../display/sanitize";
 import type { ShadowDelivery } from "./parser";
@@ -226,7 +234,7 @@ interface ShadowDeliveryRecord extends ShadowDeliveryPolicyEntry {
   value: ShadowDeliveryValue;
 }
 
-export interface ShadowDeliveryController {
+export interface ShadowDeliveryController extends ConfirmedDeliveryLifecycle {
   /** Offers one finished result; notify policy results stay inbox-only. */
   enqueueResult(result: ShadowResultEntity): void;
   /** Explicit Send to agent: promotes a notified result through the same machine. */
@@ -235,16 +243,6 @@ export interface ShadowDeliveryController {
   sendErrorSummary(run: { id: string; shadowId: string; shadowName: string; phase: string; message?: string }): boolean;
   /** Drops an entry, for example when its inbox history is deleted. */
   remove(id: string): void;
-  /** Confirms delivery from an observed parent message. */
-  observeMessage(message: unknown): void;
-  /** Turn boundary of the running parent; an aborted terminal message suppresses delivery. */
-  handleTurnEnd(message?: unknown): void;
-  /** A new parent run started, so an earlier interruption no longer holds. */
-  handleAgentStart(): void;
-  /** Records whether the finished run ended through a user interruption. */
-  handleAgentEnd(messages: unknown): void;
-  /** Parent settled naturally: unconfirmed entries are delivered again. */
-  handleAgentSettled(): void;
   /** True while the entry of this identity is not confirmed. */
   isPending(id: string): boolean;
   /** Count of entries the parent has not confirmed. */
