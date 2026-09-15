@@ -237,13 +237,16 @@ disappears from every surface, but is never deleted or rewritten by pi-square.
 
 Since #368 the bounded timeline persists structured tool activity: each tool
 entry written by `session.ts` carries the tool name plus sanitized, bounded
-argument fields (arrays that outlived the sanitizer's budgets wrap as
-`{ count, items }` so the record keeps the true cardinality) alongside the
-human-readable `text` line, and no timeline string is ever re-parsed for
-structure — the roster-grade allowlisted projection is the default read, and
-the manager's wider bounded-summary projection is the explicitly named opt-in
-in `manager-tool-display.ts`. Entries persisted before #368 carry text only
-and degrade to anonymous `tool called` activity.
+argument fields alongside the human-readable `text` line, and the true
+cardinalities of the counted list fields persist in the item's
+parent-authored `listCounts` field, computed at the construction point
+before sanitizing truncation — the child influences them only through the
+real array lengths it sent, so a model-crafted `{ count, items }` argument
+object can never project a fabricated number. No timeline string is ever
+re-parsed for structure: the roster-grade allowlisted projection is the
+default read, and the manager's wider bounded-summary projection is the
+explicitly named opt-in in `manager-tool-display.ts`. Entries persisted
+before #368 carry text only and degrade to anonymous `tool called` activity.
 
 Resume eligibility follows the effective activity lease, not the persisted
 phase: an inactive `completed`, `failed`, `aborted`, or stale active record
