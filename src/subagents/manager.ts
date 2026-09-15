@@ -47,7 +47,7 @@ import {
 import { sanitizeSubagentDisplay } from "./display";
 import { isRunLeaseActive } from "./lease";
 import { compileFreshPrompt, promptDefinitionHash } from "./prompt";
-import { latestManagerToolCallSummary } from "./tool-display";
+import { latestManagerToolCallSummary } from "./manager-tool-display";
 import { anchoredAutoReadEnabled, anchoredEditingEnabled, type SubagentRuntimeState } from "./tool";
 import type { BackgroundJobSnapshot, SubagentRunDetails } from "./run-types";
 

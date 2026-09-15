@@ -1,7 +1,8 @@
 import type { AgentToolResult, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { decorateToolDefinition, type DisplayRuntimeProvider, type InternalToolDisplayAdapter } from "../display/tool-renderer";
 import type { DisplayActivityItem, DisplayDescriptionV1, DisplayRow, DisplaySection, DisplayTone, OperationalLifecycle, OperationalQualifier } from "../display/types";
-import { managerToolArgsDisplay } from "./tool-display";
+import { timelineToolIdentity } from "./tool-display";
+import { managerToolArgsDisplay } from "./manager-tool-display";
 import type { SubagentTimelineItem } from "./run-types";
 
 function record(value: unknown): Record<string, unknown> {
@@ -67,18 +68,22 @@ interface ToolCall {
 /** Pair start/end timeline entries into one call per tool invocation. Both
  *  entry kinds carry the structured tool name recorded at the construction
  *  point, so pairing matches exact identities and never re-parses the human
- *  `text` line. */
+ *  `text` line. Entries persisted before the structured form carry no tool
+ *  field and cannot be paired truthfully: they render as standalone
+ *  anonymous rows so one tool's end never closes another tool's call. */
 function pairToolCalls(timeline: SubagentTimelineItem[]): ToolCall[] {
   const calls: ToolCall[] = [];
   const pendingByTool = new Map<string, number>();
 
   for (const item of timeline) {
     if (!item || item.kind !== "tool") continue;
-    const display = managerToolArgsDisplay(
-      String(item.tool ?? ""),
-      item.phase === "start" ? item.args : undefined,
-    );
-    const toolName = display.tool;
+    if (typeof item.tool !== "string") {
+      calls.push(item.phase === "start"
+        ? { startItem: item, toolName: "tool" }
+        : { endItem: item, toolName: "tool" });
+      continue;
+    }
+    const toolName = timelineToolIdentity(item);
 
     if (item.phase === "start") {
       const idx = calls.length;
@@ -282,22 +287,42 @@ function subagentTarget(
   return name ?? id;
 }
 
+/** The run-record fields the canonical description renders from. Every field
+ *  is optional — the description stays a defensive projection over persisted
+ *  records and notification payloads — but the fields it reads are declared,
+ *  so a call site passing a value whose shape drifts (a renamed `timeline`, a
+ *  mistyped `finalText`) fails at compile time instead of silently dropping a
+ *  section. Containers the description only skims (`agent`, `usage`,
+ *  `toolErrors`, `toolWarnings`) stay `unknown` and are guarded at read. */
+export interface SubagentRunDescriptionFields {
+  id?: string;
+  operation?: string;
+  phase?: string;
+  model?: string;
+  task?: string;
+  finalText?: string;
+  error?: string;
+  durationMs?: number;
+  retries?: number;
+  agent?: unknown;
+  usage?: unknown;
+  toolErrors?: unknown;
+  toolWarnings?: unknown;
+  timeline?: SubagentTimelineItem[];
+}
+
 /**
  * Build the canonical operational description for one persisted subagent run.
- * The run record arrives loosely typed: the description is a defensive
- * projection that reads only the fields it renders, so the parameter is
- * `unknown` rather than a declared run-record shape that would carry no
- * constraint.
  */
 export function describeSubagentRun(
   name: string,
-  run: unknown,
+  run: SubagentRunDescriptionFields,
   options: { expanded: boolean; isError: boolean },
   fallbackText: string,
   args: Record<string, unknown> = {},
 ): DisplayDescriptionV1 {
   const details = record(run);
-  const live = String(details.finalText || fallbackText || "").trim();
+  const live = String(run.finalText || fallbackText || "").trim();
   const lc = subagentLifecycle(details, options.isError);
   const isResume = name === "resume_subagent";
   const summary = subagentSummary(details, lc.lifecycle);
@@ -315,7 +340,7 @@ export function describeSubagentRun(
   // that used to live in the collapsed body move into the inline summary. The
   // queued summary keeps the short run ID visible for named agents too,
   // because the queued outcome and the ID are one fact for the caller.
-  const queuedRunId = lc.lifecycle === "queued" ? shortId(details.id ?? args.id) : undefined;
+  const queuedRunId = lc.lifecycle === "queued" ? shortId(run.id ?? args.id) : undefined;
   const queuedMessage = !isTerminal && lc.lifecycle === "queued"
     ? ["Queued in the parent session", queuedRunId ? `run ${queuedRunId}` : undefined].filter(Boolean).join(" · ")
     : undefined;
@@ -350,7 +375,7 @@ export function describeSubagentRun(
     expandedSections.push(...[
       taskSection(details),
       resultSection("Result", live),
-      activitySection(timelineItems(details.timeline)),
+      activitySection(timelineItems(run.timeline)),
       refusalSection(details),
       issueSection(details),
       usageSection(details),
@@ -368,10 +393,10 @@ export function describeSubagentRun(
     metadata: [],
     rows,
     sections: options.expanded ? expandedSections : collapsedSections,
-    durationMs: typeof details.durationMs === "number" ? details.durationMs : undefined,
+    durationMs: typeof run.durationMs === "number" ? run.durationMs : undefined,
     summary: effectiveSummary,
-    ...(options.isError || details.phase === "failed"
-      ? { error: String(details.error || fallbackText || "Subagent failed") }
+    ...(options.isError || run.phase === "failed"
+      ? { error: String(run.error || fallbackText || "Subagent failed") }
       : {}),
   } satisfies DisplayDescriptionV1;
 }
@@ -448,7 +473,7 @@ function createSubagentAdapter(name: string): InternalToolDisplayAdapter<any, un
 
       return describeSubagentRun(
         name,
-        details,
+        details as SubagentRunDescriptionFields,
         { expanded: options.expanded, isError: context.isError },
         text,
         args,

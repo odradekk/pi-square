@@ -39,7 +39,8 @@ import {
 import { tryAcquireRunLease } from "./lease";
 import { type ChildViewEvent, deriveChildViewEvent } from "./live-events";
 import { compileFreshPrompt, finalizePromptSnapshot, hashPromptValue } from "./prompt";
-import { formatToolCall, sanitizeToolActivityArgs } from "./tool-display";
+import { sanitizeToolActivityArgs } from "./tool-display";
+import { managerToolCallText } from "./manager-tool-display";
 import { resolveSubagentTools } from "./tool-policy";
 import { ALLOWED_EFFORTS, type AllowedEffort } from "./efforts";
 import type { ActiveSubagentConfig, SubagentPromptSnapshot, SubagentRunDetails, SubagentTimelineItem } from "./run-types";
@@ -585,7 +586,7 @@ async function promptSession(input: {
           phase: "start",
           tool: toolName,
           args: sanitizeToolActivityArgs(event.args),
-          text: formatToolCall(toolName, event.args),
+          text: managerToolCallText(toolName, event.args),
         });
         emitUpdate();
         break;
