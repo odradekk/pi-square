@@ -17,7 +17,8 @@
  * without a settle forward; those entries resolve through the normal
  * stale-task downgrade at the next natural settle.
  *
- * The registration root reports parent run-state transitions through
+ * The registration root reports gate signals — facts about the parent run,
+ * the Shadow scheduler, the session, and Shadow run activity — through
  * `handleRunTransition`; deriving when to open, when to close, and which
  * close reason applies lives here, next to the window semantics it
  * controls. Callers never choose a gate verb or pass a close reason, and
@@ -40,44 +41,41 @@ export const GATE_WINDOW_HARD_MAX_SECONDS = SHADOW_MINDS_COMPLETION_WINDOW_HARD_
 export type ShadowGateCloseReason =
   | "completed"
   | "deadline"
-  | "drained"
   | "new-task"
   | "paused"
   | "aborted"
   | "session";
 
 /**
- * One parent run-state transition the gate derives its open/close from. The
- * registration root translates raw Pi events into these facts; mapping a
- * transition to a gate action and close reason is this module's job.
+ * One gate signal: a fact about the parent run, the Shadow scheduler, the
+ * session, or Shadow run activity. The registration root translates raw Pi
+ * events into these facts; mapping a fact to a gate action and close reason
+ * is this module's job.
  */
-export type ShadowGateRunTransition =
+export type ShadowGateSignal =
   | { kind: "parent-run-start"; realUserTask: boolean }
   | { kind: "parent-run-end"; interrupted: boolean }
-  | { kind: "parent-run-abort" }
+  | { kind: "parent-run-interrupted" }
   | { kind: "scheduler-paused" }
   | { kind: "session-ending" }
   | { kind: "shadow-activity" };
 
-const SETTLE_FORWARDING: ReadonlySet<ShadowGateCloseReason> = new Set(["completed", "deadline", "drained"]);
+const SETTLE_FORWARDING: ReadonlySet<ShadowGateCloseReason> = new Set(["completed", "deadline"]);
 const CANCELS_PENDING: ReadonlySet<ShadowGateCloseReason> = new Set([
   "deadline",
-  "drained",
   "new-task",
   "paused",
   "aborted",
   "session",
 ]);
-
 export interface ShadowCompletionGate {
   /** True while the gate holds the subsystem settle boundary. */
   readonly open: boolean;
   /**
-   * Reports one parent run-state transition. The gate derives whether to
-   * open, re-evaluate, or close — and with which reason — from the
-   * transition itself.
+   * Reports one gate signal. The gate derives whether to open, re-evaluate,
+   * or close — and with which reason — from the fact itself.
    */
-  handleRunTransition(transition: ShadowGateRunTransition): void;
+  handleRunTransition(signal: ShadowGateSignal): void;
   /**
    * Parks the subsystem settle while the gate is open: returns true when the
    * gate is holding (the caller must not run its own settle handling), false
@@ -197,20 +195,20 @@ export function createCompletionGate(deps: {
       return openedAt !== undefined;
     },
 
-    handleRunTransition(transition) {
-      switch (transition.kind) {
+    handleRunTransition(signal) {
+      switch (signal.kind) {
         case "parent-run-start":
           // Only a real-user task closes the gate: extension continuations
           // never re-trigger Shadows and never end the held window.
-          if (transition.realUserTask) closeGate("new-task");
+          if (signal.realUserTask) closeGate("new-task");
           return;
         case "parent-run-end":
-          if (transition.interrupted) closeGate("aborted");
+          if (signal.interrupted) closeGate("aborted");
           else openIfCompletionWorkPending();
           return;
-        case "parent-run-abort":
-          // Pi emits turn_end before agent_end on abort; both observations
-          // map to the same close and the second is an inert no-op.
+        case "parent-run-interrupted":
+          // Pi reports an abort at turn_end before agent_end; both boundaries
+          // report the same fact and the second close is an inert no-op.
           closeGate("aborted");
           return;
         case "scheduler-paused":
@@ -232,7 +230,9 @@ export function createCompletionGate(deps: {
     },
 
     reset() {
-      if (openedAt === undefined) return;
+      // Unconditional and silent: clearing a closed gate is a no-op, and the
+      // parked settle never survives a reset even if the open-state
+      // invariant ("only an open gate parks") ever changes.
       openedAt = undefined;
       settleParked = false;
       cancelTimer?.();

@@ -860,7 +860,7 @@ export default function registerShadowMinds(
     // instead of dispatching: Pi emits turn_end before agent_end on abort,
     // and an aborted quality command is not a failure trigger.
     if ((event?.message as { stopReason?: unknown } | undefined)?.stopReason === "aborted") {
-      state.gate?.handleRunTransition({ kind: "parent-run-abort" });
+      state.gate?.handleRunTransition({ kind: "parent-run-interrupted" });
       state.scheduler.handleTurnAbort();
       refreshStatus();
       return;

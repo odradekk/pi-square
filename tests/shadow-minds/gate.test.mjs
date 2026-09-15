@@ -230,7 +230,7 @@ const RUN_ENDED = { kind: "parent-run-end", interrupted: false };
   assert.deepEqual(pausing.state.closed, [{ reason: "paused", cancelled: 1 }], "pause cancels the unstarted completions");
   assert.deepEqual(pausing.state.settled, [], "pause never forwards the settle");
 
-  for (const abort of [{ kind: "parent-run-abort" }, { kind: "parent-run-end", interrupted: true }]) {
+  for (const abort of [{ kind: "parent-run-interrupted" }, { kind: "parent-run-end", interrupted: true }]) {
     const harness = makeHarness();
     harness.gate.handleRunTransition(RUN_ENDED);
     harness.gate.handleRunTransition(abort);
@@ -242,7 +242,7 @@ const RUN_ENDED = { kind: "parent-run-end", interrupted: false };
   // Pi emits turn_end before agent_end on abort; the second observation is inert.
   const doubleAbort = makeHarness();
   doubleAbort.gate.handleRunTransition(RUN_ENDED);
-  doubleAbort.gate.handleRunTransition({ kind: "parent-run-abort" });
+  doubleAbort.gate.handleRunTransition({ kind: "parent-run-interrupted" });
   doubleAbort.gate.handleRunTransition({ kind: "parent-run-end", interrupted: true });
   assert.deepEqual(doubleAbort.state.closed.length, 1, "a second abort observation is refused");
 }
