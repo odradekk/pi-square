@@ -19,6 +19,7 @@ const { MEMORY_SUMMARY_WRAPPER, MEMORY_BLOCK_SEPARATOR } = await load("../../../
 const MEMORY_TOOLS = ["compact_to_memory_block", "read_memory_source", "search_memory_source"];
 
 export const CONFIG = Object.freeze({ contextWindow: 256_000, thinkingLevel: "max", memoryBudgetPercent: 2, memoryCompressionThreshold: Object.freeze({ tokens: 5_121 }), timeoutMs: 3_600_000,
+  emergencyCompaction: Object.freeze({ safetyBudgetRatio: 0.7 }),
   recovery: Object.freeze({ initialDelayMs: 1_000, maxDelayMs: 30_000 }) });
 const textOf = message => typeof message?.content === "string" ? message.content : (message?.content ?? []).filter(p => p.type === "text").map(p => p.text).join("\n");
 const resultOf = (data, isError = false) => ({ content: [{ type: "text", text: JSON.stringify(data) }], details: data, ...(isError ? { isError } : {}) });
@@ -79,7 +80,7 @@ export async function runProgressiveSession({ directory, arm, task, model, model
   const monotonicNow = typeof clock?.performance?.now === "function" ? () => clock.performance.now() : () => performance.now();
   const startedMonotonic = monotonicNow();
   const armElapsedMs = () => Math.max(0, monotonicNow() - startedMonotonic);
-  let session, sandbox, evidence, sessionManager;
+  let session, sandbox, evidence, sessionManager, memoryRegistration;
   let stage = 1;
   let phase = "work";
   let providerFailed = false;
@@ -96,6 +97,8 @@ export async function runProgressiveSession({ directory, arm, task, model, model
   const toolStartedAt = new Map();
   let previousBlocks = [];
   let pendingApplication;
+  let emergency = false;
+  const emergencyCompaction = { requested: 0, recorded: 0, applied: 0, refused: 0, appends: 0, rebuilds: 0 };
   const coverage = { stageGates: 0, appends: 0, rebuilds: 0 };
   let memoryAvailable = false;
   let verifying = false;
@@ -106,13 +109,14 @@ export async function runProgressiveSession({ directory, arm, task, model, model
   };
   const activeNames = () => {
     const reading = arm === "memory" && memoryAvailable ? MEMORY_TOOLS.slice(1) : [];
-    if (phase === "work") return ["bash", "verify_stage", ...reading];
-    if (phase === "closing") return ["close_stage", "compact_to_memory_block", ...reading];
     if (pendingApplication) return reading;
+    if (phase === "work") return emergency ? ["compact_to_memory_block", ...reading] : ["bash", "verify_stage", ...reading];
+    if (phase === "closing") return ["close_stage", "compact_to_memory_block", ...reading];
     if (phase === "compact") return ["compact_to_memory_block", ...reading];
     return reading;
   };
   const maintenanceContinuation = () => {
+    if (emergency && !pendingApplication) return "Context safety exception: pause stage work and call compact_to_memory_block alone using the current Context Memory maintenance advisory. Preserve project facts, every released identifier, and unfinished work. This does not verify or complete the stage; resume the same stage only after Memory application.";
     if (phase === "closing") {
       return "Use the actual registered close_stage tool interface now. Writing a tool name or XML/JSON/prose that describes a call does not execute it. Only a real successful tool result advances this stage.";
     }
@@ -151,7 +155,7 @@ export async function runProgressiveSession({ directory, arm, task, model, model
           if (property === "setActiveTools") return names => target.setActiveTools(names.filter(name => activeNames().includes(name)));
           return target[property];
         } });
-        registerMemory(gatedPi, {
+        memoryRegistration = registerMemory(gatedPi, {
           configProvider: () => ({ contextMemory: { enabled: true, compressionThreshold: memoryCompressionThreshold, memoryBudgetPercent: CONFIG.memoryBudgetPercent } }),
           displayRuntimeProvider: () => { throw new Error("display not used by progressive experiment"); },
           reserveTokens: () => settingsManager.getCompactionSettings().reserveTokens,
@@ -188,9 +192,30 @@ export async function runProgressiveSession({ directory, arm, task, model, model
           return resultOf({ passed: true, stage, flag: task.flags[stage - 1], instruction: arm === "memory" ? "This stage passed. Call close_stage to record the verified workspace, then compact_to_memory_block alone to preserve the project facts and all flags. Wait for the next stage after compaction." : "This stage is complete. Stop and wait for the next stage prompt." });
         } });
       pi.on("tool_call", event => activeNames().includes(event.toolName) && !(phase === "closing" && event.toolName === "compact_to_memory_block") ? undefined : { block: true, reason: "This tool is unavailable in the current experiment phase. Finish the required closing operation before compacting." });
-      pi.on("context", () => {
+      pi.on("context", (event, ctx) => {
+        let newlyRequested = false;
+        const snapshot = memoryRegistration?.snapshot(ctx.getContextUsage());
+        const safetyBound = CONFIG.contextWindow - settingsManager.getCompactionSettings().reserveTokens;
+        const threshold = Math.floor(safetyBound * CONFIG.emergencyCompaction.safetyBudgetRatio);
+        // The production estimate includes a pending rebuild's original sources.
+        // Only its fit-approved advisory authorizes exceptional work-phase compact.
+        if (phase === "work" && !pendingApplication && !emergency
+          && snapshot?.maintenance && !snapshot.maintenance.suppressed
+          && snapshot.pressure?.estimated >= threshold) {
+          emergency = true;
+          newlyRequested = true;
+          emergencyCompaction.requested++;
+          emit("emergency-compaction-requested", { stage, estimatedTokens: snapshot.pressure.estimated, thresholdTokens: threshold, safetyBoundTokens: safetyBound, operation: snapshot.maintenance.operation });
+        }
+        if (emergency && !pendingApplication && (!snapshot?.maintenance || snapshot.maintenance.suppressed)) {
+          emergency = false;
+          emit("emergency-compaction-deferred", { stage, reason: snapshot?.scaleLimit ? "source-scale-limit" : "maintenance-unavailable" });
+        }
         memoryAvailable = arm === "memory" && deriveCurrentMemory(sessionManager).kind === "valid";
         pi.setActiveTools(activeNames());
+        // The current tool snapshot cannot execute the newly enabled compact.
+        // Its stop/wait reminder replaces the conflicting production advisory.
+        if (newlyRequested) return { messages: event.messages.filter(message => message.customType !== "pi-square.context-memory/advisory") };
       });
       pi.on("tool_execution_start", event => toolStartedAt.set(event.toolCallId, monotonicNow()));
       pi.on("tool_execution_end", event => {
@@ -199,12 +224,22 @@ export async function runProgressiveSession({ directory, arm, task, model, model
           if (event.result?.details?.recorded && memory.kind === "valid") {
             const blocks = memory.blocks;
             const operation = blocks.length === previousBlocks.length + 1 && previousBlocks.every((block, i) => block.endEntryId === blocks[i].endEntryId && block.markdown === blocks[i].markdown) ? "append" : "rebuild";
-            pendingApplication = { stage, memoryId: memory.stateEntryId, operation, request: metrics.requests };
+            const purpose = phase === "work" && emergency ? "emergency" : "stage";
+            // Application must remove evidence newly covered by this operation,
+            // not an old prefix source already absent before this recording.
+            const previouslyReplaced = new Set(previousBlocks.flatMap(block => block.sourceEntries.filter(entry => !block.retainedEntryIds.includes(entry.id)).map(entry => entry.id)));
+            const newSources = purpose === "emergency" ? blocks.flatMap(block => block.sourceEntries.filter(entry => !block.retainedEntryIds.includes(entry.id) && !previouslyReplaced.has(entry.id))) : [];
+            const source = newSources.findLast(entry => entry.type === "message" && entry.message.role === "toolResult")
+              ?? newSources.findLast(entry => entry.type === "message" && entry.message.role !== "user");
+            pendingApplication = { stage, purpose, memoryId: memory.stateEntryId, operation, request: metrics.requests,
+              ...(source ? { sourceEntry: source.id } : {}) };
             problems.applicationPending = true;
             previousBlocks = blocks;
-            emit("memory-recorded", pendingApplication);
+            if (purpose === "emergency") emergencyCompaction.recorded++;
+            emit(purpose === "emergency" ? "emergency-compaction-recorded" : "memory-recorded", pendingApplication);
           } else {
             const code = /\b[A-Z][A-Z0-9_]{3,}\b/.exec(textOf(event.result))?.[0] ?? "UNCLASSIFIED";
+            if (phase === "work" && emergency) emergencyCompaction.refused++;
             problems.compactionRefusals[code] = (problems.compactionRefusals[code] ?? 0) + 1;
             emit("compaction-refused", { stage, request: metrics.requests, code });
           }
@@ -244,24 +279,44 @@ export async function runProgressiveSession({ directory, arm, task, model, model
       const requestStage = stage, requestPhase = phase;
       if (pendingApplication && arm === "memory") {
         const memory = deriveCurrentMemory(sessionManager);
+        const isEmergency = pendingApplication.purpose === "emergency";
         const call = flagCalls.get(stage);
-        const original = sessionManager.getBranch().find(entry => entry.type === "message" && entry.message.role === "toolResult" && entry.message.toolCallId === call);
+        const original = sessionManager.getBranch().find(entry => isEmergency ? entry.id === pendingApplication.sourceEntry
+          : entry.type === "message" && entry.message.role === "toolResult" && entry.message.toolCallId === call);
         const expected = memory.kind === "valid" ? [MEMORY_SUMMARY_WRAPPER, ...memory.blocks.map(block => MEMORY_BLOCK_SEPARATOR + block.markdown)] : [];
         const carrier = expected.length > 0 && context.messages.some(message => Array.isArray(message.content) && JSON.stringify(message.content.filter(part => part.type === "text").map(part => part.text)) === JSON.stringify(expected));
         const replaced = original && memory.kind === "valid" && memory.blocks.some(block => block.sourceEntries.some(entry => entry.id === original.id) && !block.retainedEntryIds.includes(original.id));
-        const absent = !context.messages.some(message => message.role === "toolResult" && message.toolCallId === call);
+        const absent = isEmergency
+          ? original && !context.messages.some(message => message.role === original.message.role && message.timestamp === original.message.timestamp
+            && digest(message.content) === digest(original.message.content))
+          : !context.messages.some(message => message.role === "toolResult" && message.toolCallId === call);
         if (memory.kind === "valid" && memory.stateEntryId === pendingApplication.memoryId && carrier && replaced && absent && request > pendingApplication.request) {
           pendingApplication.appliedAtRequest = request;
-          coverage[pendingApplication.operation === "append" ? "appends" : "rebuilds"]++;
-          coverage.stageGates++;
-          emit("memory-applied", { ...pendingApplication, sourceEntry: original.id, replaced: true, carrier: true });
-          phase = "passed";
+          if (isEmergency) {
+            emergencyCompaction.applied++;
+            emergencyCompaction[pendingApplication.operation === "append" ? "appends" : "rebuilds"]++;
+            emergency = false;
+          } else {
+            coverage[pendingApplication.operation === "append" ? "appends" : "rebuilds"]++;
+            coverage.stageGates++;
+            phase = "passed";
+            stages.at(-1).appliedAtMs = armElapsedMs();
+          }
+          emit(isEmergency ? "emergency-compaction-applied" : "memory-applied", { ...pendingApplication, sourceEntry: original.id, replaced: true, carrier: true });
           pendingApplication = undefined;
           problems.applicationPending = false;
-          stages.at(-1).appliedAtMs = armElapsedMs();
         }
       }
-      const visible = (context.tools ?? []).filter(tool => activeNames().includes(tool.name));
+      let visible = (context.tools ?? []).filter(tool => activeNames().includes(tool.name));
+      // Pi snapshots executable tools before context handlers. A newly enabled
+      // compact becomes executable on the next prompt, never by inventing a schema.
+      if (emergency && !pendingApplication) {
+        const instruction = visible.some(tool => tool.name === "compact_to_memory_block")
+          ? maintenanceContinuation()
+          : "Context safety exception: pause stage work and end this response now. The coordinator will enable compact_to_memory_block on the next prompt. Do not call unavailable tools.";
+        if (!visible.some(tool => tool.name === "compact_to_memory_block")) visible = [];
+        context = { ...context, messages: [...context.messages, { role: "user", content: instruction, timestamp: Date.now() }] };
+      }
       emit("request", { request, stage, phase, tools: visible.map(t => t.name), toolSchemaSha256: digest(visible), toolSchemaBytes: Buffer.byteLength(JSON.stringify(visible)), systemSha256: digest(context.systemPrompt ?? ""), messages: context.messages.map(message => message.role === "assistant" ? { ...message, content: message.content.filter(part => part.type !== "thinking") } : message) });
       const response = await stream(requestModel, { ...context, tools: visible }, options);
       usagePending.push(response.result().then(message => {
@@ -305,7 +360,7 @@ export async function runProgressiveSession({ directory, arm, task, model, model
         emit("provider-retry", { stage, phase, request: metrics.requests, consecutiveFailures, delayMs, diagnostic: safeResponseDiagnostic(providerFailure) });
         await retryDelay(delayMs, undefined, { signal: combined });
         combined.throwIfAborted();
-        text = phase === "final" ? FINAL_RECALL : phase === "work" ? WORK_CONTINUATION
+        text = phase === "final" ? FINAL_RECALL : phase === "work" && !emergency && !pendingApplication ? WORK_CONTINUATION
           : phase === "passed" ? "The current stage is complete. Stop and wait for the next stage. Do not repeat completed tool operations."
             : maintenanceContinuation();
         metrics.retryContinuations++; recovering = true;
@@ -317,7 +372,7 @@ export async function runProgressiveSession({ directory, arm, task, model, model
       stages.push({ stage, passed: false, startedAtMs: armElapsedMs() });
       emit("stage-start", { stage });
       await prompt(`${stage === 1 ? task.openingPrompt + "\n\n" : ""}STAGE ${stage}\n${task.prompt(stage)}`);
-      while (phase !== "passed") await prompt(phase === "work"
+      while (phase !== "passed") await prompt(phase === "work" && !emergency && !pendingApplication
         ? WORK_CONTINUATION
         : maintenanceContinuation());
       stage++;
@@ -361,6 +416,6 @@ export async function runProgressiveSession({ directory, arm, task, model, model
   let manifest;
   try { manifest = evidence?.close(); } catch (error) { infrastructureError = error; }
   const status = deadline.signal.aborted ? "timeout" : signal?.aborted ? "cancelled" : infrastructureError ? "infrastructure-error" : providerFailed ? "provider-error" : !recall?.complete ? "recall-error" : arm === "memory" && (coverage.stageGates !== 8 || coverage.appends < 1 || coverage.rebuilds < 2) ? "coverage-incomplete" : "passed";
-  return { arm, status, stages, recall, coverage, metrics, problems, nativeReplay, terminal: { stage: Math.min(stage, 8), phase }, elapsedMs: armElapsedMs(), evidence: manifest,
+  return { arm, status, stages, recall, coverage, emergencyCompaction, metrics, problems, nativeReplay, terminal: { stage: Math.min(stage, 8), phase }, elapsedMs: armElapsedMs(), evidence: manifest,
     ...((infrastructureError ?? terminalProviderError) ? { diagnostic: safeErrorDiagnostic(infrastructureError ?? terminalProviderError, { repoRoot: directory }) } : {}) };
 }
