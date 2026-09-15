@@ -13,7 +13,7 @@ import {
   type PaintTimers,
 } from "./live-events";
 import { latestRosterToolCallSummary } from "./tool-display";
-import type { BackgroundJobSnapshot } from "./types";
+import type { BackgroundJobSnapshot } from "./run-types";
 import {
   childOverlayOptions,
   type ChildHistoryView,

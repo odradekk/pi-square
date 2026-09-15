@@ -27,11 +27,8 @@ import {
   DEFAULT_MAX_CLAIM_RESERVATIONS,
   DEFAULT_MAX_PENDING_RESULTS,
 } from "./confirmed-delivery";
-import type {
-  SubagentNotificationDetails,
-  SubagentResultStatus,
-  SubagentRunDetails,
-} from "./types";
+import type { SubagentNotificationDetails, SubagentResultStatus } from "./notification-types";
+import type { SubagentRunDetails } from "./run-types";
 export const SUBAGENT_NOTIFICATION_TYPE = "pi-square.subagent-notification";
 
 /** Model-facing budget for one result text. */

@@ -2,7 +2,7 @@ import { statSync } from "node:fs";
 import { validateRunArtifacts } from "./artifacts";
 import { isRunLeaseActive } from "./lease";
 import { isStaleActiveRecord } from "./status";
-import type { SubagentRunDetails } from "./types";
+import type { SubagentRunDetails } from "./run-types";
 
 const MAX_TIMELINE_EVENTS = 8;
 const MAX_ASSISTANT_EXCERPT = 500;

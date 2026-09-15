@@ -25,11 +25,11 @@ import { clipWithHeadTail } from "./confirmed-delivery";
 import { createSubagentError, failureToolResult } from "./errors";
 import type {
   SubagentResultStatus,
-  SubagentRunDetails,
   SubagentWaitDetails,
   SubagentWaitResult,
   SubagentWaitRunSummary,
-} from "./types";
+} from "./notification-types";
+import type { SubagentRunDetails } from "./run-types";
 import type { SubagentRuntimeState } from "./tool";
 
 /** Budget for the task line inside wait details; matches the delivery task line. */

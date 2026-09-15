@@ -3,7 +3,7 @@ import type {
   SubagentErrorInfo,
   SubagentFailureDetails,
   SubagentRunDetails,
-} from "./types";
+} from "./run-types";
 
 const MAX_CAUSE_LENGTH = 2000;
 const ANSI_PATTERN = /\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g;

@@ -49,7 +49,7 @@ import { isRunLeaseActive } from "./lease";
 import { compileFreshPrompt, promptDefinitionHash } from "./prompt";
 import { latestToolCallSummary } from "./tool-display";
 import { anchoredAutoReadEnabled, anchoredEditingEnabled, type SubagentRuntimeState } from "./tool";
-import type { BackgroundJobSnapshot, SubagentRunDetails } from "./types";
+import type { BackgroundJobSnapshot, SubagentRunDetails } from "./run-types";
 
 type ManagerTab = "running" | "session" | "definitions";
 type WritableScope = "agent" | "project";
