@@ -26,17 +26,9 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
   clipWithHeadTail,
   createConfirmedDeliveryCore,
-  DEFAULT_MAX_BATCH_RESULTS,
   DEFAULT_MAX_PENDING_RESULTS,
   type ConfirmedDeliveryBatchEntry,
   type ConfirmedDeliveryCore,
-} from "../subagents/confirmed-delivery";
-export {
-  subscribeDeliveryLifecycle,
-  type ConfirmedDeliveryLifecycle,
-  type DeliveryEventSource,
-  type DeliveryLifecycleSubscribeOptions,
-  type DeliverySettleForwarding,
 } from "../subagents/confirmed-delivery";
 import { sanitizeDisplayLine, sanitizeDisplayText } from "../display/sanitize";
 import type { ShadowDelivery } from "./parser";
@@ -49,10 +41,6 @@ export const SHADOW_NOTIFICATION_TYPE = "pi-square.shadow-notification";
 export const MAX_RESULT_CHARS = 24_000;
 /** Model-facing budget for one infrastructure failure summary. */
 export const ERROR_SUMMARY_MAX_CHARS = 2_000;
-/** Results coalesced into a single delivery; the rest follow at the next one. */
-export const MAX_BATCH_RESULTS = DEFAULT_MAX_BATCH_RESULTS;
-/** Hard bound on the pending set so an unattended session stays bounded. */
-export const MAX_PENDING_RESULTS = DEFAULT_MAX_PENDING_RESULTS;
 
 /** Parent-run timing the policy gate decides against. */
 export interface ShadowDeliveryTiming {
@@ -237,8 +225,12 @@ export function shadowNotificationResultIds(message: unknown): string[] {
  * Shadow entries, extended only with the Shadow policy operations. No core
  * member is redeclared here; the store's delivery transitions and the quiet
  * confirmation state live beside the core and are driven through its hooks.
+ * `enqueue` and `claim` stay out of the exposed shape: Shadow entries must
+ * enter through the policy operations (a raw enqueue would bypass the
+ * identity index and never be swept or cap-guarded), and Shadow Minds never
+ * claims results.
  */
-export interface ShadowDeliveryCore extends ConfirmedDeliveryCore<ShadowDeliveryValue> {
+export type ShadowDeliveryCore = Omit<ConfirmedDeliveryCore<ShadowDeliveryValue>, "enqueue" | "claim"> & {
   /** Offers one finished result; notify policy results stay inbox-only. */
   enqueueResult(result: ShadowResultEntity): void;
   /** Explicit Send to agent: promotes a notified result through the same machine. */
@@ -247,7 +239,7 @@ export interface ShadowDeliveryCore extends ConfirmedDeliveryCore<ShadowDelivery
   sendErrorSummary(run: { id: string; shadowId: string; shadowName: string; phase: string; message?: string }): boolean;
   /** Confirms quiet sends only when their IDs were observed in persisted transcript entries. */
   confirmQuietDeliveries(observedIds: readonly string[]): number;
-}
+};
 
 export function createShadowDeliveryCore(options: {
   pi: Pick<ExtensionAPI, "sendMessage">;
@@ -340,6 +332,10 @@ export function createShadowDeliveryCore(options: {
     // boundary turns out aborted and flushes nothing.
     beforeFlush: () => { sweep(); },
     onEntriesRemoved: (ids, reason) => {
+      // The core fires this hook only for identities it actually removed, and
+      // the pre-emptive cap guard keeps every indexed identity inside the
+      // pending set, so a confirmation that matched nothing pending needs no
+      // store transition here.
       for (const id of ids) {
         const value = index.get(id);
         index.delete(id);
@@ -385,7 +381,7 @@ export function createShadowDeliveryCore(options: {
     sweep();
     // Pre-empt the core's silent oldest-drop at the pending cap: the oldest
     // entry degrades visibly instead of stranding its inbox row at "sending".
-    while (core.pendingCount() >= MAX_PENDING_RESULTS) {
+    while (core.pendingCount() >= DEFAULT_MAX_PENDING_RESULTS) {
       const oldest = core.pendingIds()[0];
       const oldestValue = oldest !== undefined ? index.get(oldest) : undefined;
       if (oldest === undefined || !oldestValue) break;

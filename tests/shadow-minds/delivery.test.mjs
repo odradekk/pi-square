@@ -9,14 +9,16 @@ const load = jiti(import.meta.url, { moduleCache: false });
 
 const {
   SHADOW_NOTIFICATION_TYPE,
-  MAX_BATCH_RESULTS,
-  MAX_PENDING_RESULTS,
   buildShadowDeliveryContent,
   shadowNotificationResultIds,
   resolveDeliveryDecision,
   createShadowDeliveryCore,
-  subscribeDeliveryLifecycle,
 } = await load(join(packageRoot, "src", "shadow-minds", "delivery.ts"));
+const {
+  DEFAULT_MAX_BATCH_RESULTS,
+  DEFAULT_MAX_PENDING_RESULTS,
+  subscribeDeliveryLifecycle,
+} = await load(join(packageRoot, "src", "subagents", "confirmed-delivery.ts"));
 
 // ── resolveDeliveryDecision ────────────────────────────────────────
 
@@ -164,8 +166,8 @@ function makeResult(overrides = {}) {
   );
 }
 
-assert.equal(MAX_BATCH_RESULTS, 6, "batches coalesce at most six results");
-assert.equal(MAX_PENDING_RESULTS, 50, "the pending set stays bounded at fifty");
+assert.equal(DEFAULT_MAX_BATCH_RESULTS, 6, "batches coalesce at most six results");
+assert.equal(DEFAULT_MAX_PENDING_RESULTS, 50, "the pending set stays bounded at fifty");
 
 // ── createShadowDeliveryCore ─────────────────────────────────
 

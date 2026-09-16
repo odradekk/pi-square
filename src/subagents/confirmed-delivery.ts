@@ -106,8 +106,11 @@ export interface ConfirmedDeliveryClaim<T> {
    * true stays in the store as an unsent entry eligible for the normal
    * automatic-delivery schedule; every other stored result is removed from
    * delivery storage, and reservations without a stored result are dropped.
+   * The predicate may be omitted, in which case the core's configured
+   * release policy decides; with no policy configured, every stored result
+   * leaves delivery storage.
    */
-  release(keep: (value: T) => boolean): void;
+  release(keep?: (value: T) => boolean): void;
 }
 
 export interface ConfirmedDeliveryCore<T> extends ConfirmedDeliveryLifecycle {
@@ -197,6 +200,14 @@ export function createConfirmedDeliveryCore<T>(options: {
    * next boundary check.
    */
   onEntriesRemoved?: (ids: readonly string[], reason: "confirmed" | "removed" | "reset") => void;
+  /**
+   * Optional release routing consulted when a claim releases without an
+   * explicit keep predicate: true rejoins the automatic schedule, false
+   * leaves delivery storage. Binding the rule here keeps a policy such as
+   * the aborted-result drop enforced by the adapter instead of remembered
+   * by every caller (odradekk/pi-square#372).
+   */
+  releaseKeep?: (value: T) => boolean;
   /**
    * Optional compatibility key: only results sharing the key of the oldest
    * unsent entry are coalesced into one message. Omitted means every result
@@ -399,13 +410,14 @@ export function createConfirmedDeliveryCore<T>(options: {
             // owns are routed back to the automatic schedule or dropped.
             const ownedIds = new Set(reservation.ids.filter((id) => reservations.get(id) === reservation));
             finish();
+            const keepEntry = keep ?? options.releaseKeep ?? (() => false);
             let changed = false;
             let releasedUnsent = false;
             for (const id of reservation.ids) {
               if (!ownedIds.has(id)) continue;
               const entry = pending.get(id);
               if (!entry?.claimed) continue;
-              if (keep(entry.value)) {
+              if (keepEntry(entry.value)) {
                 entry.claimed = false;
                 entry.sent = false;
                 releasedUnsent = true;

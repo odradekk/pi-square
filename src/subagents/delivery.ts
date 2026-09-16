@@ -24,16 +24,6 @@ import {
   type ConfirmedDeliveryClaim,
   type ConfirmedDeliveryCore,
   type DeliveryClaimFailure,
-  DEFAULT_MAX_BATCH_RESULTS,
-  DEFAULT_MAX_CLAIM_RESERVATIONS,
-  DEFAULT_MAX_PENDING_RESULTS,
-} from "./confirmed-delivery";
-export {
-  subscribeDeliveryLifecycle,
-  type ConfirmedDeliveryLifecycle,
-  type DeliveryEventSource,
-  type DeliveryLifecycleSubscribeOptions,
-  type DeliverySettleForwarding,
 } from "./confirmed-delivery";
 import type { SubagentNotificationDetails, SubagentResultStatus } from "./notification-types";
 import type { SubagentRunDetails } from "./run-types";
@@ -42,12 +32,6 @@ export const SUBAGENT_NOTIFICATION_TYPE = "pi-square.subagent-notification";
 
 /** Model-facing budget for one result text. */
 export const MAX_RESULT_CHARS = 24_000;
-/** Results coalesced into a single delivery; the rest follow at the next one. */
-export const MAX_BATCH_RESULTS = DEFAULT_MAX_BATCH_RESULTS;
-/** Hard bound on the pending set so an unattended session stays bounded. */
-export const MAX_PENDING_RESULTS = DEFAULT_MAX_PENDING_RESULTS;
-/** Hard bound on simultaneously held explicit wait reservations. */
-export const MAX_WAIT_RESERVATIONS = DEFAULT_MAX_CLAIM_RESERVATIONS;
 /** Public IDs one wait_subagent call may select. */
 export const MAX_WAIT_IDS = 6;
 const MAX_TASK_CHARS = 300;
@@ -251,6 +235,10 @@ export function createSubagentDeliveryCore(options: {
     },
     confirmIds: notificationResultIds,
     accepts: admitsFinishedRun,
+    // The aborted-result release rule binds to the core, so a wait that
+    // releases without a predicate still routes completed and failed
+    // results back and drops aborted ones (ADR-0016).
+    releaseKeep: keepReleasedResult,
     isIdle: options.isIdle,
     onPendingChange: options.notify,
   });

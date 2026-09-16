@@ -50,6 +50,7 @@ function harness(options = {}) {
     ...(options.accepts ? { accepts: options.accepts } : {}),
     ...(options.beforeFlush ? { beforeFlush: options.beforeFlush } : {}),
     ...(options.onEntriesRemoved ? { onEntriesRemoved: options.onEntriesRemoved } : {}),
+    ...(options.releaseKeep ? { releaseKeep: options.releaseKeep } : {}),
     isIdle: () => idle,
     onPendingChange: () => { changes += 1; },
   });
@@ -365,6 +366,30 @@ test("release routes by the caller's keep policy and drops the rest", () => {
 
   probe.core.handleTurnEnd();
   assert.deepEqual(probe.last().ids, ["done"], "the kept result rejoins the automatic schedule");
+});
+
+test("release without a predicate consults the configured release policy", () => {
+  const probe = harness({ idle: false, releaseKeep: (value) => String(value).startsWith("keep:") });
+  probe.core.enqueue({ id: "done", value: "keep:done" });
+  probe.core.enqueue({ id: "stopped", value: "drop:stopped" });
+  const active = probe.core.claim(["done", "stopped"]);
+  assert.equal(active.ok, true);
+  active.claim.release();
+  assert.equal(probe.core.isPending("done"), true, "the policy keeps the deliverable result for the automatic schedule");
+  assert.equal(probe.core.isPending("stopped"), false, "the policy drops every other stored result");
+
+  // An explicit predicate still overrides the configured policy.
+  const second = probe.core.claim(["later"]);
+  probe.core.enqueue({ id: "later", value: "keep:later" });
+  second.claim.release(() => false);
+  assert.equal(probe.core.isPending("later"), false, "an explicit release predicate overrides the policy");
+
+  // With no policy configured, a predicate-less release drops everything.
+  const bare = harness({ idle: false });
+  bare.core.enqueue({ id: "solo", value: "v" });
+  const third = bare.core.claim(["solo"]);
+  third.claim.release();
+  assert.equal(bare.core.isPending("solo"), false, "no policy and no predicate leaves nothing in delivery storage");
 });
 
 test("remove and reset clear outstanding claims with the pending set", () => {

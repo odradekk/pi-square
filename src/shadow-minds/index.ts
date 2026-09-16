@@ -75,11 +75,13 @@ import { buildTrajectory, type ShadowTrajectoryEvidence } from "./trajectory";
 import { resolveShadowTools } from "./tools";
 import { createShadowResultStore, type ShadowResultStore } from "./result-store";
 import {
-  createShadowDeliveryCore,
-  MAX_PENDING_RESULTS,
-  shadowNotificationResultIds,
+  DEFAULT_MAX_PENDING_RESULTS,
   subscribeDeliveryLifecycle,
   type DeliverySettleForwarding,
+} from "../subagents/confirmed-delivery";
+import {
+  createShadowDeliveryCore,
+  shadowNotificationResultIds,
   type ShadowDeliveryCore,
 } from "./delivery";
 import { createCompletionGate, type ShadowCompletionGate } from "./gate";
@@ -1042,7 +1044,7 @@ export default function registerShadowMinds(
         // Drain compatible batches one at a time. Each batch is confirmed only
         // from an actual session entry; without confirmation, stop rather than
         // resend in a hot loop. The iteration cap is the pending hard bound.
-        for (let batch = 0; batch < MAX_PENDING_RESULTS && Date.now() < deadline; batch += 1) {
+        for (let batch = 0; batch < DEFAULT_MAX_PENDING_RESULTS && Date.now() < deadline; batch += 1) {
           const before = state.delivery?.pendingCount() ?? 0;
           if (before === 0) break;
           deliverySettleForwarding?.settle();

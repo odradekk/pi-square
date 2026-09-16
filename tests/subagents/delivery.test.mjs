@@ -11,13 +11,15 @@ const {
   budgetResultText,
   createSubagentDeliveryCore,
   keepReleasedResult,
-  MAX_BATCH_RESULTS,
-  MAX_PENDING_RESULTS,
   MAX_RESULT_CHARS,
-  MAX_WAIT_RESERVATIONS,
   notificationResultIds,
   SUBAGENT_NOTIFICATION_TYPE,
 } = await load(join(packageRoot, "src", "subagents", "delivery.ts"));
+const {
+  DEFAULT_MAX_BATCH_RESULTS,
+  DEFAULT_MAX_CLAIM_RESERVATIONS,
+  DEFAULT_MAX_PENDING_RESULTS,
+} = await load(join(packageRoot, "src", "subagents", "confirmed-delivery.ts"));
 
 function runDetails(id, overrides = {}) {
   return {
@@ -122,20 +124,20 @@ test("a failure text uses the same budget as a result text", () => {
 
 test("a burst renders as one V5 steering notification per batch", () => {
   const probe = harness({ idle: false });
-  for (let index = 0; index < MAX_BATCH_RESULTS + 1; index += 1) enqueue(probe.core, `run-${index}`);
+  for (let index = 0; index < DEFAULT_MAX_BATCH_RESULTS + 1; index += 1) enqueue(probe.core, `run-${index}`);
 
   probe.core.handleTurnEnd();
   assert.equal(probe.sent.length, 1);
   const message = probe.last().message;
   assert.equal(message.customType, SUBAGENT_NOTIFICATION_TYPE);
   assert.equal(message.details.version, 5);
-  assert.equal(message.details.results.length, MAX_BATCH_RESULTS);
+  assert.equal(message.details.results.length, DEFAULT_MAX_BATCH_RESULTS);
   assert.deepEqual(
     message.details.results.map((result) => [result.id, result.status, result.result.id]),
-    Array.from({ length: MAX_BATCH_RESULTS }, (_, index) => [`run-${index}`, "completed", `run-${index}`]),
+    Array.from({ length: DEFAULT_MAX_BATCH_RESULTS }, (_, index) => [`run-${index}`, "completed", `run-${index}`]),
     "every entry carries the run identity, the deliverable status, and its V4 run record",
   );
-  assert.match(message.content, new RegExp(`^\\[Background subagents: ${MAX_BATCH_RESULTS} results\\]`));
+  assert.match(message.content, new RegExp(`^\\[Background subagents: ${DEFAULT_MAX_BATCH_RESULTS} results\\]`));
   assert.match(message.content, /--- 1\/6 completed · id: run-0/);
   assert.deepEqual(probe.last().options, { triggerTurn: true, deliverAs: "steer" });
 });
@@ -245,7 +247,7 @@ test("release routing keeps deliverable results and drops aborted ones", () => {
 
   const claim = probe.core.claim(["run-done", "run-failed"]);
   assert.equal(claim.ok, true);
-  claim.claim.release(keepReleasedResult);
+  claim.claim.release();
 
   assert.equal(probe.core.isPending("run-done"), true);
   assert.equal(probe.core.isPending("run-failed"), true);
@@ -257,13 +259,13 @@ test("release routing keeps deliverable results and drops aborted ones", () => {
   const abortedClaim = probe.core.claim(["run-stopped"]);
   probe.core.enqueue({ id: "run-stopped", value: { id: "run-stopped", status: "aborted", details: abortedDetails } });
   assert.equal(probe.core.isPending("run-stopped"), true);
-  abortedClaim.claim.release(keepReleasedResult);
+  abortedClaim.claim.release();
   assert.equal(probe.core.isPending("run-stopped"), false);
 });
 
 test("the wait reservation bound matches the documented contract", () => {
-  assert.equal(MAX_WAIT_RESERVATIONS, 50);
-  assert.equal(MAX_PENDING_RESULTS, 50);
+  assert.equal(DEFAULT_MAX_CLAIM_RESERVATIONS, 50);
+  assert.equal(DEFAULT_MAX_PENDING_RESULTS, 50, "the policy keeps the core's pending bound");
 });
 
 await run();
