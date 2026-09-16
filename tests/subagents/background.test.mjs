@@ -17,6 +17,7 @@ const {
   createBackgroundState,
   createQueuedJob,
   createQueuedResumeJob,
+  replaceBackgroundViewFeed,
   startBackgroundJob,
   startBackgroundResumeJob,
 } = await loadBackgroundModule();
@@ -273,6 +274,101 @@ test("undelivered results survive job compaction and stay pending", async () => 
   observed.state.delivery.handleTurnEnd();
   assert.equal(pi.sent.length, 1, "the burst costs one parent turn, not 22");
   assert.equal(pi.sent[0].message.details.results.length, 6);
+});
+
+const busyWait = (ms) => {
+  const end = Date.now() + ms;
+  while (Date.now() < end) { /* deliberate slow viewer work */ }
+};
+
+test("live view: feed events flow in order and a broken subscriber changes nothing", async () => {
+  process.env.PI_AGENT_DIR = "/tmp/subagents-test-agent";
+  const observed = observedState();
+  const pi = createPiStub();
+  const job = createQueuedJob({
+    state: observed.state,
+    id: "subagent_00000000-0000-4000-8000-0000000000aa",
+    task: "smoke task",
+    cwd: "/tmp/subagents",
+    parentSessionId: "parent-session",
+    promptSnapshot: createPromptSnapshot(),
+  });
+
+  const captured = [];
+  observed.state.viewFeed.subscribe(job.id, (event) => captured.push(event.kind));
+  observed.state.viewFeed.subscribe(job.id, () => {
+    busyWait(5);
+    throw new Error("broken viewer subscriber");
+  });
+
+  setRunSubagentTaskMock(async (input) => {
+    input.onViewEvent?.({ kind: "run_started" });
+    input.onViewEvent?.({ kind: "message_delta", parts: [{ type: "text", text: "partial" }] });
+    input.onViewEvent?.({ kind: "message_completed", content: [] });
+    input.onViewEvent?.({ kind: "run_finished" });
+    return { details: details("completed", { finalText: "ACK", endedAt: 20, durationMs: 10 }) };
+  });
+
+  startBackgroundJob({
+    pi: pi.api,
+    state: observed.state,
+    job,
+    ctx: {},
+    task: "smoke task",
+    parentSessionId: "parent-session",
+  });
+
+  await waitFor(() => job.status === "completed", "job completion");
+  await waitFor(() => pi.sent.length === 1, "the ordinary completion delivery");
+  await waitFor(() => captured.length >= 4, "the decoupled flush drains");
+  assert.deepEqual(captured, ["run_started", "message_delta", "message_completed", "run_finished"]);
+  assert.equal(job.details.phase, "completed");
+  assert.equal(job.details.finalText, "ACK");
+  assert.equal(pi.sent[0].message.customType, "pi-square.subagent-notification",
+    "a broken live subscriber leaves the ordinary completion delivery untouched");
+});
+
+test("a replaced parent feed fences late events from its still-running child", async () => {
+  process.env.PI_AGENT_DIR = "/tmp/subagents-test-agent";
+  const observed = observedState();
+  const pi = createPiStub();
+  const job = createQueuedJob({
+    state: observed.state,
+    id: "subagent_00000000-0000-4000-8000-0000000000ab",
+    task: "old parent task",
+    cwd: "/tmp/subagents",
+    parentSessionId: "parent-old",
+    promptSnapshot: createPromptSnapshot(),
+  });
+  let oldPublisher;
+  let finishRun;
+  const finish = new Promise((resolve) => { finishRun = resolve; });
+  observed.state.viewFeed.subscribe(job.id, () => {});
+  setRunSubagentTaskMock(async (input) => {
+    oldPublisher = input.onViewEvent;
+    await finish;
+    return { details: details("completed", { finalText: "done", endedAt: 20, durationMs: 10 }) };
+  });
+
+  startBackgroundJob({
+    pi: pi.api,
+    state: observed.state,
+    job,
+    ctx: {},
+    task: "old parent task",
+    parentSessionId: "parent-old",
+  });
+  await waitFor(() => typeof oldPublisher === "function", "old-generation publisher capture");
+
+  replaceBackgroundViewFeed(observed.state);
+  const seenByNewParent = [];
+  observed.state.viewFeed.subscribe(job.id, (event) => seenByNewParent.push(event.kind));
+  oldPublisher({ kind: "run_started" });
+  for (let turn = 0; turn < 4; turn += 1) await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(seenByNewParent, [], "the old publisher remains bound to the discarded feed generation");
+
+  finishRun();
+  await waitFor(() => job.status === "completed", "old child cleanup");
 });
 
 await run();

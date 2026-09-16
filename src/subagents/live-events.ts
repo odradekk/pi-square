@@ -30,12 +30,6 @@ import { rosterToolArgsDisplay } from "./tool-display";
  * the persisted viewer already uses, so both renderings match exactly.
  */
 
-/**
- * Ordinary streaming deltas repaint coalesced at most this often; structural
- * events (message completion, tool start/end, lifecycle) render immediately
- * once delivered.
- */
-export const LIVE_REPAINT_COALESCE_MS = 110;
 /** Streaming partial keeps at most this many ordered content parts (display bound). */
 export const MAX_LIVE_STREAM_PARTS = 128;
 /** Ordered live tail entries (message completions and tool rows) retained. */
@@ -502,23 +496,3 @@ export function createChildViewFeed(options: ChildViewFeedOptions = {}): ChildVi
   };
 }
 
-/**
- * Paint scheduling seam for the live overlay: one pending repaint timer at
- * most, injected as a clock in tests. Production timers are unref'd so a
- * pending repaint never holds the process open.
- */
-export interface PaintTimers {
-  setTimeout(callback: () => void, ms: number): unknown;
-  clearTimeout(handle: unknown): void;
-}
-
-export const defaultPaintTimers: PaintTimers = {
-  setTimeout(callback, ms) {
-    const handle = setTimeout(callback, ms);
-    (handle as { unref?: () => void })?.unref?.();
-    return handle;
-  },
-  clearTimeout(handle) {
-    clearTimeout(handle as NodeJS.Timeout);
-  },
-};

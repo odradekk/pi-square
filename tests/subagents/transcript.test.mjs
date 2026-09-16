@@ -23,14 +23,21 @@ function test(name, fn) { tests.push({ name, fn }); }
 function scriptedHistory({ initial = [], moreBefore = false } = {}) {
   let items = [...initial];
   let pending = [];
+  let olderPending = [];
+  let fixedMoreBefore = moreBefore === true;
   return {
     view: {
       snapshot: () => ({
         items: [...items],
-        moreBefore,
+        moreBefore: fixedMoreBefore || olderPending.length > 0,
         moreAfter: pending.length > 0,
       }),
-      loadOlder: () => false,
+      loadOlder: () => {
+        const page = olderPending.shift();
+        if (page === undefined) return false;
+        items = [...page, ...items];
+        return true;
+      },
       loadNewer: () => {
         const page = pending.shift();
         if (page === undefined) return false;
@@ -42,6 +49,10 @@ function scriptedHistory({ initial = [], moreBefore = false } = {}) {
     /** Appends one or more persisted pages, like the child writing ahead. */
     stage(...pages) {
       pending.push(...pages);
+    },
+    /** Stages one or more older pages, like demand paging discovering them. */
+    stageOlder(...pages) {
+      olderPending.push(...pages);
     },
   };
 }
@@ -91,7 +102,7 @@ test("live-only: a completion with no persisted record appears once, in the tail
   assert.equal(transcript.liveTail().items.length, 1, "one live entry");
   assert.equal(transcript.liveTail().items[0].kind, "message");
   assert.equal(transcript.snapshot().items.length, 0, "no persisted record loaded");
-  assert.deepEqual(changes, [{ grew: true }], "the module reports visible growth");
+  assert.deepEqual(changes, [{ grew: true, structural: true }], "the module reports visible growth as one structural change");
   unsubscribe();
 });
 
@@ -158,7 +169,7 @@ test("persisted-before-live, tools: a started event adds no row when the persist
   transcript.applyLiveEvent(toolStartedEvent());
 
   assert.equal(transcript.liveTail().items.length, 0, "the persisted running row already shows the call");
-  assert.deepEqual(changes, [{ grew: false }], "no visible growth: reconciliation only");
+  assert.deepEqual(changes, [{ grew: false, structural: true }], "no visible growth: a structural reconciliation only");
 });
 
 test("a finished live row sheds only after the persisted call row carries its result", () => {
@@ -216,7 +227,7 @@ test("an event-driven reconcile reports persisted growth through the notificatio
   transcript.applyLiveEvent({ kind: "run_finished" });
 
   assert.equal(transcript.snapshot().items.length, 1, "run_finished reconciles up to eight newer pages");
-  assert.deepEqual(changes, [{ grew: true }], "persisted growth found while reconciling an event is visible growth");
+  assert.deepEqual(changes, [{ grew: true, structural: true }], "persisted growth found while reconciling an event is visible growth");
 });
 
 test("subscriptions receive every module-originated change and unsubscribe stops delivery", () => {
@@ -231,7 +242,7 @@ test("subscriptions receive every module-originated change and unsubscribe stops
   assert.equal(transcript.liveTail().diagnostic, "live updates paused after a viewer error");
   transcript.applyLiveEvent({ kind: "message_delta", parts: [{ type: "text", text: "partial" }] });
   assert.equal(transcript.liveTail().diagnostic, undefined, "the next successful event clears the diagnostic");
-  assert.deepEqual(changes, [{ grew: false }, { grew: true }], "diagnostic and streaming changes notify in order");
+  assert.deepEqual(changes, [{ grew: false, structural: false }, { grew: true, structural: false }], "the diagnostic and a streaming delta notify in order, both non-structural");
 
   unsubscribe();
   transcript.applyLiveEvent({ kind: "message_delta", parts: [{ type: "text", text: "more" }] });
@@ -258,7 +269,7 @@ test("a delayed duplicate completion reconciles instead of duplicating a shed oc
 
   assert.equal(transcript.liveTail().items.length, 0, "no second live entry");
   assert.equal(transcript.snapshot().items.length, 1, "the record still renders exactly once");
-  assert.deepEqual(changes, [{ grew: false }], "the reconcile found no persisted growth");
+  assert.deepEqual(changes, [{ grew: false, structural: true }], "the reconcile found no persisted growth");
 });
 
 test("a recoverable dropped fingerprint clears on the next module read even without a new page", () => {
@@ -294,6 +305,167 @@ test("reconcileNewer cascades bounded newer pages in one call", () => {
   assert.equal(transcript.snapshot().items.length, 3);
   assert.equal(transcript.reconcileNewer(1), false, "with nothing newer the cascade stays a quiet false");
 });
+
+test("the external catch-up reconcile notifies on a changed window and stays quiet at EOF", () => {
+  const history = scriptedHistory({});
+  history.stage(
+    [assistantItem("one", { entryId: "e1", timestamp: 1, byteOffset: 10 })],
+    [assistantItem("two", { entryId: "e2", timestamp: 2, byteOffset: 20 })],
+  );
+  const transcript = createChildTranscript(history.view);
+  const changes = [];
+  transcript.subscribe((change) => changes.push(change));
+
+  assert.equal(transcript.reconcileNewer(8), true, "the caller-initiated catch-up loads the newer pages");
+  assert.deepEqual(
+    changes,
+    [{ grew: true, structural: true }],
+    "a changed window notifies once: the view bound to this transcript is not the caller and must refresh",
+  );
+
+  changes.length = 0;
+  assert.equal(transcript.reconcileNewer(8), false, "nothing newer stays a quiet false");
+  assert.deepEqual(changes, [], "no change means no notification");
+});
+
+test("a dropped terminal tool event recovers only after its own persisted result", () => {
+  const history = scriptedHistory({});
+  const transcript = createChildTranscript(history.view);
+
+  transcript.applyLiveEvent({
+    kind: "live_events_dropped",
+    dropped: [{ kind: "tool", callKey: TOOL_KEY, name: "Read", terminal: true }],
+  });
+  assert.equal(transcript.liveTail().droppedCount, 1, "the dropped terminal event keeps one fingerprint");
+
+  history.stage([toolCallRow({ withResult: false })]);
+  assert.equal(transcript.loadNewer(), true);
+  assert.equal(transcript.liveTail().droppedCount, 1,
+    "the persisted call row alone does not recover the dropped terminal state");
+
+  history.stage([toolCallRow({ entryId: "c2", byteOffset: 96 })]);
+  assert.equal(transcript.loadNewer(), true);
+  assert.equal(transcript.liveTail().droppedCount, 0,
+    "the call's own persisted result recovers the terminal state");
+});
+
+// ---------------------------------------------------------------------------
+// Occurrence identity: one live completion confirms only against its own
+// persisted record — the same bounded content, the same native message
+// timestamp, and a JSONL line beginning exactly at the completion's captured
+// pre-append floor. Persisted rows are consumed one-for-one, so an unrelated
+// or older occurrence can never confirm a completion that is not its own.
+
+test("distinct pre-append floors keep identical completions occurrence-exact", () => {
+  const history = scriptedHistory({
+    initial: [assistantItem("Same words", { entryId: "e2", timestamp: 9_000, byteOffset: 100 })],
+  });
+  const transcript = createChildTranscript(history.view);
+
+  // A pre-existing identical message carries the same content and timestamp
+  // but a different floor: it confirms nothing.
+  transcript.applyLiveEvent(completionEvent("Same words", { timestamp: 9_000, historyFloor: 200 }));
+  assert.equal(transcript.liveTail().items.length, 1,
+    "the pre-existing identical message cannot consume the completion with a different floor");
+
+  // The completion's own record at the exact pre-append floor confirms it.
+  history.stage([assistantItem("Same words", { entryId: "e9", timestamp: 9_000, byteOffset: 200 })]);
+  transcript.applyLiveEvent({ kind: "tool_result_completed" });
+  assert.equal(transcript.liveTail().items.length, 0,
+    "only the record beginning exactly at the captured floor confirms the completion");
+  assert.equal(transcript.snapshot().items.length, 2);
+
+  // The same wall shape with a different timestamp confirms nothing either.
+  const other = scriptedHistory({
+    initial: [assistantItem("Same words", { entryId: "old", timestamp: 1_000, byteOffset: 100 })],
+  });
+  const otherTranscript = createChildTranscript(other.view);
+  otherTranscript.applyLiveEvent(completionEvent("Same words", { timestamp: 8_000, historyFloor: 200 }));
+  assert.equal(otherTranscript.liveTail().items.length, 1,
+    "a pre-existing identical message with a different timestamp stays a separate occurrence");
+});
+
+test("a newer completion cannot consume an older occurrence after paging it back in", () => {
+  const history = scriptedHistory({});
+  const transcript = createChildTranscript(history.view);
+
+  // Only the newer completion is live when the older record pages back in.
+  transcript.applyLiveEvent(completionEvent("same completion", { timestamp: 9_000, historyFloor: 200 }));
+  assert.equal(transcript.liveTail().items.length, 1);
+
+  // The older record enters the window first — after eviction it pages back in
+  // the same way. Its floor is not the completion's, so it confirms nothing.
+  history.stage([assistantItem("same completion", { entryId: "older", timestamp: 9_000, byteOffset: 100 })]);
+  transcript.applyLiveEvent({ kind: "tool_result_completed" });
+  assert.equal(transcript.liveTail().items.length, 1,
+    "the reloaded old row cannot consume the still-unpersisted newer completion");
+
+  history.stage([assistantItem("same completion", { entryId: "newer", timestamp: 9_000, byteOffset: 200 })]);
+  transcript.applyLiveEvent({ kind: "tool_result_completed" });
+  assert.equal(transcript.liveTail().items.length, 0, "its own record confirms the newer completion");
+  assert.equal(transcript.snapshot().items.length, 2, "both persisted occurrences show, no live duplicate");
+});
+
+test("delayed identical completions cannot both consume the newer loaded occurrence", () => {
+  // The newer record is already loaded with older history behind it: the
+  // delayed identical completions must split by pre-append floor, not by
+  // which of them arrived later.
+  const history = scriptedHistory({ initial: [
+    assistantItem("delayed identical", { entryId: "newer-loaded", timestamp: 9_000, byteOffset: 200 }),
+  ], moreBefore: true });
+  const transcript = createChildTranscript(history.view);
+
+  transcript.applyLiveEvent(completionEvent("delayed identical", { timestamp: 9_000, historyFloor: 100 }));
+  transcript.applyLiveEvent(completionEvent("delayed identical", { timestamp: 9_000, historyFloor: 200 }));
+  assert.equal(transcript.liveTail().items.length, 1,
+    "the newer row confirms only the completion whose pre-append floor it equals");
+
+  // Demand-paging the older record in confirms the remaining completion.
+  history.stageOlder([assistantItem("delayed identical", { entryId: "older", timestamp: 9_000, byteOffset: 100 })]);
+  assert.equal(transcript.loadOlder(), true, "the older page loads on demand");
+  assert.equal(transcript.liveTail().items.length, 0,
+    "the older record confirms the completion whose floor it equals, not the newer one twice");
+});
+
+test("page up reconciles a live completion against the older page it loads", () => {
+  const recent = { kind: "generic", text: "recent", entryId: "recent", entryByteOffset: 200, entryItemIndex: 0 };
+  const history = scriptedHistory({ initial: [recent], moreBefore: true });
+  const transcript = createChildTranscript(history.view);
+
+  transcript.applyLiveEvent(completionEvent("paged completion", { timestamp: 9_000, historyFloor: 100 }));
+  assert.equal(transcript.liveTail().items.length, 1, "the live row renders before its record is reachable");
+
+  history.stageOlder([assistantItem("paged completion", { entryId: "older-match", timestamp: 9_000, byteOffset: 100 })]);
+  assert.equal(transcript.loadOlder(), true, "demand paging loads exactly one older page");
+  assert.equal(transcript.liveTail().items.length, 0,
+    "the live row confirms the moment its persisted occurrence enters the loaded window");
+  assert.deepEqual(
+    transcript.snapshot().items.map((item) => item.entryId),
+    ["older-match", "recent"],
+    "the older page takes its native position ahead of the recent row",
+  );
+});
+
+test("occurrence matching follows append position, not a wall-clock timestamp", () => {
+  const history = scriptedHistory({});
+  const transcript = createChildTranscript(history.view);
+
+  transcript.applyLiveEvent(completionEvent("first", { timestamp: 2_000, historyFloor: 100 }));
+  history.stage([assistantItem("clock moved backward", { entryId: "second", timestamp: 1_000, byteOffset: 200 })]);
+  transcript.applyLiveEvent({ kind: "tool_result_completed" });
+  assert.equal(transcript.liveTail().items.length, 1, "the unrelated later occurrence confirms nothing");
+
+  transcript.applyLiveEvent(completionEvent("clock moved backward", { timestamp: 1_000, historyFloor: 200 }));
+  assert.equal(transcript.liveTail().items.length, 1,
+    "the backward-clock record confirms its own completion, not the still-pending earlier one");
+  assert.equal(transcript.liveTail().items[0].kind, "message");
+  assert.equal(
+    transcript.liveTail().items[0].content[0].text,
+    "first",
+    "the earlier completion stays live: matching never reorders by timestamp",
+  );
+});
+
 
 // ---------------------------------------------------------------------------
 // Runner

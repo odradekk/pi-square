@@ -37,7 +37,7 @@ import {
   SubagentError,
 } from "./errors";
 import { tryAcquireRunLease } from "./lease";
-import { type ChildViewEvent, deriveChildViewEvent } from "./live-events";
+import { type ChildViewEvent, deriveChildViewEvent } from "./transcript";
 import { compileFreshPrompt, finalizePromptSnapshot, hashPromptValue } from "./prompt";
 import { sanitizeToolActivityArgs, toolArgCounts } from "./tool-display";
 import { managerToolCallText } from "./manager-tool-display";

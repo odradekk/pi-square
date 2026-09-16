@@ -31,6 +31,11 @@ const childHistoryModule = await load(join(packageRoot, "src", "subagents", "chi
 // The viewer no longer re-exports history-module helpers (#367): tests reach
 // the projection through the implementation module like every other caller.
 const { projectSessionEntries, staticChildHistory } = childHistoryModule;
+// The transcript module owns the surface the viewer renders (#367, #371):
+// tests wrap scripted histories in its session and drive live events through
+// it exactly like the registry does for the observed child.
+const transcriptModule = await load(join(packageRoot, "src", "subagents", "transcript.ts"));
+const { createChildTranscript } = transcriptModule;
 const {
   createSubagentRosterController,
   renderSubagentRoster,
@@ -532,6 +537,9 @@ function scriptedHistory(initial, handlers = {}) {
 }
 
 function baseModel(overrides = {}) {
+  // The model carries the module-owned transcript (#371); tests may supply a
+  // scripted `history` view, which the module session wraps here.
+  const { history, transcript, ...rest } = overrides;
   return {
     role: "explorer",
     idLabel: "aaaaaaaa",
@@ -539,9 +547,9 @@ function baseModel(overrides = {}) {
     lifecycleTone: "accent",
     status: "running",
     durationText: "1m 05s",
-    history: staticChildHistory([]),
+    transcript: transcript ?? createChildTranscript(history ?? staticChildHistory([])),
     cwd: "/tmp/project",
-    ...overrides,
+    ...rest,
   };
 }
 
@@ -892,7 +900,8 @@ test("PageDown and structural reconciliation keep follow suspended until End", (
       return true;
     },
   });
-  const { overlay } = overlayHarness(baseModel({ history }), 80, 20);
+  const transcript = createChildTranscript(history);
+  const { overlay } = overlayHarness(baseModel({ transcript }), 80, 20);
   overlay.render(80);
   overlay.handleInput(PAGE_UP);
   assert.equal(overlay.captureViewState().following, false, "upward scrolling suspends follow");
@@ -900,7 +909,7 @@ test("PageDown and structural reconciliation keep follow suspended until End", (
   overlay.handleInput(PAGE_DOWN);
   assert.equal(overlay.captureViewState().following, false, "PageDown may load newer history without resuming follow");
 
-  overlay.reconcileNow();
+  transcript.reconcileNewer();
   assert.equal(overlay.captureViewState().following, false, "a structural reconcile cannot infer follow from the numeric bottom");
   assert.match(plain(overlay.render(80)).at(-1), /new output below/, "newer structural content remains announced");
 
@@ -934,7 +943,8 @@ test("PageDown preserves the tail sentinel while already following", () => {
       return true;
     },
   });
-  const { overlay } = overlayHarness(baseModel({ history }), 80, 20);
+  const transcript = createChildTranscript(history);
+  const { overlay } = overlayHarness(baseModel({ transcript }), 80, 20);
   overlay.render(80);
   overlay.handleInput(PAGE_DOWN);
   assert.equal(overlay.captureViewState().following, true, "PageDown does not suspend an active follow");
@@ -942,7 +952,7 @@ test("PageDown preserves the tail sentinel while already following", () => {
   overlay.handleInput(PAGE_DOWN);
   assert.equal(history.calls.newer, 2, "the regression path includes a newer-edge probe that reaches EOF");
 
-  overlay.applyLiveEvent({
+  transcript.applyLiveEvent({
     kind: "message_delta",
     parts: [{ type: "text", text: "live content after PageDown" }],
   });
@@ -953,10 +963,11 @@ test("PageDown preserves the tail sentinel while already following", () => {
 
 test("End resumes follow and clears unseen output while the initial history read is still failing", () => {
   const history = scriptedHistory({ initialError: "child history could not be read" });
-  const { overlay } = overlayHarness(baseModel({ history }), 80, 20);
+  const transcript = createChildTranscript(history);
+  const { overlay } = overlayHarness(baseModel({ transcript }), 80, 20);
   overlay.render(80);
   overlay.handleInput("\u001b[<64;1;1M");
-  overlay.applyLiveEvent({
+  transcript.applyLiveEvent({
     kind: "message_delta",
     parts: [{ type: "text", text: "unseen while history is unavailable" }],
   });
@@ -1598,6 +1609,282 @@ test("the render layer marks the focus row solid and windows by start", () => {
   assert.match(lines[2], /^● /, "the focused row renders solid");
   assert.ok(lines.slice(1, 2).every((line) => line.startsWith("○ ")), "unfocused rows stay hollow");
 });
+
+// ---------------------------------------------------------------------------
+// Live tail rendering: the overlay draws the module's bounded tail exactly as
+// it reads it — streaming partials below the persisted window in native part
+// order, live tool rows flipping terminal in place, drop states kept visible
+// until persisted history actually recovers them (#306, #371).
+
+/** One persisted assistant text row with its occurrence identity. */
+function assistantRow(text, { entryId, timestamp, byteOffset, entryItemIndex = 0 } = {}) {
+  return {
+    kind: "assistant",
+    message: { role: "assistant", content: [{ type: "text", text }], timestamp },
+    entryId,
+    entryByteOffset: byteOffset,
+    entryItemIndex,
+  };
+}
+
+/** One persisted tool-call row; a result projects only when supplied. */
+function toolCallRow(name, callKey, { entryId, byteOffset, result, entryItemIndex = 0 } = {}) {
+  return {
+    kind: "toolCall",
+    name,
+    summary: "called",
+    callKey,
+    ...(result ? { result } : {}),
+    entryId,
+    entryByteOffset: byteOffset,
+    entryItemIndex,
+  };
+}
+
+/**
+ * Scripted history whose newer pages model file appends: a page reads only
+ * after the test releases it, exactly like the real pager discovers growth
+ * only once the bytes exist (the module's opportunistic reconciles otherwise
+ * hit EOF and change nothing).
+ */
+function pagedHistory(initialItems, stagedPages) {
+  const queue = [...stagedPages];
+  let released = 0;
+  const history = scriptedHistory({ items: initialItems }, {
+    loadNewer(view) {
+      if (released <= 0) return false;
+      const page = queue.shift();
+      if (page === undefined) return false;
+      released -= 1;
+      view.set({ items: [...view.snapshot().items, ...page] });
+      return true;
+    },
+  });
+  return {
+    ...history,
+    releasePages(count = 1) { released += count; },
+  };
+}
+
+test("streaming assistant parts render below the persisted window in native order", () => {
+  const history = staticChildHistory([{ kind: "user", text: "please research" }]);
+  const transcript = createChildTranscript(history);
+  const { overlay } = overlayHarness(baseModel({ transcript }), 80, 20);
+  let lines = plain(overlay.render(64));
+  assert.ok(lines.some((line) => line.includes("please research")));
+  assert.ok(!lines.some((line) => line.includes("Starting")), "persisted content replaces the placeholder");
+
+  transcript.applyLiveEvent({
+    kind: "message_delta",
+    parts: [
+      { type: "text", text: "Partial answ" },
+      { type: "thinking", thinking: "planning" },
+      { type: "text", text: "ering" },
+    ],
+  });
+  let text = plain(overlay.render(64)).join("\n");
+  const persistedIndex = text.indexOf("please research");
+  const firstText = text.indexOf("Partial answ");
+  const thinking = text.indexOf("planning");
+  const secondText = text.indexOf("ering");
+  assert.ok(persistedIndex >= 0, "persisted items stay visible");
+  assert.ok(firstText > persistedIndex, "live content renders below the persisted window");
+  assert.ok(thinking > firstText && secondText > thinking, "text→thinking→text keeps its native order");
+
+  transcript.applyLiveEvent({ kind: "message_delta", parts: [{ type: "text", text: "Full partial replaced" }] });
+  text = plain(overlay.render(64)).join("\n");
+  assert.ok(text.includes("Full partial replaced"));
+  assert.ok(!text.includes("Partial answ") && !text.includes("planning"),
+    "the partial is replaced by the grown cumulative text, not duplicated");
+});
+
+test("live tool start, update, and end are observable without any persisted append", () => {
+  const transcript = createChildTranscript(staticChildHistory([{ kind: "user", text: "search things" }]));
+  const { overlay } = overlayHarness(baseModel({ transcript }), 80, 20, );
+  overlay.render(64);
+
+  transcript.applyLiveEvent({ kind: "tool_started", callKey: "ck-c1", name: "grep", summary: "called", startedAt: 1_000 });
+  let text = plain(overlay.render(64)).join("\n");
+  assert.equal(text.split("Grep").length - 1, 1, "a running live tool row appears immediately");
+  assert.ok(!text.includes("SECRET"), "no raw argument ever renders");
+
+  transcript.applyLiveEvent({ kind: "tool_updated", callKey: "ck-c1", name: "grep" });
+  text = plain(overlay.render(64)).join("\n");
+  assert.equal(text.split("Grep").length - 1, 1, "an update leaves exactly one row");
+
+  transcript.applyLiveEvent({ kind: "tool_finished", callKey: "ck-c1", name: "grep", isError: true });
+  text = plain(overlay.render(64)).join("\n");
+  assert.equal(text.split("Grep").length - 1, 1, "the same row flips in place");
+  assert.match(text, /Tool failed/, "the end state shows immediately, before any toolResult append");
+
+  transcript.applyLiveEvent({ kind: "tool_finished", callKey: "ck-c2", name: "find", isError: false });
+  text = plain(overlay.render(64)).join("\n");
+  assert.ok(text.includes("Find"), "a finish without a start still renders a live row");
+  assert.match(text, /Completed/);
+
+  // The persisted records replace the live rows one-to-one once loaded.
+  const historyWithPages = pagedHistory([{ kind: "user", text: "search things" }], [
+      [
+        toolCallRow("grep", "ck-c1", { entryId: "e2", byteOffset: 10, result: { isError: true } }),
+        toolCallRow("find", "ck-c2", { entryId: "e3", byteOffset: 20, result: { isError: false } }),
+      ],
+    ]);
+  const transcriptWithHistory = createChildTranscript(historyWithPages);
+  transcriptWithHistory.applyLiveEvent({ kind: "tool_started", callKey: "ck-c1", name: "grep", summary: "called", startedAt: 1_000 });
+  transcriptWithHistory.applyLiveEvent({ kind: "tool_finished", callKey: "ck-c1", name: "grep", isError: true });
+  transcriptWithHistory.applyLiveEvent({ kind: "tool_finished", callKey: "ck-c2", name: "find", isError: false });
+  historyWithPages.releasePages(1);
+  transcriptWithHistory.applyLiveEvent({ kind: "tool_result_completed" });
+  const switchOverlay = overlayHarness(baseModel({ transcript: transcriptWithHistory }), 80, 20).overlay;
+  text = plain(switchOverlay.render(64)).join("\n");
+  assert.equal(text.split("Grep").length - 1, 1, "the persisted row replaces the live row without duplication");
+  assert.equal(text.split("Find").length - 1, 1);
+});
+
+test("same-name calls reconcile per call id, never per name aggregate", () => {
+  // Regression (review round 2): two live grep rows finish; history persists
+  // both call rows but only one result. Per-name counting dropped both live
+  // rows; per-call identity keeps the unresolved one visible exactly once.
+  const sameNameHistory = pagedHistory([{ kind: "user", text: "task" }], [
+      [
+        toolCallRow("grep", "ck-g1", { entryId: "e2", byteOffset: 10, entryItemIndex: 0, result: { isError: false } }),
+        toolCallRow("grep", "ck-g2", { entryId: "e2", byteOffset: 10, entryItemIndex: 1 }),
+      ],
+      [
+        toolCallRow("grep", "ck-g2", { entryId: "e2", byteOffset: 10, entryItemIndex: 1, result: { isError: true } }),
+      ],
+    ]);
+  const transcript = createChildTranscript(sameNameHistory);
+  const { overlay } = overlayHarness(baseModel({ transcript }), 80, 20);
+  overlay.render(64);
+
+  transcript.applyLiveEvent({ kind: "tool_started", callKey: "ck-g1", name: "grep", summary: "called", startedAt: 1_000 });
+  transcript.applyLiveEvent({ kind: "tool_started", callKey: "ck-g2", name: "grep", summary: "called", startedAt: 1_500 });
+  let text = plain(overlay.render(64)).join("\n");
+  assert.equal(text.split("Grep").length - 1, 2, "both live rows render");
+
+  transcript.applyLiveEvent({ kind: "tool_finished", callKey: "ck-g1", name: "grep", isError: false });
+  transcript.applyLiveEvent({ kind: "tool_finished", callKey: "ck-g2", name: "grep", isError: true });
+  text = plain(overlay.render(64)).join("\n");
+  assert.equal(text.split("Grep").length - 1, 2, "both rows keep their own terminal state");
+
+  // The first page carries both call rows but only the first result: the
+  // resolved call sheds its live row, the unresolved one stays.
+  sameNameHistory.releasePages(1);
+  transcript.applyLiveEvent({ kind: "tool_result_completed" });
+  text = plain(overlay.render(64)).join("\n");
+  assert.equal(text.split("Grep").length - 1, 2,
+    "the resolved call's live row sheds and its persisted row renders; the unresolved call keeps exactly one row");
+
+  // The second page carries the remaining result: every row is persisted now.
+  sameNameHistory.releasePages(1);
+  transcript.applyLiveEvent({ kind: "tool_result_completed" });
+  text = plain(overlay.render(64)).join("\n");
+  assert.equal(text.split("Grep").length - 1, 2, "both persisted rows now carry their own results, no live rows left");
+});
+
+test("a final message that never persists is not lost while the overlay stays open", () => {
+  const transcript = createChildTranscript(staticChildHistory([{ kind: "user", text: "task" }]));
+  const { overlay } = overlayHarness(baseModel({ transcript }), 80, 20);
+  overlay.render(64);
+
+  transcript.applyLiveEvent({ kind: "message_delta", parts: [{ type: "text", text: "Final answer text" }] });
+  transcript.applyLiveEvent({ kind: "message_completed", content: [{ type: "text", text: "Final answer text" }], timestamp: 6_000 });
+  transcript.applyLiveEvent({ kind: "run_finished" });
+
+  let text = plain(overlay.render(64)).join("\n");
+  assert.equal(text.split("Final answer text").length - 1, 1,
+    "run_finished without a persisted copy keeps the final buffered content visible");
+
+  transcript.applyLiveEvent({ kind: "message_delta", parts: [{ type: "text", text: "uncommitted tail" }] });
+  transcript.applyLiveEvent({ kind: "run_finished" });
+  assert.ok(plain(overlay.render(64)).join("\n").includes("uncommitted tail"));
+});
+
+test("live tail overflow sheds the oldest with an explicit omission state and recovers", () => {
+  const total = 20;
+  const staged = Array.from({ length: total }, (_, index) => assistantRow(`completion ${index}`, {
+    entryId: `p${index}`,
+    timestamp: 10_000 + index,
+    byteOffset: 100 + index,
+  }));
+  const overflowHistory = pagedHistory([{ kind: "user", text: "task" }], [staged]);
+  const transcript = createChildTranscript(overflowHistory);
+  const { overlay } = overlayHarness(baseModel({ transcript }), 80, 400);
+  overlay.render(64);
+
+  for (let index = 0; index < total; index += 1) {
+    transcript.applyLiveEvent({
+      kind: "message_completed",
+      content: [{ type: "text", text: `completion ${index}` }],
+      timestamp: 10_000 + index,
+      historyFloor: 100 + index,
+    });
+  }
+  let text = plain(overlay.render(64)).join("\n");
+  assert.ok(!text.includes("completion 0"), "the oldest overflow entry is dropped");
+  assert.ok(text.includes(`completion ${total - 1}`), "the newest entry never drops");
+  assert.match(text, /older live updates were dropped/, "the drop is an explicit omission state");
+
+  // Persisted history recovers every dropped occurrence; the marker clears.
+  overflowHistory.releasePages(1);
+  transcript.applyLiveEvent({ kind: "run_finished" });
+  text = plain(overlay.render(64)).join("\n");
+  assert.ok(!text.includes("older live updates were dropped"), "actual recovery clears the omission state");
+  assert.ok(text.includes("completion 0") && text.includes(`completion ${total - 1}`),
+    "persisted history recovers every dropped message exactly once");
+  assert.equal(text.split("completion 10").length - 1, 1, "no recovered occurrence renders twice");
+});
+
+test("unfingerprintable and malformed drops render a sticky omission state", () => {
+  const transcript = createChildTranscript(staticChildHistory([{ kind: "user", text: "task" }]));
+  const { overlay } = overlayHarness(baseModel({ transcript }), 80, 20);
+
+  transcript.applyLiveEvent({ kind: "live_events_dropped", droppedUnknown: true });
+  let text = plain(overlay.render(64)).join("\n");
+  assert.match(text, /older live updates were dropped/, "an unfingerprintable drop renders the marker");
+
+  transcript.applyLiveEvent({ kind: "run_finished" });
+  text = plain(overlay.render(64)).join("\n");
+  assert.match(text, /older live updates were dropped/,
+    "without recoverable identity the omission state stays sticky across reconciles");
+
+  transcript.applyLiveEvent({ kind: "tool_started", callKey: "", name: "grep", summary: "called", startedAt: 1 });
+  text = plain(overlay.render(64)).join("\n");
+  assert.match(text, /older live updates were dropped/,
+    "a malformed tool event without its call identity stays visibly omitted, never reconciled by name");
+});
+
+test("a contained live failure renders one bounded diagnostic and recovers", () => {
+  const transcript = createChildTranscript(staticChildHistory([{ kind: "user", text: "task" }]));
+  const { overlay } = overlayHarness(baseModel({ transcript }), 80, 20);
+  overlay.render(64);
+
+  transcript.setLiveDiagnostic();
+  let text = plain(overlay.render(64)).join("\n");
+  assert.match(text, /live updates paused after a viewer error/);
+  assert.ok(text.includes("task"), "the persisted view stays visible around the diagnostic");
+
+  transcript.applyLiveEvent({ kind: "message_delta", parts: [{ type: "text", text: "recovered" }] });
+  text = plain(overlay.render(64)).join("\n");
+  assert.ok(!text.includes("live updates paused"), "the next successful event clears the diagnostic");
+  assert.ok(text.includes("recovered"));
+});
+
+test("a view pinned to the top is not pulled back by live growth", () => {
+  const transcript = createChildTranscript(staticChildHistory([
+    { kind: "user", text: "first line of a long task" },
+    assistantRow("second entry with body text", { entryId: "e2", timestamp: 1 }),
+  ]));
+  const { overlay } = overlayHarness(baseModel({ transcript }), 80, 12);
+  overlay.render(64);
+  overlay.handleInput("\x1b[H");
+
+  transcript.applyLiveEvent({ kind: "message_delta", parts: [{ type: "text", text: "streaming tail content" }] });
+  const text = plain(overlay.render(64)).join("\n");
+  assert.ok(!text.includes("streaming tail content"), "a pinned top viewport ignores new tail content");
+});
+
 
 let failed = 0;
 for (const { name, fn } of tests) {

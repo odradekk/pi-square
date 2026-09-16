@@ -3,18 +3,17 @@ import { matchesKey, truncateToWidth, visibleWidth, type Component } from "@eare
 import { isOwnedInputSurfaceActive } from "../core/input-surface";
 import type { DisplayRuntime } from "../display/runtime";
 import { listBackgroundJobs, subscribeBackgroundState, type BackgroundState } from "./background";
-import { createChildHistory } from "./child-history";
 import { sanitizeSubagentDisplay } from "./display";
 import {
+  createChildTranscriptRegistry,
   defaultPaintTimers,
-  isStructuralViewEvent,
   LIVE_REPAINT_COALESCE_MS,
-  type ChildViewEvent,
+  type ChildTranscript,
+  type ChildTranscriptRegistry,
   type PaintTimers,
-} from "./live-events";
+} from "./transcript";
 import { latestRosterToolCallSummary } from "./tool-display";
 import type { BackgroundJobSnapshot } from "./run-types";
-import type { ChildHistoryView } from "./transcript";
 import {
   childOverlayOptions,
   type ChildOverlayModel,
@@ -403,13 +402,15 @@ export interface SubagentRosterOptions {
  * no retention exemption, and no delivery interaction, and opening or viewing
  * a child is observational only.
  *
- * Since #306 an open overlay is live: the controller subscribes that child's
- * ephemeral view feed while the overlay is open, forwards events into the
- * overlay, repaints structural events immediately and ordinary streaming
+ * Since #306 an open overlay is live: the transcript module's registry
+ * forwards the observed child's ephemeral view feed into its tail, this
+ * controller subscribes to the module-originated changes while the overlay
+ * is open and repaints structural changes immediately and ordinary streaming
  * deltas through the one coalesced repaint timer it owns, keeps the open
- * title's lifecycle truthful across transitions, and unsubscribes plus cancels
- * the timer on overlay close and session teardown. A subscriber defect is
- * contained as one bounded overlay diagnostic and never reaches the child.
+ * title's lifecycle truthful across transitions, and unsubscribes plus
+ * cancels the timer on overlay close and session teardown. A subscriber
+ * defect is contained by the module as one bounded overlay diagnostic and
+ * never reaches the child.
  *
  * Since #308 the projection is also main-task scoped: the controller tracks a
  * session-scoped visibility epoch that advances on each real prompt submitted
@@ -444,10 +445,20 @@ export function createSubagentRosterController(
   let activeOverlay: ChildTranscriptOverlay | undefined;
   /** TUI of the open overlay, used only to request coalesced live repaints. */
   let openTui: { requestRender(): void } | undefined;
-  /** Live view feed subscription for the open child (#306). */
+  /** Module-owned transcript of the open child; the catch-up and paint seam. */
+  let openTranscript: ChildTranscript | undefined;
+  /** Transcript change subscription driving the open child's repaints (#306). */
   let unsubscribeLive: (() => void) | undefined;
   /** Lifecycle status last pushed into the open overlay, to detect transitions. */
   let openModelStatus: BackgroundJobSnapshot["status"] | undefined;
+  /**
+   * Session-scoped transcript registry (#371): owns pager construction,
+   * per-child retention, and the observed child's live feed forwarding. It
+   * resolves the session feed at each observation move, so teardown releasing
+   * it and the next session's observations follow the replacement generation
+   * the registrar installs before each start (#306).
+   */
+  const transcripts: ChildTranscriptRegistry = createChildTranscriptRegistry({ feed: () => state.viewFeed, now });
   const timers = options.timers ?? defaultPaintTimers;
   /** The one session-owned live repaint timer; at most one is ever pending. */
   let paintTimer: unknown;
@@ -505,41 +516,39 @@ export function createSubagentRosterController(
     }, remaining);
   };
 
-  const detachLiveView = () => {
+  const detachOpenTranscript = () => {
     unsubscribeLive?.();
     unsubscribeLive = undefined;
     cancelLivePaint();
     openTui = undefined;
     openModelStatus = undefined;
+    openTranscript = undefined;
   };
 
-  /** Drops only the live feed subscription; the overlay stays open (#307). */
-  const detachLiveFeed = () => {
+  /** Drops only the transcript paint subscription; the overlay stays open (#307). */
+  const detachTranscriptPaint = () => {
     unsubscribeLive?.();
     unsubscribeLive = undefined;
   };
 
   /**
-   * Subscribes the open overlay to one child's ephemeral view feed (#306,
-   * #307). The feed's subscriber isolation keeps a broken listener from the
-   * child run; this guard keeps the overlay's own failures from escaping too,
-   * as one bounded diagnostic row.
+   * Subscribes the repaint scheduling to the open child's module-originated
+   * changes (#306, #307): structural changes render at their first flush and
+   * ordinary streaming deltas coalesce through the one timer above. The
+   * module contains a broken view listener as the bounded diagnostic row.
+   * This listener binds before the overlay does (and re-binds before it on a
+   * switch): the module notifies subscribers in subscription order and stops
+   * at the first throw, so a throwing view listener must never starve the
+   * repaint scheduling that follows it.
    */
-  const attachLiveFeed = (jobId: string) => {
-    detachLiveFeed();
-    unsubscribeLive = state.viewFeed?.subscribe(jobId, (event: ChildViewEvent) => {
-      const target = activeOverlay;
-      if (target === undefined || openId !== jobId) return;
+  const attachTranscriptPaint = (transcript: ChildTranscript) => {
+    detachTranscriptPaint();
+    unsubscribeLive = transcript.subscribe((change) => {
       try {
-        target.applyLiveEvent(event);
+        scheduleLivePaint(change.structural);
       } catch {
-        try {
-          target.setLiveDiagnostic();
-        } catch {
-          // Contained: the persisted view stays usable.
-        }
+        // A presentation refresh defect must never escape the transcript.
       }
-      scheduleLivePaint(isStructuralViewEvent(event));
     });
   };
   let viewportStart = 0;
@@ -614,12 +623,12 @@ export function createSubagentRosterController(
   // open child keeps it otherwise.
   const focusId = () => candidateId ?? openId;
 
-  /** Per-child retained reading state (#307), keyed by complete public ID. */
-  interface ChildViewEntry {
-    history: ChildHistoryView;
-    reading: ChildReadingState;
-  }
-  const childEntries = new Map<string, ChildViewEntry>();
+  /**
+   * Per-child retained reading state (#307), keyed by complete public ID. The
+   * module's registry owns the transcripts themselves; this map keeps only
+   * the controller's scroll, follow, notice, and tool-expansion state.
+   */
+  const childEntries = new Map<string, ChildReadingState>();
 
   /** Shifts the visible window the minimum needed to keep the focus row on screen. */
   const followViewport = (rows: readonly RosterRow[]) => {
@@ -643,8 +652,10 @@ export function createSubagentRosterController(
    * Keeps the open overlay's lifecycle truthful while it stays open (#306):
    * every transition of the viewed child — including terminalization — updates
    * the title and state line, a terminal transition performs one final
-   * bounded history reconciliation, and the change renders immediately. A
-   * presentation defect here is contained like every refresh failure.
+   * bounded history catch-up through the module (a changed window notifies,
+   * so the view refreshes through its own subscription), and the change
+   * renders immediately. A presentation defect here is contained like every
+   * refresh failure.
    */
   const pushOpenOverlayLifecycle = (jobs: readonly BackgroundJobSnapshot[]) => {
     const overlay = activeOverlay;
@@ -666,7 +677,7 @@ export function createSubagentRosterController(
         ),
         ...(failureReason ? { failureReason } : {}),
       });
-      if (!ACTIVE_STATUSES.has(status)) overlay.reconcileNow(8);
+      if (!ACTIVE_STATUSES.has(status)) openTranscript?.reconcileNewer(8);
     } catch {
       // The overlay stays observational; a rendering defect stays contained.
     }
@@ -681,12 +692,16 @@ export function createSubagentRosterController(
     const jobs = rosterJobs();
     const rows = rosterRows(visibleRosterJobs());
 
-    // Reading state is retained only for children the roster still shows and
-    // the one still open (#307). The pruning runs in every branch: expiry that
-    // empties the roster (#308) must drop the retained views of children that
-    // left with the preceding task, so a later same-ID row starts fresh.
+    // Reading state and the module-owned transcripts are retained only for
+    // children the roster still shows and the one still open (#307). The
+    // pruning runs in every branch: expiry that empties the roster (#308)
+    // must drop the retained views of children that left with the preceding
+    // task, so a later same-ID row starts fresh.
     for (const id of childEntries.keys()) {
-      if (id !== openId && !rows.some((row) => row.id === id)) childEntries.delete(id);
+      if (id !== openId && !rows.some((row) => row.id === id)) {
+        childEntries.delete(id);
+        transcripts.release(id);
+      }
     }
 
     if (rows.length === 0) {
@@ -752,11 +767,11 @@ export function createSubagentRosterController(
   };
 
   /**
-   * Builds the open-child model from the current job snapshot while reusing
-   * the child's retained history view, so a direct switch restores the loaded
-   * window and reading position rather than restarting at the tail (#307).
+   * Builds the open-child model from the current job snapshot and the child's
+   * module-retained transcript, so a direct switch restores the loaded window
+   * and reading position rather than restarting at the tail (#307, #371).
    */
-  const buildOverlayModel = (job: BackgroundJobSnapshot, history: ChildHistoryView): ChildOverlayModel => {
+  const buildOverlayModel = (job: BackgroundJobSnapshot, transcript: ChildTranscript): ChildOverlayModel => {
     const rows = rosterRows(visibleRosterJobs());
     const prefixes = uniqueRosterIdPrefixes(rows.map((row) => row.id));
     const failureReason = job.status === "failed" || job.status === "aborted"
@@ -775,17 +790,18 @@ export function createSubagentRosterController(
           : (job.details.endedAt ?? job.details.startedAt) - job.details.startedAt,
       ),
       ...(failureReason ? { failureReason } : {}),
-      history,
+      transcript,
     };
   };
 
   /**
    * Re-points the open overlay at another child (#307): the same overlay
    * handle switches content in place — no stacking, no pass through main —
-   * while each child keeps its own retained history view, scroll position,
-   * follow state, and tool-expansion state. The previous child's live feed
-   * subscription ends and the new child's begins; an unobserved child
-   * retained no live events, so the tail restarts from the persisted window.
+   * while each child keeps its own module-retained transcript, scroll
+   * position, follow state, and tool-expansion state. The registry moves the
+   * single live observation to the new child and ends the previous one's feed
+   * subscription; an unobserved child retained no live events, so its tail
+   * restarts from the persisted window.
    */
   const switchChildOverlay = (id: string) => {
     const overlay = activeOverlay;
@@ -796,31 +812,34 @@ export function createSubagentRosterController(
 
     const previous = childEntries.get(openId);
     const captured = overlay.captureViewState();
-    if (previous !== undefined) childEntries.set(openId, { history: previous.history, reading: captured });
+    if (previous !== undefined) childEntries.set(openId, captured);
 
-    let entry = childEntries.get(id);
-    if (entry === undefined) {
-      entry = {
-        history: createChildHistory(id, { observedAt: now() }),
-        reading: { scrollTop: Number.POSITIVE_INFINITY, following: true, toolsExpanded: false, newOutput: false },
-      };
-      childEntries.set(id, entry);
+    let reading = childEntries.get(id);
+    if (reading === undefined) {
+      reading = { scrollTop: Number.POSITIVE_INFINITY, following: true, toolsExpanded: false, newOutput: false };
+      childEntries.set(id, reading);
     }
 
+    const transcript = transcripts.observe(id);
+    // The paint subscription binds before the overlay re-binds (the module
+    // notifies subscribers in order and stops at the first throw): a broken
+    // view listener must never starve the repaint scheduling behind it.
+    attachTranscriptPaint(transcript);
     openId = job.id;
+    openTranscript = transcript;
     openModelStatus = job.status;
     candidateId = undefined;
     try {
-      overlay.switchChild(buildOverlayModel(job, entry.history), entry.reading);
+      overlay.switchChild(buildOverlayModel(job, transcript), reading);
       // Catch the retained window up with anything the child persisted while
       // unobserved; a position away from the tail stays put and records the
-      // new-output state instead.
-      overlay.reconcileNow(8);
+      // new-output state instead. The external catch-up notifies through the
+      // module, so the view refreshes without any controller-side forward.
+      transcript.reconcileNewer(8);
     } catch {
       // A switching defect is contained like every refresh failure: the
       // overlay keeps showing its last consistent state.
     }
-    attachLiveFeed(job.id);
     scheduleLivePaint(true);
     refresh();
   };
@@ -874,18 +893,23 @@ export function createSubagentRosterController(
     const job = jobs.find((candidate) => candidate.id === id);
     if (!job) return;
 
-    // A fresh open starts at the tail with collapsed tools; the entry keeps
-    // the retained history view so later direct switches restore it (#307).
+    // A fresh open starts at the tail with collapsed tools; the module's
+    // registry retains the transcript so later direct switches restore the
+    // loaded window and reading position (#307, #371).
     childEntries.clear();
-    const entry: ChildViewEntry = {
-      history: createChildHistory(job.id, { observedAt: now() }),
-      reading: { scrollTop: Number.POSITIVE_INFINITY, following: true, toolsExpanded: false, newOutput: false },
-    };
-    childEntries.set(job.id, entry);
-    const model = buildOverlayModel(job, entry.history);
+    transcripts.releaseAll();
+    const transcript = transcripts.observe(job.id);
+    // The paint subscription binds before the overlay's constructor binds its
+    // own (the module notifies subscribers in order and stops at the first
+    // throw): a broken view listener must never starve repaint scheduling.
+    attachTranscriptPaint(transcript);
+    const reading: ChildReadingState = { scrollTop: Number.POSITIVE_INFINITY, following: true, toolsExpanded: false, newOutput: false };
+    childEntries.set(job.id, reading);
+    const model = buildOverlayModel(job, transcript);
 
     candidateId = undefined;
     openId = job.id;
+    openTranscript = transcript;
     openModelStatus = job.status;
 
     const settle = () => {
@@ -898,12 +922,13 @@ export function createSubagentRosterController(
           // Closing an already-closed overlay is harmless.
         }
       }
-      detachLiveView();
+      detachOpenTranscript();
       openId = undefined;
       candidateId = undefined;
-      // Closing drops per-child reading state: the next open is a first open
-      // and follows the tail again (#307).
+      // Closing drops per-child reading state and the retained transcripts:
+      // the next open is a first open and follows the tail again (#307).
       childEntries.clear();
+      transcripts.releaseAll();
       refresh();
     };
 
@@ -967,9 +992,9 @@ export function createSubagentRosterController(
           },
         });
         activeOverlay = overlay;
-        // Live view events (#306) through the shared attach seam; switching
-        // children re-uses it (#307).
-        attachLiveFeed(job.id);
+        // The transcript's feed forwarding and the repaint subscription were
+        // bound before this factory ran; the overlay only renders what the
+        // module notifies (#306, #307, #371).
         closeOverlay = () => {
           overlay.dispose();
           if (activeOverlay === overlay) activeOverlay = undefined;
@@ -984,7 +1009,7 @@ export function createSubagentRosterController(
           activeOverlay?.dispose();
           activeOverlay = undefined;
           closeOverlay = undefined;
-          detachLiveView();
+          detachOpenTranscript();
           openId = undefined;
           refresh();
         }
@@ -993,7 +1018,7 @@ export function createSubagentRosterController(
       activeOverlay?.dispose();
       activeOverlay = undefined;
       closeOverlay = undefined;
-      detachLiveView();
+      detachOpenTranscript();
       openId = undefined;
       refresh();
       return;
@@ -1063,12 +1088,13 @@ export function createSubagentRosterController(
         // Closing an already-closed overlay is harmless.
       }
     }
-    detachLiveView();
+    detachOpenTranscript();
     activeOverlay?.dispose();
     activeOverlay = undefined;
     openId = undefined;
     candidateId = undefined;
     childEntries.clear();
+    transcripts.releaseAll();
     viewportStart = 0;
     tuiRef = undefined;
     // The visibility epoch is session-scoped presentation state: teardown
