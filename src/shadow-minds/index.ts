@@ -75,12 +75,12 @@ import { buildTrajectory, type ShadowTrajectoryEvidence } from "./trajectory";
 import { resolveShadowTools } from "./tools";
 import { createShadowResultStore, type ShadowResultStore } from "./result-store";
 import {
-  createShadowDeliveryController,
+  createShadowDeliveryCore,
   MAX_PENDING_RESULTS,
   shadowNotificationResultIds,
   subscribeDeliveryLifecycle,
   type DeliverySettleForwarding,
-  type ShadowDeliveryController,
+  type ShadowDeliveryCore,
 } from "./delivery";
 import { createCompletionGate, type ShadowCompletionGate } from "./gate";
 
@@ -94,7 +94,7 @@ export interface ShadowMindsState {
   /** Deterministic automatic scheduling for this parent session. */
   scheduler: ShadowScheduler;
   /** Confirmed delivery of Shadow results as advisory evidence (#159). */
-  delivery?: ShadowDeliveryController;
+  delivery?: ShadowDeliveryCore;
   /** Bounded answer-after-review completion gate (#160). */
   gate?: ShadowCompletionGate;
   /** Current parent-run sequence used to bind manual activation provenance. */
@@ -747,7 +747,7 @@ export default function registerShadowMinds(
   // A headless drain makes every delivery quiet (no new turn); the gate
   // owns the held-settle bit itself.
   let draining = false;
-  const shadowDelivery = createShadowDeliveryController({
+  const shadowDelivery = createShadowDeliveryCore({
     pi,
     getResultStore: () => currentStore,
     timing: () => ({

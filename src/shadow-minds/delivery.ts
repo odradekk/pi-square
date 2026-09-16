@@ -11,10 +11,13 @@
  * set, batch selection, safe delivery timing, transcript confirmation,
  * natural-settle resend, interruption suppression, and send-failure
  * retention — live in the shared confirmed-delivery core; this module is the
- * Shadow adapter: it supplies the policy gate, the source-attributed advisory
- * framing, and the transcript confirmation parser. Infrastructure failures
- * never become payloads: they stay manager diagnostics and can only reach
- * the model as a bounded summary through explicit user action.
+ * Shadow delivery policy bound to that core (odradekk/pi-square#372): which
+ * results enter the machine, how the steer/wake/explicit gate decides, how
+ * one batch renders as source-attributed advisory evidence, how a transcript
+ * message confirms, and how the result store's delivery transitions are
+ * driven. Infrastructure failures never become payloads: they stay manager
+ * diagnostics and can only reach the model as a bounded summary through
+ * explicit user action.
  *
  * Scope is the current parent session. Nothing here persists across sessions.
  */
@@ -26,7 +29,7 @@ import {
   DEFAULT_MAX_BATCH_RESULTS,
   DEFAULT_MAX_PENDING_RESULTS,
   type ConfirmedDeliveryBatchEntry,
-  type ConfirmedDeliveryLifecycle,
+  type ConfirmedDeliveryCore,
 } from "../subagents/confirmed-delivery";
 export {
   subscribeDeliveryLifecycle,
@@ -229,31 +232,24 @@ export function shadowNotificationResultIds(message: unknown): string[] {
     .filter((id) => id.length > 0);
 }
 
-/** Scheduling record kept beside the shared pending set. */
-interface ShadowDeliveryRecord extends ShadowDeliveryPolicyEntry {
-  value: ShadowDeliveryValue;
-}
-
-export interface ShadowDeliveryController extends ConfirmedDeliveryLifecycle {
+/**
+ * The Shadow delivery core: the generic confirmed-delivery core carrying
+ * Shadow entries, extended only with the Shadow policy operations. No core
+ * member is redeclared here; the store's delivery transitions and the quiet
+ * confirmation state live beside the core and are driven through its hooks.
+ */
+export interface ShadowDeliveryCore extends ConfirmedDeliveryCore<ShadowDeliveryValue> {
   /** Offers one finished result; notify policy results stay inbox-only. */
   enqueueResult(result: ShadowResultEntity): void;
   /** Explicit Send to agent: promotes a notified result through the same machine. */
   sendResultToAgent(result: ShadowResultEntity): boolean;
   /** Explicit bounded summary of one infrastructure failure; never automatic. */
   sendErrorSummary(run: { id: string; shadowId: string; shadowName: string; phase: string; message?: string }): boolean;
-  /** Drops an entry, for example when its inbox history is deleted. */
-  remove(id: string): void;
-  /** True while the entry of this identity is not confirmed. */
-  isPending(id: string): boolean;
-  /** Count of entries the parent has not confirmed. */
-  pendingCount(): number;
   /** Confirms quiet sends only when their IDs were observed in persisted transcript entries. */
   confirmQuietDeliveries(observedIds: readonly string[]): number;
-  /** Clears all state on session start and shutdown. */
-  reset(): void;
 }
 
-export function createShadowDeliveryController(options: {
+export function createShadowDeliveryCore(options: {
   pi: Pick<ExtensionAPI, "sendMessage">;
   /** Reads the session result store; the store and runtime are rebuilt per session. */
   getResultStore: () => ShadowResultStore | undefined;
@@ -263,8 +259,12 @@ export function createShadowDeliveryController(options: {
   onDegrade?: (count: number) => void;
   /** Fired after every pending-set change, for status refresh. */
   onPendingChange?: () => void;
-}): ShadowDeliveryController {
-  const records = new Map<string, ShadowDeliveryRecord>();
+}): ShadowDeliveryCore {
+  // Side records the core cannot carry: the value behind each pending
+  // identity (the gate decides on it at boundary and send time) and the
+  // quiet-sent IDs whose fire-and-forget sends still await transcript
+  // evidence. The core's removal observer keeps both consistent.
+  const index = new Map<string, ShadowDeliveryValue>();
   let sequence = 0;
   // Quiet sends have no extension-visible message_start. Their IDs remain
   // candidates until the shutdown drain observes the matching persisted
@@ -277,8 +277,8 @@ export function createShadowDeliveryController(options: {
       const sendable: ConfirmedDeliveryBatchEntry<ShadowDeliveryValue>[] = [];
       const degraded: string[] = [];
       for (const entry of batch) {
-        const record = records.get(entry.id);
-        if (record && resolveDeliveryDecision(record, timing).action === "degrade") {
+        const value = index.get(entry.id);
+        if (value && resolveDeliveryDecision(value, timing).action === "degrade") {
           degraded.push(entry.id);
           continue;
         }
@@ -320,10 +320,9 @@ export function createShadowDeliveryController(options: {
       }
       if (degraded.length > 0) {
         for (const id of degraded) {
+          const value = index.get(id);
           core.remove(id);
-          const record = records.get(id);
-          records.delete(id);
-          if (record?.value.kind === "result") options.getResultStore()?.degradeToNotify(id);
+          if (value?.kind === "result") options.getResultStore()?.degradeToNotify(id);
         }
         options.onDegrade?.(degraded.length);
       }
@@ -336,31 +335,47 @@ export function createShadowDeliveryController(options: {
     // immediate enqueue flush followed by the settle would duplicate.
     isIdle: () => !options.timing().parentRunning && !options.timing().quiet,
     onPendingChange: options.onPendingChange,
+    // The gate is time-varying, so stale entries are dropped at every
+    // delivery boundary before interruption state is applied — even when the
+    // boundary turns out aborted and flushes nothing.
+    beforeFlush: () => { sweep(); },
+    onEntriesRemoved: (ids, reason) => {
+      for (const id of ids) {
+        const value = index.get(id);
+        index.delete(id);
+        // A transcript observation drives the store's pending → delivered
+        // transition; every other removal only retires the side record.
+        if (reason === "confirmed" && value?.kind === "result") {
+          options.getResultStore()?.markDelivered(id);
+        }
+      }
+      if (reason === "reset") quietSentIds = new Set();
+    },
   });
 
   /** Degrades one entry back to the inbox and stops tracking it. */
-  const degradeEntry = (id: string, record: ShadowDeliveryRecord): void => {
+  const degradeEntry = (id: string, value: ShadowDeliveryValue): void => {
     core.remove(id);
-    records.delete(id);
-    if (record.value.kind === "result") options.getResultStore()?.degradeToNotify(id);
+    if (value.kind === "result") options.getResultStore()?.degradeToNotify(id);
   };
 
   /** Drops every entry the policy gate now refuses before the core selects a batch. */
   const sweep = (): void => {
+    const timing = options.timing();
     let degraded = 0;
     for (const id of core.pendingIds()) {
-      const record = records.get(id);
-      if (!record) continue;
-      if (resolveDeliveryDecision(record, options.timing()).action !== "degrade") continue;
-      degradeEntry(id, record);
+      const value = index.get(id);
+      if (!value) continue;
+      if (resolveDeliveryDecision(value, timing).action !== "degrade") continue;
+      degradeEntry(id, value);
       degraded += 1;
     }
     // Reconcile any record the core silently evicted at the pending cap: the
     // inbox must never keep showing a delivery that no longer exists.
     const pending = new Set(core.pendingIds());
-    for (const [id, record] of [...records.entries()]) {
+    for (const [id, value] of [...index.entries()]) {
       if (pending.has(id)) continue;
-      degradeEntry(id, record);
+      degradeEntry(id, value);
       degraded += 1;
     }
     if (degraded > 0) options.onDegrade?.(degraded);
@@ -372,16 +387,17 @@ export function createShadowDeliveryController(options: {
     // entry degrades visibly instead of stranding its inbox row at "sending".
     while (core.pendingCount() >= MAX_PENDING_RESULTS) {
       const oldest = core.pendingIds()[0];
-      const record = oldest !== undefined ? records.get(oldest) : undefined;
-      if (!record) break;
-      degradeEntry(oldest, record);
+      const oldestValue = oldest !== undefined ? index.get(oldest) : undefined;
+      if (oldest === undefined || !oldestValue) break;
+      degradeEntry(oldest, oldestValue);
       options.onDegrade?.(1);
     }
-    records.set(id, { policy: value.policy, sourceRun: value.sourceRun, ...(value.taskEpoch !== undefined ? { taskEpoch: value.taskEpoch } : {}), value });
+    index.set(id, value);
     core.enqueue({ id, value });
   };
 
   return {
+    ...core,
     enqueueResult(result) {
       const policy = result.configuredDelivery ?? "steer";
       // Notify stays inbox-only until an explicit Send to agent.
@@ -422,33 +438,6 @@ export function createShadowDeliveryController(options: {
       });
       return true;
     },
-    remove: (id) => {
-      records.delete(id);
-      core.remove(id);
-    },
-    observeMessage(message) {
-      const ids = shadowNotificationResultIds(message);
-      if (ids.length === 0) return;
-      core.observeMessage(message);
-      for (const id of ids) {
-        const record = records.get(id);
-        if (!record) continue;
-        records.delete(id);
-        if (record.value.kind === "result") options.getResultStore()?.markDelivered(id);
-      }
-    },
-    handleTurnEnd: (message) => {
-      sweep();
-      core.handleTurnEnd(message);
-    },
-    handleAgentStart: () => core.handleAgentStart(),
-    handleAgentEnd: (messages) => core.handleAgentEnd(messages),
-    handleAgentSettled: () => {
-      sweep();
-      core.handleAgentSettled();
-    },
-    isPending: (id) => core.isPending(id),
-    pendingCount: () => core.pendingCount(),
     /**
      * Confirms quiet sends only after the shutdown drain observed their IDs in
      * actual parent-session custom-message entries. A fire-and-forget
@@ -460,18 +449,12 @@ export function createShadowDeliveryController(options: {
       for (const id of [...quietSentIds]) {
         if (!observed.has(id)) continue;
         quietSentIds.delete(id);
-        const record = records.get(id);
-        records.delete(id);
+        const value = index.get(id);
         core.remove(id);
-        if (record?.value.kind === "result") options.getResultStore()?.markDelivered(id);
+        if (value?.kind === "result") options.getResultStore()?.markDelivered(id);
         confirmed += 1;
       }
       return confirmed;
-    },
-    reset: () => {
-      records.clear();
-      quietSentIds = new Set();
-      core.reset();
     },
   };
 }
