@@ -8,7 +8,7 @@ import {
   notifyBackgroundChange,
   replaceBackgroundViewFeed,
 } from "./background";
-import { createDeliveryController } from "./delivery";
+import { createDeliveryController, subscribeDeliveryLifecycle } from "./delivery";
 import { listRetainedSubagentIds } from "./artifacts";
 import { reconcileChildPartitions } from "../anchored-edit/partitions";
 import { discoverSubagents, filterVisibleSubagents } from "./definitions";
@@ -141,31 +141,13 @@ export default function registerSubagents(
   // the message array is built), and at the user `message_start` for a
   // steer/follow-up queued during a streaming run — the same commit
   // discipline the Shadow Minds scheduler uses for its task epochs.
-  // Delivery timing. A running parent receives results at a turn boundary; a
-  // parent that settled naturally receives them at once; a parent that the
-  // user interrupted stays silent until it starts its next turn.
-  pi.on("agent_start", () => {
-    delivery.handleAgentStart();
-  });
-
-  pi.on("turn_end", (event) => {
-    delivery.handleTurnEnd(event.message);
-  });
-
-  pi.on("agent_end", (event) => {
-    delivery.handleAgentEnd(event.messages);
-  });
-
-  pi.on("agent_settled", () => {
-    delivery.handleAgentSettled();
-  });
-
-  // Delivery confirmation: a result counts as delivered only when Pi injects
-  // the message that carries it into the parent transcript. The same user
-  // message commits a queued streaming input's epoch boundary (#308).
-  pi.on("message_start", (event) => {
-    delivery.observeMessage(event.message);
-  });
+  // Delivery timing and confirmation (ADR-0009). The delivery core subscribes
+  // the Pi lifecycle itself: a running parent receives results at a turn
+  // boundary, a naturally settled parent at once, and an interrupted parent
+  // stays silent until its next run starts; a result counts as delivered only
+  // when the carrying message is observed in the transcript. The main-task
+  // epoch commits its own message_start boundary in main-task-input (#308).
+  subscribeDeliveryLifecycle(delivery, pi);
 
   pi.on("session_shutdown", async () => {
     state.background.viewFeed?.clear();
