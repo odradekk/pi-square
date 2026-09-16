@@ -17,13 +17,12 @@
  */
 
 import { realpathSync } from "node:fs";
-import type { ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import {
   DEFAULT_CONFIG,
   type PiSquareConfig,
   type ShadowMindsConfig,
 } from "../core/config";
-import { sanitizeDisplayLine } from "../display/sanitize";
 import {
   discoverShadowDefinitions,
   shadowDefinitionContextFingerprint,
@@ -35,21 +34,13 @@ import {
   type ShadowManagerServices,
   type ShadowManagerSnapshot,
 } from "./manager";
-import { formatModel } from "../subagents/child-session-executor";
-import {
-  buildShadowSystem,
-  canonicalSchemaJson,
-  type ShadowProjectRule,
-} from "./prompt";
-import { matchesParentModelFilter, resolveShadowModel, resolveShadowThinkingLevel } from "./resolve";
+import { type ShadowProjectRule } from "./prompt";
 import {
   createShadowResultStore,
   type ShadowResultStore,
 } from "./result-store";
 import {
   createShadowRuntime,
-  shadowCohortHash,
-  type ShadowRunRequest,
   type ShadowRuntime,
   type ShadowRuntimeDeps,
 } from "./runtime";
@@ -59,10 +50,9 @@ import {
   type ShadowSchedulerStartInput,
   type ShadowSchedulerStartOutcome,
 } from "./scheduler";
-import { buildTrajectory, type ShadowTrajectoryEvidence } from "./trajectory";
-import { resolveShadowTools } from "./tools";
 import type { ShadowDeliveryCore } from "./delivery";
 import type { ShadowCompletionGate } from "./gate";
+import { composeShadowRun, notifyText, toolWarningNotice } from "./run-composer";
 
 /** Parent-task authority snapshot frozen at each real user task start. */
 export interface ShadowTaskSnapshot {
@@ -209,17 +199,21 @@ export interface ShadowSessionPromotion {
 }
 
 /**
- * The session_start conversion (#373): promotes the registered state in
- * place and returns it. Identity is preserved — the methods created by
- * `createRegisteredState` close over this object, so they keep working on
- * the promoted shape — while the type-level promise changes: every session
- * member is present from here on.
+ * The session_start conversion (#373), run at every parent session start.
+ * It accepts either state shape — the registered state of a fresh
+ * registration or the session state of the session being replaced — and
+ * returns the same object with the session members installed: identity is
+ * preserved, so the methods created by `createRegisteredState` keep working,
+ * while the type-level promise changes to every session member present.
+ * Re-promoting an already-session state is the intended replacement-session
+ * path, not an accident: it installs the new session's runtime, scheduler,
+ * and result store.
  */
 export function promoteToSessionState(
-  registered: ShadowMindsState,
+  state: ShadowMindsState,
   promotion: ShadowSessionPromotion,
 ): ShadowMindsSessionState {
-  const session = registered as ShadowMindsSessionState;
+  const session = state as ShadowMindsSessionState;
   session.kind = "session";
   session.delivery = promotion.delivery;
   session.gate = promotion.gate;
@@ -246,10 +240,8 @@ export interface CreateShadowRegisteredStateInput {
 }
 
 /**
- * Builds the registered state: the definition registry, the result store,
- * the runtime, and the scheduler all exist from registration, so the
- * `/shadow` manager and the event observers below have a fully populated
- * state to work with before any session starts.
+ * Builds the registered state shape; the member contract and its
+ * registration-time guarantee are documented on `ShadowMindsState`.
  */
 export function createRegisteredState(
   input: CreateShadowRegisteredStateInput = {},
@@ -362,24 +354,6 @@ function parentCoreFromOptions(options: unknown): string | undefined {
   return append ? `${custom}\n\n${append}` : custom || undefined;
 }
 
-/** Builds the observational trajectory view from the live context projection. */
-export function captureTrajectory(
-  ctx: Pick<ExtensionContext, "sessionManager"> | ExtensionCommandContext,
-  evidence: readonly ShadowTrajectoryEvidence[] = [],
-) {
-  try {
-    // The compaction-aware context projection: `buildContextEntries` follows
-    // the current leaf and omits entries the latest compaction replaced, so
-    // the trajectory matches what the parent model actually sees. The plain
-    // branch remains the fallback for surfaces without the projection.
-    const manager = ctx.sessionManager;
-    const branch = manager?.buildContextEntries?.() ?? manager?.getBranch?.(manager.getLeafId?.() ?? undefined);
-    return buildTrajectory(Array.isArray(branch) ? branch : [], { evidence });
-  } catch {
-    return buildTrajectory([], { evidence });
-  }
-}
-
 export function hasRunningGateCompletion(
   runs: readonly { phase: string; trigger?: string; shadowId: string }[],
   gateIds: ReadonlySet<string>,
@@ -387,181 +361,14 @@ export function hasRunningGateCompletion(
   return runs.some((run) => run.phase === "running" && run.trigger === "completion" && gateIds.has(run.shadowId));
 }
 
-/** Delivered Shadow results as trajectory evidence; notified results stay out. */
-export function deliveredEvidence(runtime: ShadowRuntime): ShadowTrajectoryEvidence[] {
-  return runtime.snapshot().results
-    .filter((result) => result.delivery === "delivered")
-    .map((result) => ({
-      shadowId: result.shadowId,
-      shadowName: result.shadowName,
-      summary: result.summary,
-      deliveredAt: result.createdAt,
-      delivery: result.delivery,
-    }));
-}
-
-const MAX_NOTIFY_CHARS = 400;
-
-/** One bounded, display-safe notification line. */
-export function notifyText(message: string): string {
-  const sanitized = sanitizeDisplayLine(message);
-  return sanitized.length <= MAX_NOTIFY_CHARS ? sanitized : `${sanitized.slice(0, MAX_NOTIFY_CHARS - 1)}…`;
-}
-
-/** One notification line for a run that starts with a reduced tool set. */
-export function toolWarningNotice(shadowId: string, warnings: string[]): string {
-  return `shadow-minds: ${shadowId} starts with ${warnings.length} tool warning${warnings.length === 1 ? "" : "s"} — ${warnings.join(" ")}`;
-}
-
-/**
- * Composes and starts one run from an effective definition against a live
- * context. Manual trials and scheduler dispatch share every guard: registry
- * refresh, definition lookup, parent-model filter, tool-envelope resolution
- * with visible warnings, model and thinking resolution, and the same child
- * seam. Returns the runtime start outcome.
- */
-export function composeShadowRun(input: {
-  state: ShadowMindsState;
-  ctx: ExtensionContext;
-  partition?: ShadowSessionPartition | undefined;
-  definition: EffectiveShadowDefinition;
-  source: "manual" | "automatic";
-  note?: string;
-  taskEpoch?: number;
-  sourceRun?: number;
-  trigger?: ShadowRunRequest["trigger"];
-  triggerReasons?: ShadowRunRequest["triggerReasons"];
-  /** Frozen automatic snapshot; manual trials capture fresh per run. */
-  snapshot?: ShadowTaskSnapshot;
-  trajectory?: ReturnType<typeof captureTrajectory>;
-  /** Surfaces the pre-start reason that refused the run. */
-  onWarning?: (message: string) => void;
-  /** Surfaces the bounded tool warnings once per run start. */
-  onToolWarnings?: (warnings: string[]) => void;
-}): { started: boolean; reason?: string; kind?: "busy" | "failed" } {
-  const { state, ctx } = input;
-  const runtime = state.runtime;
-  try {
-    state.refresh(ctx.cwd);
-    const liveConfig = state.managerSnapshot().config ?? DEFAULT_CONFIG.shadowMinds;
-    const definition = state.registry.definitions.find((entry) => entry.id === input.definition.id);
-    const automaticReasons = input.source === "automatic"
-      ? (input.triggerReasons ?? []).filter((reason) => definition?.triggers.includes(reason.trigger))
-      : [];
-    if (!definition
-      || (input.source === "automatic" && (
-        !definition.enabled
-        || definition.hidden
-        || !liveConfig.enabled
-        || automaticReasons.length === 0
-      ))) {
-      return {
-        started: false,
-        kind: "failed",
-        reason: `Shadow '${input.definition.id}' is no longer eligible after the pre-start refresh.`,
-      };
-    }
-    const parentLabel = formatModel(ctx.model);
-    if (!matchesParentModelFilter(definition.parentModels, parentLabel)) {
-      input.onWarning?.(
-        `Shadow '${definition.id}' is filtered to parent models ${(definition.parentModels ?? []).join(", ")}${parentLabel ? `; the parent model is ${parentLabel}` : ""}.`,
-      );
-      return {
-        started: false,
-        kind: "failed",
-        reason: `Shadow '${definition.id}' is filtered to parent models ${(definition.parentModels ?? []).join(", ")}${parentLabel ? `; the parent model is ${parentLabel}` : ""}.`,
-      };
-    }
-    const snapshot = input.snapshot ?? state.captureTaskSnapshot(ctx as ExtensionCommandContext);
-    if (snapshot.error) {
-      return { started: false, kind: "failed", reason: snapshot.error };
-    }
-    const resolution = resolveShadowTools({
-      ...(definition.tools !== undefined ? { tools: definition.tools } : {}),
-      ...(definition.requiredTools && definition.requiredTools.length > 0 ? { requiredTools: definition.requiredTools } : {}),
-      cwd: snapshot.cwd,
-    });
-    if (!resolution.ok) {
-      input.onWarning?.(resolution.error);
-      return { started: false, kind: "failed", reason: resolution.error };
-    }
-    if (resolution.envelope.warnings.length > 0) {
-      input.onToolWarnings?.(resolution.envelope.warnings);
-    }
-    const modelResolution = resolveShadowModel(definition.model, ctx);
-    if (modelResolution.error) {
-      input.onWarning?.(modelResolution.error);
-      return { started: false, kind: "failed", reason: modelResolution.error };
-    }
-    const thinkingResolution = resolveShadowThinkingLevel(
-      definition.thinking,
-      liveConfig.defaults.thinking,
-      ctx.thinkingLevel,
-      modelResolution.model,
-    );
-    if (thinkingResolution.error) {
-      input.onWarning?.(thinkingResolution.error);
-      return { started: false, kind: "failed", reason: thinkingResolution.error };
-    }
-    const request: ShadowRunRequest = {
-      definition,
-      ...(input.note ? { note: input.note } : {}),
-      ...(input.source === "automatic" && automaticReasons[0] ? { trigger: automaticReasons[0].trigger } : input.trigger ? { trigger: input.trigger } : {}),
-      ...(input.taskEpoch !== undefined ? { taskEpoch: input.taskEpoch } : {}),
-      ...(input.sourceRun !== undefined ? { sourceRun: input.sourceRun } : {}),
-      ...(input.source === "automatic" && automaticReasons.length > 0
-        ? { triggerReasons: automaticReasons }
-        : input.triggerReasons && input.triggerReasons.length > 0
-          ? { triggerReasons: input.triggerReasons }
-          : {}),
-      system: buildShadowSystem({
-        ...(snapshot.parentCore ? { parentCore: snapshot.parentCore } : {}),
-        projectRules: snapshot.projectRules,
-        cwd: snapshot.cwd,
-      }),
-      trajectory: input.trajectory ?? captureTrajectory(ctx, deliveredEvidence(runtime)),
-      cwd: snapshot.cwd,
-      modelResolution,
-      ...(thinkingResolution.level ? { thinkingLevel: thinkingResolution.level } : {}),
-      envelope: resolution.envelope,
-      // Authority hashes are computed here — where the raw snapshot text is
-      // visible — so the run record stores only hash prefixes, never the
-      // prompt text (odradekk/pi-square#161).
-      authorityCohort: {
-        ...(snapshot.parentCore ? { parentCoreHash: shadowCohortHash(snapshot.parentCore) } : {}),
-        ...(snapshot.projectRules.length > 0
-          ? {
-            projectRulesHash: shadowCohortHash(
-              canonicalSchemaJson(snapshot.projectRules.map((rule) => ({ path: rule.path, content: rule.content }))),
-            ),
-          }
-          : {}),
-      },
-      ...(definition.debug && input.partition ? { debug: input.partition } : {}),
-    };
-    const outcome = input.source === "manual"
-      ? runtime.startManualRun(request)
-      : runtime.startAutomaticRun(request);
-    return outcome.started
-      ? { started: true }
-      : { started: false, reason: outcome.reason, ...(outcome.kind ? { kind: outcome.kind } : {}) };
-  } catch (error) {
-    return {
-      started: false,
-      kind: "failed",
-      reason: notifyText(`The Shadow run context is no longer active: ${error instanceof Error ? error.message : String(error)}`),
-    };
-  }
-}
-
 /** Builds the manager runtime services against one command invocation. */
 export function makeServices(
   state: ShadowMindsState,
   ctx: ExtensionCommandContext,
-  runtime: ShadowRuntime = state.runtime,
   hooks?: { onSchedulerChange?: () => void },
 ): ShadowManagerServices {
   const store = state.resultStore;
+  const runtime = state.runtime;
   return {
     runtime: {
       snapshot: () => runtime.snapshot(),
@@ -598,7 +405,6 @@ export function makeServices(
           const outcome = composeShadowRun({
             state,
             ctx,
-            partition: isShadowSessionState(state) ? state.partition : undefined,
             definition,
             source: "manual",
             ...(input.note ? { note: input.note } : {}),

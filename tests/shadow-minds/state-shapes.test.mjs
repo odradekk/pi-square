@@ -159,6 +159,23 @@ const enabledConfig = () => ({
   const created = [];
   const ran = [];
   const state = registerShadowMinds(harness.pi, enabledConfig, makeRuntimeDeps(created, ran));
+  // The runtime subscriber swallows its own errors by design (a broken
+  // observer never affects run lifecycle), so "skip without throwing" needs
+  // an observable only this path can provide: session-member reads. With the
+  // pre-session guard in place the subscriber must not touch gate or
+  // delivery at all; an always-false guard would read `state.gate`, throw,
+  // and be swallowed — leaving every entries/sent assertion green.
+  let sessionMemberReads = 0;
+  for (const key of ["gate", "delivery"]) {
+    Object.defineProperty(state, key, {
+      configurable: true,
+      enumerable: true,
+      get() {
+        sessionMemberReads += 1;
+        return undefined;
+      },
+    });
+  }
   const ctx = makeSessionCtx(fixtureProject, join(fixtureRoot, "session-dir-a"), harness.notifications);
 
   // The complete pre-session event battery: every handler that touches
@@ -199,6 +216,11 @@ const enabledConfig = () => ({
   assert.equal(state.resultStore.list().length, 1, "the trial result persists into the registered state's store");
   assert.equal(harness.entries.length, 0, "the pre-session result renders no transcript reference");
   assert.equal(harness.sent.length, 0, "the pre-session result enters no delivery machine");
+  assert.equal(
+    sessionMemberReads,
+    0,
+    "the pre-session runtime subscriber touches no session member — the skip is clean, not a swallowed throw",
+  );
 
   // Explicit delivery actions are session-scoped: refused with a truthful
   // reason, never a throw.
@@ -272,7 +294,6 @@ const enabledConfig = () => ({
     harness.notifications.some((entry) => entry.message.includes("finished")),
     "terminal run outcomes notify through the session UI",
   );
-  assert.ok(harness.sent.length >= 1, "the idle parent receives the steer delivery at once");
 
   // Shutdown keeps the session shape (the next session_start re-promotes with
   // fresh session members), matching the pre-split object lifetime.

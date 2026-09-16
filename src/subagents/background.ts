@@ -31,10 +31,12 @@ export interface BackgroundJob {
 }
 
 /**
- * The session-owned job collection and change notifications. This is the
- * registered background shape (#373): it owns no delivery controller, so a
- * half-wired store is unrepresentable and nothing here reads an optional
- * member. The delivery controller — created only through
+ * The background job collection and change notifications, owned from
+ * extension registration. This is the registered background shape (#373):
+ * it owns no delivery controller, so a half-wired store is unrepresentable
+ * and no delivery read needs an optional chain; `onChange` and `viewFeed`
+ * stay optional for their own reasons (a display-refresh test seam and
+ * roster-only attachment). The delivery controller — created only through
  * `createSubagentDeliveryCore` and attached with `attachDeliveryController` —
  * promotes the store to the session `BackgroundState`.
  */

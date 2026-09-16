@@ -61,8 +61,10 @@ function createHarness(options = {}) {
     isIdle: () => !busy,
     notify: () => notifyBackgroundChange(state.background),
   });
-  state.background.delivery = delivery;
   const registry = createSubagentBlockingCallRegistry();
+  // The session delivery core enters only through the single creation path
+  // (#373), attached exactly as the registration root attaches it.
+  attachDeliveryController(state.background, delivery);
   // Wait and abort register through their own module interfaces — the same
   // pairing the tool entry uses — and share one blocking-call registry.
   registerWaitSubagentTool(pi.api, state, registry);

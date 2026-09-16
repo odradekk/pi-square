@@ -6,10 +6,12 @@
  * and the parameterized `/shadow <request>` Config Guide flow, wires the
  * delivery core and the completion gate at registration, and promotes the
  * registered state to the session state at `session_start` (the two state
- * shapes and the conversion live in `./state`, #373). Every handler narrows
- * the state union with `isShadowSessionState`: session-only work — delivery,
- * gate transitions, task snapshots, transcript references — is an explicit
- * no-op before a session starts, never a throw. The session runtime executes
+ * shapes and the conversion live in `./state`, #373). Handlers that touch
+ * session-only work narrow the state union with `isShadowSessionState` —
+ * the input, agent-start, and tool-execution observers read registered
+ * state alone — and that work — delivery, gate transitions, task snapshots,
+ * transcript references — is an explicit no-op before a session starts,
+ * never a throw. The session runtime executes
  * manual no-tool trials through the shared one-time child-session executor
  * seam: every run freezes the parent core, project rules, and canonical
  * working directory from the parent's current prompt options at activation,
@@ -65,17 +67,19 @@ import type { ShadowRuntimeDeps } from "./runtime";
 import {
   captureTrajectory,
   composeShadowRun,
+  deliveredEvidence,
+  notifyText,
+  toolWarningNotice,
+} from "./run-composer";
+import {
   createRegisteredState,
   createStateRuntime,
   createStateScheduler,
-  deliveredEvidence,
   hasRunningGateCompletion,
   isShadowSessionState,
   makeServices,
-  notifyText,
   promoteToSessionState,
   taskSnapshotFromOptions,
-  toolWarningNotice,
   type ShadowMindsRegisteredState,
   type ShadowMindsSessionState,
   type ShadowSessionPartition,
@@ -89,7 +93,7 @@ export default function registerShadowMinds(
   pi: ExtensionAPI,
   config?: () => PiSquareConfig,
   runtimeDeps?: ShadowRuntimeDeps,
-): ShadowMindsRegisteredState {
+): ShadowMindsRegisteredState | ShadowMindsSessionState {
   const effectiveConfig = (): ShadowMindsConfig => config?.().shadowMinds ?? DEFAULT_CONFIG.shadowMinds;
 
   // Automatic runs start while nobody is watching the manager, so a reduced
@@ -100,8 +104,9 @@ export default function registerShadowMinds(
 
   // The registration root holds one of the two state shapes (#373): the
   // registered shape from extension registration until `session_start`
-  // promotes it to the session shape. Handlers narrow the union before any
-  // session-only work.
+  // promotes it to the session shape; the returned handle is the union
+  // because the promotion rewrites this same object in place. Handlers
+  // narrow the union before any session-only work.
   let state: ShadowMindsRegisteredState | ShadowMindsSessionState;
 
   const dispatchAutomatic = (activation: ShadowSchedulerStartInput): ShadowSchedulerStartOutcome => {
@@ -117,7 +122,6 @@ export default function registerShadowMinds(
     const outcome = composeShadowRun({
       state,
       ctx: sessionCtx,
-      partition: isShadowSessionState(state) ? state.partition : undefined,
       definition: activation.definition,
       source: "automatic",
       trigger: activation.reasons[0]?.trigger,
@@ -263,7 +267,7 @@ export default function registerShadowMinds(
         return;
       }
       if (!ctx.hasUI) return;
-      await openShadowManager(ctx, state.managerSnapshot(), makeServices(state, ctx, undefined, {
+      await openShadowManager(ctx, state.managerSnapshot(), makeServices(state, ctx, {
         onSchedulerChange: refreshStatus,
       }));
     },
@@ -310,14 +314,13 @@ export default function registerShadowMinds(
         resultStore: () => state.resultStore,
       },
     });
-    // Pause state is user-visible: both entry points (manager service and
-    // any future direct call) refresh the conditional status. The gate
-    // transition is session-scoped work; before session_start the pause
-    // itself still applies, only the notification is skipped (#373).
+    // This wrapper exists only on the session shape: makeScheduler runs
+    // solely inside the session_start promotion, so the pause notifies the
+    // gate directly — no state narrowing can be needed here (#373).
     return {
       ...scheduler,
       pause() {
-        if (isShadowSessionState(state)) state.gate.handleRunTransition({ kind: "scheduler-paused" });
+        completionGate.handleRunTransition({ kind: "scheduler-paused" });
         scheduler.pause();
         refreshStatus();
       },

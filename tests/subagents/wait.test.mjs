@@ -61,7 +61,6 @@ function createHarness(options = {}) {
     isIdle: () => !busy,
     notify: () => notifyBackgroundChange(state.background),
   });
-  state.background.delivery = delivery;
   const registry = createSubagentBlockingCallRegistry();
   // The session delivery core enters only through the single creation path
   // (#373), attached exactly as the registration root attaches it.
