@@ -20,7 +20,7 @@ import type { ExtensionAPI, ToolDefinition } from "@earendil-works/pi-coding-age
 import { Type } from "typebox";
 import { artifactsDirFor, isValidSubagentId } from "./artifacts";
 import { ensureDeliveryController, subscribeBackgroundState } from "./background";
-import { buildDeliveryContent, type SubagentDeliveryClaim, type SubagentDeliveryEntry, MAX_WAIT_IDS } from "./delivery";
+import { buildDeliveryContent, keepReleasedResult, type SubagentDeliveryClaim, type SubagentDeliveryEntry, MAX_WAIT_IDS } from "./delivery";
 import { clipWithHeadTail } from "./confirmed-delivery";
 import { createSubagentError, failureToolResult } from "./errors";
 import type {
@@ -312,7 +312,7 @@ function waitEndResult(reason: WaitEndReason, claim: SubagentDeliveryClaim): Ret
   if (reason.kind === "interrupted") {
     // The interruption releases every untaken claim without aborting any
     // child; deliverable results rejoin the automatic schedule.
-    claim.release();
+    claim.release(keepReleasedResult);
     return failureToolResult(createSubagentError({
       code: "ABORTED",
       message: "wait_subagent was interrupted: the claims were released without stopping the selected children, and unsent completed and failed results return to automatic delivery.",
@@ -322,7 +322,7 @@ function waitEndResult(reason: WaitEndReason, claim: SubagentDeliveryClaim): Ret
     }));
   }
   if (reason.kind === "lost") {
-    claim.release();
+    claim.release(keepReleasedResult);
     return failureToolResult(createSubagentError({
       code: "SESSION_HISTORY_UNAVAILABLE",
       message: `The history of subagent '${reason.id}' was deleted while waiting, so its result can no longer be returned.`,

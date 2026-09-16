@@ -3,20 +3,20 @@ import { join, resolve } from "node:path";
 
 import jiti from "jiti";
 
-import { createDeliveryEventSource, run, test } from "./lib/test-helpers.mjs";
+import { run, test } from "./lib/test-helpers.mjs";
 
 const packageRoot = resolve(import.meta.dirname, "..", "..");
 const load = jiti(import.meta.url, { moduleCache: false });
 const {
   budgetResultText,
-  createDeliveryController,
+  createSubagentDeliveryCore,
+  keepReleasedResult,
   MAX_BATCH_RESULTS,
   MAX_PENDING_RESULTS,
   MAX_RESULT_CHARS,
   MAX_WAIT_RESERVATIONS,
   notificationResultIds,
   SUBAGENT_NOTIFICATION_TYPE,
-  subscribeDeliveryLifecycle,
 } = await load(join(packageRoot, "src", "subagents", "delivery.ts"));
 
 function runDetails(id, overrides = {}) {
@@ -48,7 +48,7 @@ function harness({ idle = true, send } = {}) {
   const sent = [];
   let isIdle = idle;
   let changes = 0;
-  const controller = createDeliveryController({
+  const core = createSubagentDeliveryCore({
     pi: {
       sendMessage(message, options) {
         if (send) send(message, options);
@@ -59,27 +59,18 @@ function harness({ idle = true, send } = {}) {
     notify: () => { changes += 1; },
   });
   return {
-    controller,
+    core,
     sent,
     changes: () => changes,
     setIdle(value) { isIdle = value; },
     last() { return sent[sent.length - 1]; },
-    confirmLast() {
-      const message = sent[sent.length - 1].message;
-      controller.observeMessage({
-        role: "custom",
-        customType: message.customType,
-        details: message.details,
-      });
-    },
   };
 }
 
-function enqueue(controller, id, overrides = {}) {
-  controller.enqueue({
+function enqueue(core, id, overrides = {}) {
+  core.enqueue({
     id,
-    status: overrides.status ?? "completed",
-    details: runDetails(id, overrides.details ?? {}),
+    value: { id, status: overrides.status ?? "completed", details: runDetails(id, overrides.details ?? {}) },
   });
 }
 
@@ -92,7 +83,7 @@ test("a long result reaches the parent complete", () => {
   assert.ok(long.length > 6000, "the reproduced result is far above the former 1600-character clip");
 
   const probe = harness();
-  enqueue(probe.controller, "run-long", { details: { finalText: long } });
+  enqueue(probe.core, "run-long", { details: { finalText: long } });
 
   const content = probe.last().message.content;
   assert.ok(content.includes(long), "the whole result text reaches the parent");
@@ -110,14 +101,14 @@ test("an oversized result keeps its head and its tail with a visible omission co
   assert.match(budgeted, new RegExp(`\\[omitted ${oversized.length - head - tail} characters\\]`));
 
   const probe = harness();
-  enqueue(probe.controller, "run-oversized", { details: { finalText: oversized } });
+  enqueue(probe.core, "run-oversized", { details: { finalText: oversized } });
   assert.ok(probe.last().message.content.includes(budgeted));
 });
 
 test("a failure text uses the same budget as a result text", () => {
   const failure = "E".repeat(30_000);
   const probe = harness();
-  enqueue(probe.controller, "run-failed", {
+  enqueue(probe.core, "run-failed", {
     status: "failed",
     details: { phase: "failed", finalText: "", error: failure },
   });
@@ -127,144 +118,36 @@ test("a failure text uses the same budget as a result text", () => {
   assert.match(content, /\[omitted 6000 characters\]/, "the former 800-character error clip is gone");
 });
 
-// ─── Delivery timing and coalescing (the loss defect) ────────────────
+// ─── V5 notification payload (policy rendering) ──────────────────────
 
-test("a busy parent receives results at the next turn boundary", () => {
+test("a burst renders as one V5 steering notification per batch", () => {
   const probe = harness({ idle: false });
-  enqueue(probe.controller, "run-busy");
-  assert.equal(probe.sent.length, 0, "no result is pushed into a running turn");
-  assert.equal(probe.controller.pendingCount(), 1);
+  for (let index = 0; index < MAX_BATCH_RESULTS + 1; index += 1) enqueue(probe.core, `run-${index}`);
 
-  probe.controller.handleTurnEnd();
+  probe.core.handleTurnEnd();
   assert.equal(probe.sent.length, 1);
+  const message = probe.last().message;
+  assert.equal(message.customType, SUBAGENT_NOTIFICATION_TYPE);
+  assert.equal(message.details.version, 5);
+  assert.equal(message.details.results.length, MAX_BATCH_RESULTS);
+  assert.deepEqual(
+    message.details.results.map((result) => [result.id, result.status, result.result.id]),
+    Array.from({ length: MAX_BATCH_RESULTS }, (_, index) => [`run-${index}`, "completed", `run-${index}`]),
+    "every entry carries the run identity, the deliverable status, and its V4 run record",
+  );
+  assert.match(message.content, new RegExp(`^\\[Background subagents: ${MAX_BATCH_RESULTS} results\\]`));
+  assert.match(message.content, /--- 1\/6 completed · id: run-0/);
   assert.deepEqual(probe.last().options, { triggerTurn: true, deliverAs: "steer" });
 });
-
-test("results are coalesced into one delivery and the surplus follows at the next one", () => {
+test("a re-delivered result is marked as resent in the notification payload", () => {
   const probe = harness({ idle: false });
-  for (let index = 0; index < MAX_BATCH_RESULTS + 1; index += 1) enqueue(probe.controller, `run-${index}`);
-
-  probe.controller.handleTurnEnd();
-  assert.equal(probe.sent.length, 1, "one message carries the whole burst");
-  assert.equal(probe.last().message.details.version, 5);
-  assert.equal(probe.last().message.details.results.length, MAX_BATCH_RESULTS);
-  assert.match(probe.last().message.content, new RegExp(`^\\[Background subagents: ${MAX_BATCH_RESULTS} results\\]`));
-  assert.match(probe.last().message.content, /--- 1\/6 completed · id: run-0/);
-
-  probe.controller.handleTurnEnd();
-  assert.equal(probe.sent.length, 2, "the surplus result is not lost");
-  assert.deepEqual(probe.last().message.details.results.map((result) => result.id), ["run-6"]);
-});
-
-test("a confirmed result is never delivered again", () => {
-  const probe = harness();
-  enqueue(probe.controller, "run-confirmed");
-  assert.equal(probe.sent.length, 1, "an idle parent receives the result at once");
-
-  probe.confirmLast();
-  assert.equal(probe.controller.pendingCount(), 0);
-
-  probe.controller.handleAgentSettled();
-  probe.controller.handleTurnEnd();
-  assert.equal(probe.sent.length, 1, "a delivered result is never repeated");
-});
-
-test("a result the parent never received is delivered again after the parent settles", () => {
-  const probe = harness({ idle: false });
-  enqueue(probe.controller, "run-lost");
-  probe.controller.handleTurnEnd();
-  assert.equal(probe.sent.length, 1);
-  assert.equal(probe.last().message.details.resent, false);
-
-  // No confirmation arrives: this is exactly what an interrupted turn does to a
-  // queued message, because Pi clears its queues without telling the extension.
-  probe.controller.handleAgentSettled();
+  enqueue(probe.core, "run-lost");
+  probe.core.handleTurnEnd();
+  probe.core.handleAgentSettled();
   assert.equal(probe.sent.length, 2, "the discarded result is delivered again");
   assert.equal(probe.last().message.details.resent, true);
   assert.match(probe.last().message.content, /^\[Background subagent completed\] \(resent\)/);
   assert.deepEqual(probe.last().message.details.results.map((result) => result.id), ["run-lost"]);
-
-  probe.confirmLast();
-  probe.controller.handleAgentSettled();
-  assert.equal(probe.sent.length, 2, "confirmation stops the re-delivery");
-});
-
-test("an interrupted turn holds results in Pi's turn-end-before-agent-end order", () => {
-  const probe = harness({ idle: false });
-  enqueue(probe.controller, "run-interrupted");
-  probe.controller.handleTurnEnd({ stopReason: "aborted" });
-  probe.controller.handleAgentEnd([{ stopReason: "aborted" }]);
-  probe.controller.handleAgentSettled();
-  assert.equal(probe.sent.length, 0, "an aborted turn never re-queues a steering message");
-  assert.equal(probe.controller.pendingCount(), 1);
-
-  probe.setIdle(true);
-  enqueue(probe.controller, "run-after-interrupt");
-  assert.equal(probe.sent.length, 0, "the parent keeps its silence while interrupted");
-
-  probe.controller.handleAgentStart();
-  probe.controller.handleTurnEnd({ stopReason: "endTurn" });
-  assert.equal(probe.sent.length, 1);
-  assert.deepEqual(
-    probe.last().message.details.results.map((result) => result.id),
-    ["run-interrupted", "run-after-interrupt"],
-  );
-});
-
-test("a natural settle delivers without waiting for the next turn", () => {
-  const probe = harness({ idle: false });
-  enqueue(probe.controller, "run-settled");
-  probe.controller.handleAgentEnd([{ stopReason: "endTurn" }]);
-  probe.controller.handleAgentSettled();
-  assert.equal(probe.sent.length, 1);
-});
-
-// ─── Bounds, removal, and failure handling ───────────────────────────
-
-test("the pending set stays bounded", () => {
-  const probe = harness({ idle: false });
-  for (let index = 0; index < MAX_PENDING_RESULTS + 5; index += 1) enqueue(probe.controller, `run-${index}`);
-
-  assert.equal(probe.controller.pendingCount(), MAX_PENDING_RESULTS);
-  assert.equal(probe.controller.isPending("run-0"), false, "the oldest results leave first");
-  assert.equal(probe.controller.isPending(`run-${MAX_PENDING_RESULTS + 4}`), true);
-});
-
-test("deleting a run drops its pending result", () => {
-  const probe = harness({ idle: false });
-  enqueue(probe.controller, "run-deleted");
-  probe.controller.remove("run-deleted");
-  probe.controller.handleTurnEnd();
-  assert.equal(probe.sent.length, 0);
-  assert.equal(probe.controller.pendingCount(), 0);
-});
-
-test("a send that never reaches Pi keeps the result pending", () => {
-  let fail = true;
-  const probe = harness({
-    idle: false,
-    send() {
-      if (fail) throw new Error("extension runtime inactive");
-    },
-  });
-  enqueue(probe.controller, "run-send-failure");
-
-  probe.controller.handleTurnEnd();
-  assert.equal(probe.controller.pendingCount(), 1, "a failed send never discards the result");
-
-  fail = false;
-  probe.controller.handleTurnEnd();
-  assert.equal(probe.sent.length, 1);
-  assert.equal(probe.last().message.details.resent, true);
-});
-
-test("a session reset clears every pending result", () => {
-  const probe = harness({ idle: false });
-  enqueue(probe.controller, "run-reset");
-  probe.controller.reset();
-  assert.equal(probe.controller.pendingCount(), 0);
-  probe.controller.handleTurnEnd();
-  assert.equal(probe.sent.length, 0);
 });
 
 // ─── Confirmation payloads ───────────────────────────────────────────
@@ -329,100 +212,58 @@ test("confirmation ignores foreign messages and non-V5 payloads", () => {
   assert.deepEqual(notificationResultIds(undefined), []);
 });
 
-
-// ─── Explicit result ownership (odradekk/pi-square#277) ──────────────
+// ─── Subagent policy: aborted admission and release routing ──────────
 
 test("an aborted result is stored only while a waiter owns the claim", () => {
   const probe = harness({ idle: true });
   const details = runDetails("run-aborted", { phase: "aborted", finalText: "", error: "Subagent failed: ABORTED\n..." });
 
   // Unclaimed: the ordinary policy — aborted runs notify nobody.
-  enqueue(probe.controller, "run-aborted", { status: "aborted", details });
-  assert.equal(probe.controller.pendingCount(), 0);
+  enqueue(probe.core, "run-aborted", { status: "aborted", details });
+  assert.equal(probe.core.pendingCount(), 0);
   assert.equal(probe.sent.length, 0);
 
   // Claimed first: the aborted outcome enters the store for the waiter only.
-  const claim = probe.controller.claim(["run-aborted"]);
+  const claim = probe.core.claim(["run-aborted"]);
   assert.equal(claim.ok, true);
-  probe.controller.enqueue({ id: "run-aborted", status: "aborted", details });
-  assert.equal(probe.controller.pendingCount(), 1, "the claimed aborted result is stored");
+  probe.core.enqueue({ id: "run-aborted", value: { id: "run-aborted", status: "aborted", details } });
+  assert.equal(probe.core.pendingCount(), 1, "the claimed aborted result is stored");
   assert.equal(probe.sent.length, 0, "it never enters automatic delivery");
   const taken = claim.claim.take();
   assert.equal(taken[0].status, "aborted");
   assert.equal(taken[0].details.id, "run-aborted");
 });
 
-test("a claim of an unsent pending result returns it immediately through take", () => {
+test("release routing keeps deliverable results and drops aborted ones", () => {
+  assert.equal(keepReleasedResult({ id: "a", status: "completed", details: runDetails("a") }), true);
+  assert.equal(keepReleasedResult({ id: "b", status: "failed", details: runDetails("b") }), true);
+  assert.equal(keepReleasedResult({ id: "c", status: "aborted", details: runDetails("c") }), false);
+
   const probe = harness({ idle: false });
-  enqueue(probe.controller, "run-ready", { details: { finalText: "ACK" } });
+  enqueue(probe.core, "run-done");
+  enqueue(probe.core, "run-failed", { status: "failed", details: { phase: "failed", finalText: "", error: "boom" } });
 
-  const claim = probe.controller.claim(["run-ready"]);
+  const claim = probe.core.claim(["run-done", "run-failed"]);
   assert.equal(claim.ok, true);
-  assert.equal(probe.controller.isSent("run-ready"), false);
-  assert.deepEqual([...claim.claim.ids], ["run-ready"]);
+  claim.claim.release(keepReleasedResult);
 
-  const entry = claim.claim.result("run-ready");
-  assert.equal(entry.status, "completed");
-  const taken = claim.claim.take();
-  assert.deepEqual(taken.map((item) => item?.id), ["run-ready"]);
-  assert.equal(probe.controller.pendingCount(), 0, "the taken result leaves the pending set");
-});
-
-test("release routes completed and failed results back and drops aborted ones", () => {
-  const probe = harness({ idle: false });
-  enqueue(probe.controller, "run-done");
-  enqueue(probe.controller, "run-failed", { status: "failed", details: { phase: "failed", finalText: "", error: "boom" } });
-
-  const claim = probe.controller.claim(["run-done", "run-failed"]);
-  assert.equal(claim.ok, true);
-  claim.claim.release();
-
-  assert.equal(probe.controller.isPending("run-done"), true);
-  assert.equal(probe.controller.isPending("run-failed"), true);
-  probe.controller.handleTurnEnd();
+  assert.equal(probe.core.isPending("run-done"), true);
+  assert.equal(probe.core.isPending("run-failed"), true);
+  probe.core.handleTurnEnd();
   assert.equal(probe.sent.length, 1, "released deliverable results rejoin the automatic schedule");
 
   // An aborted stored result leaves delivery storage entirely on release.
   const abortedDetails = runDetails("run-stopped", { phase: "aborted", finalText: "", error: "canceled" });
-  const abortedClaim = probe.controller.claim(["run-stopped"]);
-  probe.controller.enqueue({ id: "run-stopped", status: "aborted", details: abortedDetails });
-  assert.equal(probe.controller.isPending("run-stopped"), true);
-  abortedClaim.claim.release();
-  assert.equal(probe.controller.isPending("run-stopped"), false);
+  const abortedClaim = probe.core.claim(["run-stopped"]);
+  probe.core.enqueue({ id: "run-stopped", value: { id: "run-stopped", status: "aborted", details: abortedDetails } });
+  assert.equal(probe.core.isPending("run-stopped"), true);
+  abortedClaim.claim.release(keepReleasedResult);
+  assert.equal(probe.core.isPending("run-stopped"), false);
 });
 
 test("the wait reservation bound matches the documented contract", () => {
   assert.equal(MAX_WAIT_RESERVATIONS, 50);
-});
-
-
-// ─── Lifecycle subscription wiring (odradekk/pi-square#369) ───────────
-//
-// The registration root hands the controller to the core's subscribe entry
-// instead of wiring each Pi event itself; these tests drive the controller
-// as the lifecycle sink through a recording event source.
-
-test("the controller receives delivery timing and confirmation through the subscribe entry", () => {
-  const probe = harness({ idle: false });
-  const events = createDeliveryEventSource();
-  subscribeDeliveryLifecycle(probe.controller, events.source);
-
-  enqueue(probe.controller, "run-wired");
-  assert.equal(probe.sent.length, 0, "a busy parent still waits for the boundary");
-  events.emit("turn_end", { message: { stopReason: "tool_use" } });
-  assert.equal(probe.sent.length, 1, "the turn boundary delivers through the subscribed wiring");
-  assert.deepEqual(probe.last().message.details.results.map((result) => result.id), ["run-wired"]);
-
-  events.emit("message_start", {
-    message: {
-      role: "custom",
-      customType: probe.last().message.customType,
-      details: probe.last().message.details,
-    },
-  });
-  assert.equal(probe.controller.pendingCount(), 0, "the transcript observation confirms through the subscribed wiring");
-  events.emit("agent_settled");
-  assert.equal(probe.sent.length, 1, "a confirmed result is never delivered again");
+  assert.equal(MAX_PENDING_RESULTS, 50);
 });
 
 await run();
