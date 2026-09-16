@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { stripVTControlCharacters } from "node:util";
@@ -38,6 +38,7 @@ const { createDeliveryController } = deliveryModule;
 const { createSubagentBlockingCallRegistry } = waitModule;
 const { ensureArtifactsDir, initializeSessionFile, writeRunState } = artifactsModule;
 const { createChildViewFeed } = liveEventsModule;
+const { boundedAssistantTextParts } = await load(join(packageRoot, "src", "subagents", "child-history.ts"));
 const { registerMainTaskInputEvents } = mainTaskInputModule;
 
 const { initTheme } = await import("@earendil-works/pi-coding-agent");
@@ -135,6 +136,11 @@ function writeChildArtifacts(root, idValue) {
   });
   return { artifactsDir, sessionFile };
 }
+function appendSessionLine(sessionFile, entry) {
+  appendFileSync(sessionFile, `${JSON.stringify(entry)}\n`);
+}
+
+
 
 /**
  * Composition harness for #308: the real roster controller, delivery machine,
@@ -1264,6 +1270,9 @@ test("parent replacement closes the overlay, clears widget and view state, and l
       },
       sessionManager: { getSessionId: () => "parent-2", getSessionDir: () => harness.root },
     };
+    const oldFeed = harness.state.background.viewFeed;
+    const oldFeedSeen = [];
+    oldFeed.subscribe(id(1), (event) => oldFeedSeen.push(event.kind));
     await harness.startSession(secondCtx);
 
     assert.equal(harness.customs[0].resolved, true, "the overlay was closed by teardown");
@@ -1278,6 +1287,10 @@ test("parent replacement closes the overlay, clears widget and view state, and l
     // was, now foreign to the new session like every old-session record.
     assert.equal(harness.state.background.jobs.get(id(1)).status, "running");
     assert.equal(harness.state.background.viewFeed === undefined, false, "the feed generation was replaced, not destroyed");
+    assert.notEqual(harness.state.background.viewFeed, oldFeed, "a fresh feed generation serves the new session");
+    oldFeed.publish(id(1), { kind: "run_started" });
+    for (let turn = 0; turn < 4; turn += 1) await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(oldFeedSeen, [], "replacement clears the old generation's subscribers and undelivered events");
   } finally {
     harness.cleanup();
   }
@@ -1333,6 +1346,10 @@ test("session shutdown closes the overlay and keeps abort and delivery reset in 
     harness.addChild(finished);
     harness.state.background.delivery.enqueue({ id: id(2), status: "completed", details: finished.details });
     assert.ok(harness.state.background.delivery.pendingCount() >= 1);
+    // A live-view subscriber exercises the session-scoped feed teardown: no
+    // subscriber of this parent session may survive past shutdown.
+    const feedSeen = [];
+    harness.state.background.viewFeed.subscribe(id(1), (event) => feedSeen.push(event.kind));
 
     await harness.chain.emit("session_shutdown", {});
 
@@ -1347,6 +1364,9 @@ test("session shutdown closes the overlay and keeps abort and delivery reset in 
     // delivery reset.
     assert.equal(harness.state.background.jobs.get(id(1)).status, "aborted", "active children were aborted");
     assert.equal(harness.state.background.delivery.pendingCount(), 0, "delivery was reset");
+    harness.state.background.viewFeed.publish(id(1), { kind: "run_started" });
+    for (let turn = 0; turn < 4; turn += 1) await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(feedSeen, [], "shutdown clears the session-scoped feed's subscribers and undelivered events");
   } finally {
     harness.cleanup();
   }
@@ -1496,6 +1516,98 @@ test("teardown cancels a pending coalesced repaint and never repaints afterwards
       "function",
       "the new session's terminal rows start visible",
     );
+  } finally {
+    if (previousAgentDir === undefined) delete process.env.PI_AGENT_DIR;
+    else process.env.PI_AGENT_DIR = previousAgentDir;
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a real background terminal order shows the final content exactly once", async () => {
+  // Regression (review round 2): the store transition reconciles the terminal
+  // overlay through the module while the scheduled feed flush is still
+  // pending; the queued completion must confirm against its own persisted
+  // occurrence instead of duplicating.
+  const root = mkdtempSync(join(tmpdir(), "pi-square-roster-lifecycle-"));
+  const previousAgentDir = process.env.PI_AGENT_DIR;
+  process.env.PI_AGENT_DIR = root;
+  try {
+    const { sessionFile } = writeChildArtifacts(root, id(1));
+    const renders = { count: 0 };
+    const tui = {
+      terminal: { columns: 80, rows: 30 },
+      requestRender() { renders.count += 1; },
+    };
+    const steps = [];
+    const state = createBackgroundState();
+    state.viewFeed = createChildViewFeed({ schedule: (callback) => steps.push(callback) });
+    let inputHandler;
+    const customs = [];
+    const ctx = {
+      mode: "tui",
+      hasUI: true,
+      cwd: root,
+      ui: {
+        theme: plainTheme(),
+        setWidget() {},
+        getEditorText: () => "",
+        onTerminalInput(handler) {
+          inputHandler = handler;
+          return () => {};
+        },
+        custom(factory) {
+          customs.push(factory(tui, plainTheme(), { matches: () => false, getKeys: () => [] }, () => {}));
+          return new Promise(() => {});
+        },
+      },
+      sessionManager: { getSessionId: () => SESSION_ID, getSessionDir: () => root },
+    };
+    const controller = createSubagentRosterController(state, { now: () => 500_000 });
+    controller.start(ctx);
+    state.jobs.set(id(1), jobFixture(id(1), "running", 1, "explorer"));
+    for (const listener of state.listeners) listener();
+
+    inputHandler(DOWN);
+    inputHandler(ENTER);
+    assert.ok(customs[0], "the overlay opened");
+
+    // The child streams its final words and completes; Pi persists the entry
+    // (message timestamp 7_000) and the store transitions before the scheduled
+    // feed flush delivers the queued events.
+    state.viewFeed.publish(id(1), { kind: "message_delta", parts: [{ type: "text", text: "final words" }] });
+    const historyFloor = statSync(sessionFile).size;
+    state.viewFeed.publish(id(1), {
+      kind: "message_completed",
+      content: boundedAssistantTextParts([{ type: "text", text: "final words" }]),
+      timestamp: 7_000,
+      historyFloor,
+    });
+
+    appendSessionLine(sessionFile, {
+      type: "message",
+      id: `${id(1)}-final`,
+      parentId: null,
+      timestamp: "2025-01-01T00:00:31.000Z",
+      message: { role: "assistant", content: [{ type: "text", text: "final words" }], timestamp: 7_000 },
+    });
+    const job = state.jobs.get(id(1));
+    job.status = "completed";
+    job.details.phase = "completed";
+    job.details.endedAt = 9_000;
+    job.details.finalText = "final words";
+    for (const listener of state.listeners) listener();
+
+    while (steps.length > 0) steps.shift()?.();
+    assert.ok(renders.count >= 1, "the terminal transition renders immediately");
+    const lines = customs[0].render(64).map(stripVTControlCharacters).join("\n");
+    assert.match(lines, /completed/, "the open overlay title shows the final lifecycle");
+    assert.equal(
+      lines.split("final words").length - 1,
+      1,
+      "the final content shows exactly once across both orders",
+    );
+
+    controller.stop();
   } finally {
     if (previousAgentDir === undefined) delete process.env.PI_AGENT_DIR;
     else process.env.PI_AGENT_DIR = previousAgentDir;

@@ -21,13 +21,10 @@ import type { DisplayRuntime } from "../display/runtime";
 import { DEFAULT_DISPLAY_POLICY, type DisplayDescriptionV1 } from "../display/types";
 import {
   CHILD_HISTORY_READ_ERROR,
-  createChildTranscript,
   type ChildHistorySnapshot,
-  type ChildHistoryView,
   type ChildLiveItem,
   type ChildTranscript,
   type ChildTranscriptChange,
-  type ChildViewEvent,
   type TranscriptItem,
 } from "./transcript";
 
@@ -55,18 +52,18 @@ import {
  * native entry identity rather than array offsets, and page failures render
  * one bounded retryable error while previously validated pages stay visible.
  *
- * Since #306 the overlay is live while the child runs: the roster controller
- * forwards the child's ephemeral view events (`applyLiveEvent`) so streaming
- * assistant text and thinking render as a bounded tail below the persisted
- * window, live tool rows show running and immediately terminal states, and
- * lifecycle transitions update the open view (`updateLifecycle`). The
- * transcript module owns the tail and the occurrence reconciliation between
- * tail and persisted window — one occurrence never visible in both — so this
- * file does not restate that rule. Overflow of the bounded tail or the feed
- * sheds oldest-first with fingerprints the omission state keeps visible until
- * persisted history actually recovers them. The overlay owns no timer and
- * never repaints on its own for live events — the controller owns the one
- * coalesced repaint timer.
+ * Since #306 the overlay is live while the child runs: the module-owned
+ * transcript carries the child's ephemeral view events as one bounded tail
+ * below the persisted window, so streaming assistant text and thinking
+ * render while they arrive, live tool rows show running and immediately
+ * terminal states, and lifecycle transitions update the open view
+ * (`updateLifecycle`). The transcript module owns the tail and the occurrence
+ * reconciliation between tail and persisted window — one occurrence never
+ * visible in both — so this file does not restate that rule. Overflow of the
+ * bounded tail or the feed sheds oldest-first with fingerprints the omission
+ * state keeps visible until persisted history actually recovers them. The
+ * overlay owns no timer and never repaints on its own for live events — the
+ * controller owns the one coalesced repaint timer.
  *
  * Since #307 the overlay also carries the cross-child reading experience:
  * Up/Down move a roster candidate, Enter re-points this same overlay at the
@@ -92,9 +89,9 @@ import {
  * reconciliation — one occurrence of a message or tool call never visible in
  * both the tail and the persisted window — is the module's internal
  * invariant; this file keeps only geometry, state lines, per-child reading
- * state, and input classification. The roster's feed subscription still
- * forwards live events through `applyLiveEvent` until that wiring moves onto
- * the module (#371).
+ * state, and input classification. The overlay model carries the module-owned
+ * transcript in (#371); this file never forwards into it and exposes no
+ * transcript methods.
  */
 
 /** Lines one mouse-wheel notch scrolls; terminals commonly report three per notch. */
@@ -241,8 +238,8 @@ export interface ChildOverlayModel {
   durationText: string;
   /** Closed failure/abort status sentence for terminal runs with no transcript. */
   failureReason?: string;
-  /** Bounded demand-paged history over the child's native session file. */
-  history: ChildHistoryView;
+  /** The module-owned transcript this view renders; the model carries it in. */
+  transcript: ChildTranscript;
 }
 
 export interface ChildOverlayCandidate {
@@ -439,7 +436,10 @@ export class ChildTranscriptOverlay implements Component {
   constructor(input: ChildOverlayInput) {
     this.input = input;
     this.theme = input.theme;
-    this.transcript = createChildTranscript(input.model.history, { now: () => this.now() });
+    // The transcript arrives with the model (#371): the module's registry
+    // owns its construction, retention, and live feed. This view only binds
+    // to it — render from its reads, refresh on its changes.
+    this.transcript = input.model.transcript;
     this.unsubscribeTranscript = this.transcript.subscribe((change) => this.onTranscriptChange(change));
     this.current = this.transcript.snapshot();
     this.state = emptyStateLine(input.model, this.current);
@@ -722,38 +722,6 @@ export class ChildTranscriptOverlay implements Component {
     this.following = false;
   }
 
-  /**
-   * Reconciles the persisted window with the session file through the
-   * transcript module's newer-page cascade (the module owns the page-fetch
-   * policy; this method is a forward until #371 moves the wiring). An
-   * explicitly following view stays pinned to the tail; a suspended position
-   * is preserved even when it happens to reach the current numeric bottom —
-   * live growth never resumes follow implicitly.
-   */
-  reconcileNow(pages = 1): void {
-    const changed = this.transcript.reconcileNewer(pages);
-    if (changed) {
-      // The module already reconciled the tail against the loaded window.
-      this.current = this.transcript.snapshot();
-    }
-    if (this.following) {
-      this.scrollTop = Number.POSITIVE_INFINITY;
-    } else if (changed) {
-      this.newOutput = true;
-    }
-    this.refreshHistory();
-  }
-
-  /**
-   * Forwards one live child view event into the transcript module (#367); the
-   * module reconciles the bounded tail against the persisted window and the
-   * construction-time subscription applies the resulting change to this view.
-   * The roster's feed subscription calls this seam until that wiring moves
-   * onto the module itself (#371).
-   */
-  applyLiveEvent(event: ChildViewEvent): void {
-    this.transcript.applyLiveEvent(event);
-  }
 
   /** Updates the open view after a lifecycle transition of the child. */
   updateLifecycle(patch: {
@@ -772,15 +740,6 @@ export class ChildTranscriptOverlay implements Component {
     else delete model.failureReason;
     this.syncState();
     this.invalidate();
-  }
-
-  /**
-   * Records one contained live failure as a bounded diagnostic row through the
-   * transcript module; the persisted history stays visible and the next
-   * successful event clears it.
-   */
-  setLiveDiagnostic(text?: string): void {
-    this.transcript.setLiveDiagnostic(text);
   }
 
   /** Subscribes to motion only while a running tool row is visible. */
@@ -948,14 +907,14 @@ export class ChildTranscriptOverlay implements Component {
 
   /**
    * Re-points this same overlay at another child (#307): one handle, no
-   * stacking, no return to main. A fresh transcript session starts with an
-   * empty live tail (an unobserved child retained no events), the persisted
-   * window is the child's own retained view, and the controller's captured
-   * scroll and expansion state for that child are restored.
+   * stacking, no return to main. The model carries the child's own
+   * module-retained transcript (an unobserved child retained no live events,
+   * so its tail restarts from the persisted window), and the controller's
+   * captured scroll and expansion state for that child are restored.
    */
   switchChild(model: ChildOverlayModel, restore: ChildReadingState): void {
     this.unsubscribeTranscript();
-    this.transcript = createChildTranscript(model.history, { now: () => this.now() });
+    this.transcript = model.transcript;
     this.unsubscribeTranscript = this.transcript.subscribe((change) => this.onTranscriptChange(change));
     this.input.model = model;
     this.current = this.transcript.snapshot();

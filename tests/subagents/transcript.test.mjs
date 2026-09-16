@@ -91,7 +91,7 @@ test("live-only: a completion with no persisted record appears once, in the tail
   assert.equal(transcript.liveTail().items.length, 1, "one live entry");
   assert.equal(transcript.liveTail().items[0].kind, "message");
   assert.equal(transcript.snapshot().items.length, 0, "no persisted record loaded");
-  assert.deepEqual(changes, [{ grew: true }], "the module reports visible growth");
+  assert.deepEqual(changes, [{ grew: true, structural: true }], "the module reports visible growth as one structural change");
   unsubscribe();
 });
 
@@ -158,7 +158,7 @@ test("persisted-before-live, tools: a started event adds no row when the persist
   transcript.applyLiveEvent(toolStartedEvent());
 
   assert.equal(transcript.liveTail().items.length, 0, "the persisted running row already shows the call");
-  assert.deepEqual(changes, [{ grew: false }], "no visible growth: reconciliation only");
+  assert.deepEqual(changes, [{ grew: false, structural: true }], "no visible growth: a structural reconciliation only");
 });
 
 test("a finished live row sheds only after the persisted call row carries its result", () => {
@@ -216,7 +216,7 @@ test("an event-driven reconcile reports persisted growth through the notificatio
   transcript.applyLiveEvent({ kind: "run_finished" });
 
   assert.equal(transcript.snapshot().items.length, 1, "run_finished reconciles up to eight newer pages");
-  assert.deepEqual(changes, [{ grew: true }], "persisted growth found while reconciling an event is visible growth");
+  assert.deepEqual(changes, [{ grew: true, structural: true }], "persisted growth found while reconciling an event is visible growth");
 });
 
 test("subscriptions receive every module-originated change and unsubscribe stops delivery", () => {
@@ -231,7 +231,7 @@ test("subscriptions receive every module-originated change and unsubscribe stops
   assert.equal(transcript.liveTail().diagnostic, "live updates paused after a viewer error");
   transcript.applyLiveEvent({ kind: "message_delta", parts: [{ type: "text", text: "partial" }] });
   assert.equal(transcript.liveTail().diagnostic, undefined, "the next successful event clears the diagnostic");
-  assert.deepEqual(changes, [{ grew: false }, { grew: true }], "diagnostic and streaming changes notify in order");
+  assert.deepEqual(changes, [{ grew: false, structural: false }, { grew: true, structural: false }], "the diagnostic and a streaming delta notify in order, both non-structural");
 
   unsubscribe();
   transcript.applyLiveEvent({ kind: "message_delta", parts: [{ type: "text", text: "more" }] });
@@ -258,7 +258,7 @@ test("a delayed duplicate completion reconciles instead of duplicating a shed oc
 
   assert.equal(transcript.liveTail().items.length, 0, "no second live entry");
   assert.equal(transcript.snapshot().items.length, 1, "the record still renders exactly once");
-  assert.deepEqual(changes, [{ grew: false }], "the reconcile found no persisted growth");
+  assert.deepEqual(changes, [{ grew: false, structural: true }], "the reconcile found no persisted growth");
 });
 
 test("a recoverable dropped fingerprint clears on the next module read even without a new page", () => {
@@ -293,6 +293,49 @@ test("reconcileNewer cascades bounded newer pages in one call", () => {
   assert.equal(transcript.reconcileNewer(8), true, "the next call continues the cascade");
   assert.equal(transcript.snapshot().items.length, 3);
   assert.equal(transcript.reconcileNewer(1), false, "with nothing newer the cascade stays a quiet false");
+});
+
+test("the external catch-up reconcile notifies on a changed window and stays quiet at EOF", () => {
+  const history = scriptedHistory({});
+  history.stage(
+    [assistantItem("one", { entryId: "e1", timestamp: 1, byteOffset: 10 })],
+    [assistantItem("two", { entryId: "e2", timestamp: 2, byteOffset: 20 })],
+  );
+  const transcript = createChildTranscript(history.view);
+  const changes = [];
+  transcript.subscribe((change) => changes.push(change));
+
+  assert.equal(transcript.reconcileNewer(8), true, "the caller-initiated catch-up loads the newer pages");
+  assert.deepEqual(
+    changes,
+    [{ grew: true, structural: true }],
+    "a changed window notifies once: the view bound to this transcript is not the caller and must refresh",
+  );
+
+  changes.length = 0;
+  assert.equal(transcript.reconcileNewer(8), false, "nothing newer stays a quiet false");
+  assert.deepEqual(changes, [], "no change means no notification");
+});
+
+test("a dropped terminal tool event recovers only after its own persisted result", () => {
+  const history = scriptedHistory({});
+  const transcript = createChildTranscript(history.view);
+
+  transcript.applyLiveEvent({
+    kind: "live_events_dropped",
+    dropped: [{ kind: "tool", callKey: TOOL_KEY, name: "Read", terminal: true }],
+  });
+  assert.equal(transcript.liveTail().droppedCount, 1, "the dropped terminal event keeps one fingerprint");
+
+  history.stage([toolCallRow({ withResult: false })]);
+  assert.equal(transcript.loadNewer(), true);
+  assert.equal(transcript.liveTail().droppedCount, 1,
+    "the persisted call row alone does not recover the dropped terminal state");
+
+  history.stage([toolCallRow({ entryId: "c2", byteOffset: 96 })]);
+  assert.equal(transcript.loadNewer(), true);
+  assert.equal(transcript.liveTail().droppedCount, 0,
+    "the call's own persisted result recovers the terminal state");
 });
 
 // ---------------------------------------------------------------------------

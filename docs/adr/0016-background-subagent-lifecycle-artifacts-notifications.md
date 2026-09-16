@@ -166,14 +166,23 @@ status: accepted
 > `src/subagents/transcript.ts`, whose interface answers exactly three questions —
 > read a page of persisted history, read the live tail, and subscribe to changes —
 > with `src/subagents/child-history.ts` and `src/subagents/live-events.ts` as its
-> implementation files, no longer imported by the viewer. The occurrence
+> implementation files, imported by the module alone. The occurrence
 > reconciliation described above is the module's internal invariant, asserted at the
 > module interface for every arrival order; the viewer is a pure rendering-and-input
-> surface over it, still forwarding `applyLiveEvent`, `reconcileNow`, and
-> `setLiveDiagnostic` into the module until #371 moves that wiring (pager
-> construction and per-child retention stay in the roster until then). Nothing else in
-> this record moves: the FIFO bounds, the flush budget, the generation isolation, and
-> every reconciliation rule stay exactly as described above.
+> surface over it, and since #371 the module also owns the wiring around it: the
+> session-scoped registry constructs the pager, retains one transcript per observed
+> child, and forwards the observed child's feed events into it — a contained
+> subscriber failure surfaces as the one bounded diagnostic row — while the
+> background lifecycle publishes through the module's guarded publisher and the
+> child execution seam derives native events through it, so the implementation
+> files never surface outside the module. The roster is a pure row projection over
+> the background store: it obtains each child's transcript from the registry,
+> schedules its repaints from the module's change notifications, and drives
+> terminal catch-ups through the module's reconcile, whose changed window notifies
+> so the view refreshes without any controller-side forward; the viewer's former
+> `applyLiveEvent`/`reconcileNow`/`setLiveDiagnostic` forwards are gone. Nothing
+> else in this record moves: the FIFO bounds, the flush budget, the generation
+> isolation, and every reconciliation rule stay exactly as described above.
 
 
 pi-square completes the subagent contract change begun with the

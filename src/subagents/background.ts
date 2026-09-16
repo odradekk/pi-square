@@ -3,7 +3,7 @@ import { artifactsDirFor } from "./artifacts";
 import type { ParentContextMessage } from "./context";
 import type { SubagentDefinition } from "./definitions";
 import { applyRunFailure, createSubagentError, normalizeSubagentError } from "./errors";
-import { type ChildViewEvent, type ChildViewFeed, createChildViewFeed } from "./live-events";
+import { type ChildViewEvent, type ChildViewFeed, createChildViewFeed, publishChildViewEvent } from "./transcript";
 import { resumeSubagentTask, runSubagentTask } from "./session";
 import { createDeliveryController, type DeliveryController } from "./delivery";
 import type {
@@ -384,14 +384,16 @@ export function cancelBackgroundJobs(input: {
  * captures the current session generation, only enqueues into its bounded
  * FIFO, and keeps even a feed defect from reaching the child run.
  */
+/**
+ * The guarded live-view publisher both start paths share (#306, #371):
+ * publication captures the current session generation's feed, only enqueues
+ * into its bounded FIFO through the transcript module's guarded seam, and
+ * keeps even a feed defect from reaching the child run.
+ */
 function viewEventPublisher(state: BackgroundState, job: BackgroundJob): (event: ChildViewEvent) => void {
   const feed = state.viewFeed;
   return (event) => {
-    try {
-      feed?.publish(job.id, event);
-    } catch {
-      // The live view feed is observational only.
-    }
+    publishChildViewEvent(feed, job.id, event);
   };
 }
 
