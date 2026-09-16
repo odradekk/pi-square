@@ -173,9 +173,11 @@ status: accepted
 > session-scoped registry constructs the pager, retains one transcript per observed
 > child, and forwards the observed child's feed events into it — a contained
 > subscriber failure surfaces as the one bounded diagnostic row — while the
+> module also owns the overlay repaint seams (the coalesce throttle and the
+> timer pair behind the controller's one coalesced repaint timer) and the
 > background lifecycle publishes through the module's guarded publisher and the
 > child execution seam derives native events through it, so the implementation
-> files never surface outside the module. The roster is a pure row projection over
+> files are imported by the module alone. The roster is a pure row projection over
 > the background store: it obtains each child's transcript from the registry,
 > schedules its repaints from the module's change notifications, and drives
 > terminal catch-ups through the module's reconcile, whose changed window notifies

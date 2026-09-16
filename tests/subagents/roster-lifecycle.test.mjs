@@ -38,6 +38,7 @@ const { createDeliveryController } = deliveryModule;
 const { createSubagentBlockingCallRegistry } = waitModule;
 const { ensureArtifactsDir, initializeSessionFile, writeRunState } = artifactsModule;
 const { createChildViewFeed } = liveEventsModule;
+const viewerModule = await load(join(packageRoot, "src", "subagents", "viewer.ts"));
 const { boundedAssistantTextParts } = await load(join(packageRoot, "src", "subagents", "child-history.ts"));
 const { registerMainTaskInputEvents } = mainTaskInputModule;
 
@@ -1522,6 +1523,198 @@ test("teardown cancels a pending coalesced repaint and never repaints afterwards
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("structural changes render immediately and cancel the pending coalesced repaint", async () => {
+  const root = mkdtempSync(join(tmpdir(), "pi-square-roster-lifecycle-"));
+  const previousAgentDir = process.env.PI_AGENT_DIR;
+  process.env.PI_AGENT_DIR = root;
+  try {
+    writeChildArtifacts(root, id(1));
+    // Timer seam with a manually advanced clock: the coalesce window edge is
+    // exact, and fired entries leave the map like a real one-shot timer.
+    let clock = 0;
+    const timers = { entries: new Map(), seq: 0 };
+    const paintTimers = {
+      setTimeout(callback, ms) {
+        timers.seq += 1;
+        const handle = timers.seq;
+        timers.entries.set(handle, {
+          callback: () => {
+            timers.entries.delete(handle);
+            callback();
+          },
+        });
+        return handle;
+      },
+      clearTimeout(handle) {
+        timers.entries.delete(handle);
+      },
+    };
+    const renders = { count: 0 };
+    const tui = {
+      terminal: { columns: 80, rows: 30 },
+      requestRender() { renders.count += 1; },
+    };
+    const steps = [];
+    const state = createBackgroundState();
+    state.viewFeed = createChildViewFeed({ schedule: (callback) => steps.push(callback) });
+    let inputHandler;
+    const customs = [];
+    const ctx = {
+      mode: "tui",
+      hasUI: true,
+      cwd: root,
+      ui: {
+        theme: plainTheme(),
+        setWidget() {},
+        getEditorText: () => "",
+        onTerminalInput(handler) {
+          inputHandler = handler;
+          return () => {};
+        },
+        custom(factory) {
+          customs.push(factory(tui, plainTheme(), { matches: () => false, getKeys: () => [] }, () => {}));
+          return new Promise(() => {});
+        },
+      },
+      sessionManager: { getSessionId: () => SESSION_ID, getSessionDir: () => root },
+    };
+    const controller = createSubagentRosterController(state, { now: () => clock, timers: paintTimers });
+    controller.start(ctx);
+    state.jobs.set(id(1), jobFixture(id(1), "running", 1, "explorer"));
+    for (const listener of state.listeners) listener();
+
+    inputHandler(DOWN);
+    inputHandler(ENTER);
+    const paintedAtOpen = renders.count;
+
+    const publish = (event) => {
+      state.viewFeed.publish(id(1), event);
+      while (steps.length > 0) steps.shift()?.();
+    };
+
+    // The first delta after a quiet open paints immediately; a delta inside
+    // the coalesce window leaves exactly one pending repaint, and the window
+    // edge fires it once.
+    publish({ kind: "message_delta", parts: [{ type: "text", text: "a" }] });
+    assert.equal(renders.count, paintedAtOpen + 1, "the first delta after a quiet open paints immediately");
+    assert.equal(timers.entries.size, 0, "no repaint is pending right after the immediate paint");
+    clock += 30;
+    publish({ kind: "message_delta", parts: [{ type: "text", text: "ab" }] });
+    assert.equal(renders.count, paintedAtOpen + 1, "the in-window delta requests no immediate repaint");
+    assert.equal(timers.entries.size, 1, "exactly one coalesced repaint is pending");
+    clock += 80;
+    const pendingTimer = [...timers.entries.values()][0];
+    pendingTimer?.callback();
+    assert.equal(renders.count, paintedAtOpen + 2, "the pending repaint fires exactly once at the window edge");
+    assert.equal(timers.entries.size, 0);
+
+    // A structural change renders at its first flush and cancels the pending
+    // coalesced repaint instead of waiting for the window.
+    publish({ kind: "message_delta", parts: [{ type: "text", text: "ab" }] });
+    assert.equal(timers.entries.size, 1, "a fresh coalesced repaint is pending inside the window");
+    publish({ kind: "tool_started", callKey: "ck1", name: "grep", summary: "called", startedAt: 1 });
+    assert.equal(renders.count, paintedAtOpen + 3, "the structural change renders immediately");
+    assert.equal(timers.entries.size, 0, "the structural flush cancels the pending coalesced repaint");
+
+    controller.stop();
+  } finally {
+    if (previousAgentDir === undefined) delete process.env.PI_AGENT_DIR;
+    else process.env.PI_AGENT_DIR = previousAgentDir;
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("repaint scheduling binds before the overlay so a broken view listener cannot starve it", async () => {
+  // The module notifies transcript subscribers in subscription order and
+  // stops at the first throw; the roster binds its repaint listener before
+  // the overlay binds its view listener, so a broken overlay listener must
+  // never starve the repaint scheduling that follows it.
+  const root = mkdtempSync(join(tmpdir(), "pi-square-roster-lifecycle-"));
+  const previousAgentDir = process.env.PI_AGENT_DIR;
+  process.env.PI_AGENT_DIR = root;
+  const proto = viewerModule.ChildTranscriptOverlay.prototype;
+  const original = proto.onTranscriptChange;
+  proto.onTranscriptChange = function broken() {
+    throw new Error("broken overlay listener");
+  };
+  try {
+    writeChildArtifacts(root, id(1));
+    const timers = { entries: new Map(), seq: 0 };
+    const paintTimers = {
+      setTimeout(callback, ms) {
+        timers.seq += 1;
+        timers.entries.set(timers.seq, { callback });
+        return timers.seq;
+      },
+      clearTimeout(handle) {
+        timers.entries.delete(handle);
+      },
+    };
+    const renders = { count: 0 };
+    const tui = {
+      terminal: { columns: 80, rows: 30 },
+      requestRender() { renders.count += 1; },
+    };
+    const steps = [];
+    const state = createBackgroundState();
+    state.viewFeed = createChildViewFeed({ schedule: (callback) => steps.push(callback) });
+    let inputHandler;
+    const customs = [];
+    const ctx = {
+      mode: "tui",
+      hasUI: true,
+      cwd: root,
+      ui: {
+        theme: plainTheme(),
+        setWidget() {},
+        getEditorText: () => "",
+        onTerminalInput(handler) {
+          inputHandler = handler;
+          return () => {};
+        },
+        custom(factory) {
+          customs.push(factory(tui, plainTheme(), { matches: () => false, getKeys: () => [] }, () => {}));
+          return new Promise(() => {});
+        },
+      },
+      sessionManager: { getSessionId: () => SESSION_ID, getSessionDir: () => root },
+    };
+    const controller = createSubagentRosterController(state, { now: () => 500_000, timers: paintTimers });
+    controller.start(ctx);
+    state.jobs.set(id(1), jobFixture(id(1), "running", 1, "explorer"));
+    for (const listener of state.listeners) listener();
+
+    inputHandler(DOWN);
+    inputHandler(ENTER);
+    const paintedAtOpen = renders.count;
+
+    // Every delivered event throws inside the overlay's listener; the module
+    // contains each failure as the bounded diagnostic row and the repaint
+    // scheduling — bound first — still runs for every change.
+    const publish = (event) => {
+      state.viewFeed.publish(id(1), event);
+      while (steps.length > 0) steps.shift()?.();
+    };
+    publish({ kind: "message_delta", parts: [{ type: "text", text: "partial" }] });
+    publish({ kind: "tool_started", callKey: "ck1", name: "grep", summary: "called", startedAt: 1 });
+    assert.ok(
+      renders.count > paintedAtOpen,
+      "repaints keep flowing around the broken overlay listener: the paint subscription bound first",
+    );
+    for (const entry of timers.entries.values()) entry.callback();
+    const text = customs[0].render(64).map(stripVTControlCharacters).join("\n");
+    assert.match(text, /live updates paused after a viewer error/, "the module contains the failure as one bounded diagnostic row");
+
+    controller.stop();
+  } finally {
+    proto.onTranscriptChange = original;
+    if (previousAgentDir === undefined) delete process.env.PI_AGENT_DIR;
+    else process.env.PI_AGENT_DIR = previousAgentDir;
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 
 test("a real background terminal order shows the final content exactly once", async () => {
   // Regression (review round 2): the store transition reconciles the terminal

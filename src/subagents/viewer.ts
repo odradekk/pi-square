@@ -722,7 +722,6 @@ export class ChildTranscriptOverlay implements Component {
     this.following = false;
   }
 
-
   /** Updates the open view after a lifecycle transition of the child. */
   updateLifecycle(patch: {
     status: ChildLifecycle;

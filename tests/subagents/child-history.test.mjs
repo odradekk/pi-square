@@ -357,6 +357,28 @@ test("a concurrent append leaves older offsets stable and is discoverable on the
   }
 });
 
+test("native history items retain their exact JSONL entry byte offsets", () => {
+  const testRoot = root();
+  try {
+    const entries = [
+      messageEntry("e1", { role: "user", content: [{ type: "text", text: "task" }] }),
+      messageEntry("e2", { role: "assistant", timestamp: 9_000, content: [{ type: "text", text: "answer" }] }),
+    ];
+    writeArtifacts(testRoot, entries);
+    const pager = createChildHistory(ID, { observedAt: OBSERVED_AT });
+    const headerBytes = Buffer.byteLength(`${JSON.stringify(sessionHeader())}\n`);
+    const firstBytes = Buffer.byteLength(`${JSON.stringify(entries[0])}\n`);
+    assert.deepEqual(
+      pager.snapshot().items.map((item) => item.entryByteOffset),
+      [headerBytes, headerBytes + firstBytes],
+      "projected rows keep the native line-start offsets live reconciliation matches against",
+    );
+  } finally {
+    rmSync(testRoot, { recursive: true, force: true });
+  }
+});
+
+
 test("a transient read failure retries successfully and clears the bounded error", () => {
   const testRoot = root();
   try {

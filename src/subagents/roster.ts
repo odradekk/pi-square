@@ -452,11 +452,13 @@ export function createSubagentRosterController(
   /** Lifecycle status last pushed into the open overlay, to detect transitions. */
   let openModelStatus: BackgroundJobSnapshot["status"] | undefined;
   /**
-   * Session-scoped transcript registry created at each start over the current
-   * feed generation; owns pager construction, per-child retention, and the
-   * observed child's live feed forwarding (#371).
+   * Session-scoped transcript registry (#371): owns pager construction,
+   * per-child retention, and the observed child's live feed forwarding. It
+   * resolves the session feed at each observation move, so teardown releasing
+   * it and the next session's observations follow the replacement generation
+   * the registrar installs before each start (#306).
    */
-  let transcripts: ChildTranscriptRegistry = createChildTranscriptRegistry({ now });
+  const transcripts: ChildTranscriptRegistry = createChildTranscriptRegistry({ feed: () => state.viewFeed, now });
   const timers = options.timers ?? defaultPaintTimers;
   /** The one session-owned live repaint timer; at most one is ever pending. */
   let paintTimer: unknown;
@@ -1119,10 +1121,6 @@ export function createSubagentRosterController(
       motion = options.motion?.()
         ?? (activeDisplay ? { subscribe: (listener) => activeDisplay.subscribeMotion(listener) } : undefined);
       parentSessionId = String(ctx.sessionManager?.getSessionId?.() ?? "").trim();
-      // The session-scoped transcript registry binds this session's feed: the
-      // registrar replaced the feed generation before start, so publishers of
-      // an older parent generation stay fenced out (#306).
-      transcripts = createChildTranscriptRegistry({ feed: state.viewFeed, now });
       unsubscribe = subscribeBackgroundState(state, refresh);
       if (typeof ctx.ui.onTerminalInput === "function") {
         unsubscribeInput = ctx.ui.onTerminalInput(handleTerminalInput);

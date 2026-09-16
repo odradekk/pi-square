@@ -141,7 +141,7 @@ test("the registry composes one ordered transcript from the feed and the pager",
       messageEntry("e2", { role: "assistant", timestamp: 1_000, content: [{ type: "text", text: "first answer" }] }),
     ]);
     const { feed, deliver } = manualFeed();
-    const registry = createChildTranscriptRegistry({ feed, now: () => 0 });
+    const registry = createChildTranscriptRegistry({ feed: () => feed, now: () => 0 });
     const transcript = registry.observe(ID);
     const changes = [];
     transcript.subscribe((change) => changes.push(change));
@@ -256,7 +256,7 @@ test("the registry retains one transcript per child and observes exactly one at 
       messageEntry("e1", { role: "user", content: [{ type: "text", text: "child b" }] }),
     ]);
     const { feed, deliverAll } = manualFeed();
-    const registry = createChildTranscriptRegistry({ feed, now: () => 0 });
+    const registry = createChildTranscriptRegistry({ feed: () => feed, now: () => 0 });
 
     const first = registry.observe(ID);
     assert.equal(registry.observe(ID), first, "a retained child keeps its loaded transcript across observations");
@@ -332,7 +332,7 @@ test("a throwing transcript subscriber is contained as the bounded diagnostic an
       messageEntry("e1", { role: "user", content: [{ type: "text", text: "task" }] }),
     ]);
     const { feed, deliver } = manualFeed();
-    const registry = createChildTranscriptRegistry({ feed, now: () => 0 });
+    const registry = createChildTranscriptRegistry({ feed: () => feed, now: () => 0 });
     const transcript = registry.observe(ID);
 
     const healthy = [];
@@ -420,7 +420,7 @@ test("the overlay renders exactly what the module's ordered transcript carries",
       messageEntry("e2", { role: "assistant", timestamp: 1_000, content: [{ type: "text", text: "first answer" }] }),
     ]);
     const { feed, deliverAll } = manualFeed();
-    const registry = createChildTranscriptRegistry({ feed, now: () => 0 });
+    const registry = createChildTranscriptRegistry({ feed: () => feed, now: () => 0 });
     const transcript = registry.observe(ID);
 
     const overlay = new ChildTranscriptOverlay({

@@ -10,7 +10,13 @@ import type {
   ChildHistoryView,
   TranscriptItem,
 } from "./child-history";
-import { MAX_LIVE_ITEMS, type ChildViewEvent, type ChildViewFeed, type DroppedEventFingerprint } from "./live-events";
+import {
+  isStructuralViewEvent,
+  MAX_LIVE_ITEMS,
+  type ChildViewEvent,
+  type ChildViewFeed,
+  type DroppedEventFingerprint,
+} from "./live-events";
 
 /**
  * The child transcript module (odradekk/pi-square#367): the single owner of
@@ -48,6 +54,35 @@ import { MAX_LIVE_ITEMS, type ChildViewEvent, type ChildViewFeed, type DroppedEv
  * artifacts on disk. Page loads and event intake only ever mutate this
  * module's own bounded tail state.
  */
+
+/**
+ * Ordinary streaming deltas repaint coalesced at most this often; structural
+ * changes (a completion, tool or lifecycle event, a drop marker, an external
+ * catch-up) render at their first flush. The roster owns the one coalesced
+ * repaint timer; the module owns the throttle the timer schedules with.
+ */
+export const LIVE_REPAINT_COALESCE_MS = 110;
+
+/**
+ * Paint scheduling seam for the live overlay: one pending repaint timer at
+ * most, injected as a clock in tests. Production timers are unref'd so a
+ * pending repaint never holds the process open.
+ */
+export interface PaintTimers {
+  setTimeout(callback: () => void, ms: number): unknown;
+  clearTimeout(handle: unknown): void;
+}
+
+export const defaultPaintTimers: PaintTimers = {
+  setTimeout(callback, ms) {
+    const handle = setTimeout(callback, ms);
+    (handle as { unref?: () => void })?.unref?.();
+    return handle;
+  },
+  clearTimeout(handle) {
+    clearTimeout(handle as NodeJS.Timeout);
+  },
+};
 
 /** Hard bound on tracked drop fingerprints before the omission state stops clearing. */
 const MAX_DROPPED_FINGERPRINTS = 64;
@@ -359,10 +394,14 @@ export class ChildTranscriptSession implements ChildTranscript {
 
   applyLiveEvent(event: ChildViewEvent): void {
     this.tail.diagnostic = undefined;
+    // One classification for every notification this event raises: streaming
+    // deltas and no-op tool updates are ordinary; every other observation is
+    // structural and renders at its first flush.
+    const structural = isStructuralViewEvent(event);
     switch (event.kind) {
       case "message_delta":
         this.tail.streaming = event.parts;
-        this.notify({ grew: true, structural: false });
+        this.notify({ grew: true, structural });
         return;
       case "tool_updated":
         // A no-op tool update carries no visible state in the tail.
@@ -374,7 +413,7 @@ export class ChildTranscriptSession implements ChildTranscript {
             // A delayed or duplicated completion: reconcile the persisted
             // window instead of admitting a tail entry that would duplicate
             // an occurrence that already shed.
-            this.notify({ grew: this.reconcileWindow(1), structural: true });
+            this.notify({ grew: this.reconcileWindow(1), structural });
             return;
           }
           if (event.historyFloor !== undefined) this.latestMessageFloor = event.historyFloor;
@@ -390,16 +429,16 @@ export class ChildTranscriptSession implements ChildTranscript {
           // waiting for the next page load.
           this.confirmLiveMessages(this.windowItems());
           this.reconcileWindow(1);
-          this.notify({ grew: true, structural: true });
+          this.notify({ grew: true, structural });
           return;
         }
-        this.notify({ grew: this.reconcileWindow(1), structural: true });
+        this.notify({ grew: this.reconcileWindow(1), structural });
         return;
       }
       case "tool_started": {
         if (event.callKey === "") {
           this.tail.droppedUnknown = true;
-          this.notify({ grew: false, structural: true });
+          this.notify({ grew: false, structural });
           return;
         }
         const running: LiveToolState = {
@@ -411,17 +450,17 @@ export class ChildTranscriptSession implements ChildTranscript {
         const changed = this.reconcileWindow(1);
         if (this.toolCovered(running, this.windowItems())) {
           // The persisted running row already shows the call; no live row.
-          this.notify({ grew: changed, structural: true });
+          this.notify({ grew: changed, structural });
           return;
         }
         this.pushLiveItem({ kind: "tool", tool: running });
-        this.notify({ grew: true, structural: true });
+        this.notify({ grew: true, structural });
         return;
       }
       case "tool_finished": {
         if (event.callKey === "") {
           this.tail.droppedUnknown = true;
-          this.notify({ grew: false, structural: true });
+          this.notify({ grew: false, structural });
           return;
         }
         const existing = this.tail.items.find(
@@ -434,7 +473,7 @@ export class ChildTranscriptSession implements ChildTranscript {
           // The end state shows without waiting for the toolResult append.
           existing.tool.endedAt = this.clock();
           existing.tool.isError = event.isError;
-          this.notify({ grew: true, structural: true });
+          this.notify({ grew: true, structural });
           return;
         }
         const finished: LiveToolState = {
@@ -446,23 +485,23 @@ export class ChildTranscriptSession implements ChildTranscript {
         };
         if (this.toolCovered(finished, this.windowItems())) {
           // The call's own persisted row already carries the terminal state.
-          this.notify({ grew: changed, structural: true });
+          this.notify({ grew: changed, structural });
           return;
         }
         this.pushLiveItem({ kind: "tool", tool: finished });
-        this.notify({ grew: true, structural: true });
+        this.notify({ grew: true, structural });
         return;
       }
       case "live_events_dropped":
         this.recordDropped(event.dropped ?? [], event.droppedUnknown === true);
-        this.notify({ grew: true, structural: true });
+        this.notify({ grew: true, structural });
         return;
       case "run_started":
       case "tool_result_completed":
-        this.notify({ grew: this.reconcileWindow(1), structural: true });
+        this.notify({ grew: this.reconcileWindow(1), structural });
         return;
       case "run_finished":
-        this.notify({ grew: this.reconcileWindow(8), structural: true });
+        this.notify({ grew: this.reconcileWindow(8), structural });
         return;
     }
   }
@@ -674,14 +713,18 @@ export interface ChildTranscriptRegistry {
 }
 
 export interface ChildTranscriptRegistryOptions {
-  /** The session feed the observed child's events arrive through; absent stays persisted-only. */
-  feed?: ChildViewFeed;
+  /**
+   * Resolves the session feed the observed child's events arrive through, read
+   * at each observation move so a session replacement that installed a fresh
+   * feed generation is followed; absent stays persisted-only.
+   */
+  feed?: () => ChildViewFeed | undefined;
   /** Clock for pager observation stamps and live tool-row end times; defaults to the wall clock. */
   now?: () => number;
 }
 
 export function createChildTranscriptRegistry(options: ChildTranscriptRegistryOptions = {}): ChildTranscriptRegistry {
-  const feed = options.feed;
+  const resolveFeed = options.feed;
   const clock = options.now ?? (() => Date.now());
   const sessions = new Map<string, ChildTranscript>();
   let observedId: string | undefined;
@@ -705,11 +748,12 @@ export function createChildTranscriptRegistry(options: ChildTranscriptRegistryOp
       observedId = id;
       const target = session;
       // The feed is the module's internal transport between the background
-      // publisher and the observed child's tail. A subscriber failure is
-      // contained as the one bounded diagnostic row — the persisted view
-      // stays usable — and the forwarder itself never throws, so the feed
-      // never evicts it.
-      unsubscribeFeed = feed?.subscribe(id, (event) => {
+      // publisher and the observed child's tail; the resolver re-reads the
+      // current session generation at each observation move. A subscriber
+      // failure is contained as the one bounded diagnostic row — the
+      // persisted view stays usable — and the forwarder itself never throws,
+      // so the feed never evicts it.
+      unsubscribeFeed = resolveFeed?.()?.subscribe(id, (event) => {
         try {
           target.applyLiveEvent(event);
         } catch {
@@ -735,16 +779,12 @@ export function createChildTranscriptRegistry(options: ChildTranscriptRegistryOp
 
 // The transcript types the viewer renders and the one read-error constant it
 // shows reach callers through this module; since #371 the whole live-view
-// surface reaches callers only through this module as well — the feed factory
-// and guarded publisher the background lifecycle uses, the native-event
-// derivation the child execution seam uses, and the repaint seams the roster
-// schedules with stay implemented in the module's implementation files.
+// surface reaches callers only through this module as well: the module owns
+// the guarded publisher, the session registry, and the overlay repaint seams
+// (the throttle constant and the timer pair above), while the bounded feed
+// factory and the native-event derivation stay implemented in
+// `live-events.ts` behind the re-exports below.
 export { CHILD_HISTORY_READ_ERROR };
 export type { AssistantTextPart, ChildHistorySnapshot, ChildHistoryView, TranscriptItem };
-export {
-  LIVE_REPAINT_COALESCE_MS,
-  createChildViewFeed,
-  defaultPaintTimers,
-  deriveChildViewEvent,
-} from "./live-events";
-export type { ChildViewEvent, ChildViewFeed, PaintTimers } from "./live-events";
+export { createChildViewFeed, deriveChildViewEvent } from "./live-events";
+export type { ChildViewEvent, ChildViewFeed } from "./live-events";

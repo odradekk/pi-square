@@ -17,12 +17,13 @@ const liveEventsModule = await load(join(packageRoot, "src", "subagents", "live-
 const {
   LIVE_FLUSH_BUDGET_MS,
   LIVE_LISTENER_BUDGET_MS,
-  LIVE_REPAINT_COALESCE_MS,
   MAX_PENDING_EVENTS,
   createChildViewFeed,
   deriveChildViewEvent,
   isStructuralViewEvent,
 } = liveEventsModule;
+// The repaint throttle moved onto the transcript module with the registry (#371).
+const { LIVE_REPAINT_COALESCE_MS } = await load(join(packageRoot, "src", "subagents", "transcript.ts"));
 const childHistoryModule = await load(join(packageRoot, "src", "subagents", "child-history.ts"));
 const {
   assistantContentKey,

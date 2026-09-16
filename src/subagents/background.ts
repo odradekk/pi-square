@@ -380,11 +380,6 @@ export function cancelBackgroundJobs(input: {
 }
 
 /**
- * The guarded live-view publisher both start paths share (#306): publication
- * captures the current session generation, only enqueues into its bounded
- * FIFO, and keeps even a feed defect from reaching the child run.
- */
-/**
  * The guarded live-view publisher both start paths share (#306, #371):
  * publication captures the current session generation's feed, only enqueues
  * into its bounded FIFO through the transcript module's guarded seam, and
