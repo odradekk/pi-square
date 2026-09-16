@@ -102,15 +102,16 @@ export interface ConfirmedDeliveryClaim<T> {
    */
   take(): (T | undefined)[];
   /**
-   * Gives up ownership without consuming. A stored result whose `keep` is
-   * true stays in the store as an unsent entry eligible for the normal
-   * automatic-delivery schedule; every other stored result is removed from
-   * delivery storage, and reservations without a stored result are dropped.
-   * The predicate may be omitted, in which case the core's configured
-   * release policy decides; with no policy configured, every stored result
-   * leaves delivery storage.
+   * Gives up ownership without consuming. The core's configured release
+   * policy decides per stored result: a kept result stays in the store as an
+   * unsent entry eligible for the normal automatic-delivery schedule, every
+   * other stored result is removed from delivery storage, and reservations
+   * without a stored result are dropped. The caller cannot override the
+   * policy at the call site, so an adapter's release rule (such as the
+   * aborted-result drop) holds for every consumer; with no policy
+   * configured, every stored result leaves delivery storage.
    */
-  release(keep?: (value: T) => boolean): void;
+  release(): void;
 }
 
 export interface ConfirmedDeliveryCore<T> extends ConfirmedDeliveryLifecycle {
@@ -201,11 +202,11 @@ export function createConfirmedDeliveryCore<T>(options: {
    */
   onEntriesRemoved?: (ids: readonly string[], reason: "confirmed" | "removed" | "reset") => void;
   /**
-   * Optional release routing consulted when a claim releases without an
-   * explicit keep predicate: true rejoins the automatic schedule, false
-   * leaves delivery storage. Binding the rule here keeps a policy such as
-   * the aborted-result drop enforced by the adapter instead of remembered
-   * by every caller (odradekk/pi-square#372).
+   * Optional release routing consulted on every release: true rejoins the
+   * automatic schedule, false leaves delivery storage. The only release
+   * rule the core applies — the claim surface takes no per-call override —
+   * so an adapter's policy such as the aborted-result drop holds for every
+   * consumer (odradekk/pi-square#372).
    */
   releaseKeep?: (value: T) => boolean;
   /**
@@ -404,13 +405,13 @@ export function createConfirmedDeliveryCore<T>(options: {
             if (changed) notify();
             return values;
           },
-          release(keep) {
+          release() {
             if (!reservation.active) return;
             // Same ownership capture as take(): only entries this claim still
             // owns are routed back to the automatic schedule or dropped.
             const ownedIds = new Set(reservation.ids.filter((id) => reservations.get(id) === reservation));
             finish();
-            const keepEntry = keep ?? options.releaseKeep ?? (() => false);
+            const keepEntry = options.releaseKeep ?? (() => false);
             let changed = false;
             let releasedUnsent = false;
             for (const id of reservation.ids) {

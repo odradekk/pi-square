@@ -225,10 +225,11 @@ export function shadowNotificationResultIds(message: unknown): string[] {
  * Shadow entries, extended only with the Shadow policy operations. No core
  * member is redeclared here; the store's delivery transitions and the quiet
  * confirmation state live beside the core and are driven through its hooks.
- * `enqueue` and `claim` stay out of the exposed shape: Shadow entries must
- * enter through the policy operations (a raw enqueue would bypass the
+ * `enqueue` and `claim` stay out of the exposed type shape: Shadow entries
+ * must enter through the policy operations (a raw enqueue would bypass the
  * identity index and never be swept or cap-guarded), and Shadow Minds never
- * claims results.
+ * claims results. The runtime object still carries both members — the type,
+ * not the spread, is the contract boundary here.
  */
 export type ShadowDeliveryCore = Omit<ConfirmedDeliveryCore<ShadowDeliveryValue>, "enqueue" | "claim"> & {
   /** Offers one finished result; notify policy results stay inbox-only. */
@@ -332,10 +333,15 @@ export function createShadowDeliveryCore(options: {
     // boundary turns out aborted and flushes nothing.
     beforeFlush: () => { sweep(); },
     onEntriesRemoved: (ids, reason) => {
-      // The core fires this hook only for identities it actually removed, and
-      // the pre-emptive cap guard keeps every indexed identity inside the
-      // pending set, so a confirmation that matched nothing pending needs no
-      // store transition here.
+      // observeMessage hands over every id a confirmed message carries —
+      // including identities that were never pending — and remove fires on
+      // every explicit request. The soundness of the confirmed path rests on
+      // the invariant that the index never holds an identity outside the
+      // pending set: each indexed entry enters the store in the same
+      // synchronous step and leaves through this hook or the sweep
+      // reconcile. An indexed identity a confirmation names was therefore
+      // pending too and is retired here; a confirmation that matched nothing
+      // pending needs no store transition.
       for (const id of ids) {
         const value = index.get(id);
         index.delete(id);

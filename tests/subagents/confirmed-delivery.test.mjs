@@ -279,7 +279,7 @@ test("a claim of an unsent pending result excludes it from flush and batch selec
 });
 
 test("an already-claimed identity rejects the complete request atomically", () => {
-  const probe = harness({ idle: false });
+  const probe = harness({ idle: false, releaseKeep: () => true });
   probe.core.enqueue({ id: "kept", value: "v" });
   probe.core.enqueue({ id: "later", value: "v" });
 
@@ -295,7 +295,7 @@ test("an already-claimed identity rejects the complete request atomically", () =
   const third = probe.core.claim(["unrelated"]);
   assert.equal(third.ok, true, "a rejected claim leaves other identities claimable");
 
-  first.claim.release(() => true);
+  first.claim.release();
   probe.core.handleTurnEnd();
   assert.deepEqual(probe.last().ids, ["kept", "later"], "released unsent entries rejoin the schedule");
 });
@@ -351,14 +351,14 @@ test("take consumes the claimed set in request order and removes it from the sto
   assert.equal(probe.sent.length, 0, "a taken result is never delivered again");
 });
 
-test("release routes by the caller's keep policy and drops the rest", () => {
-  const probe = harness({ idle: false });
+test("release routes by the configured keep policy and drops the rest", () => {
+  const probe = harness({ idle: false, releaseKeep: (value) => String(value).startsWith("keep:") });
   probe.core.enqueue({ id: "done", value: "keep:done" });
   probe.core.enqueue({ id: "stopped", value: "drop:stopped" });
   const active = probe.core.claim(["running", "done", "stopped"]);
   assert.equal(active.ok, true);
 
-  active.claim.release((value) => String(value).startsWith("keep:"));
+  active.claim.release();
   assert.equal(probe.core.isClaimed("running"), false, "an unstored reservation is dropped");
   assert.equal(probe.core.isPending("done"), true, "a kept result stays in the store");
   assert.equal(probe.core.isPending("stopped"), false, "a dropped result leaves delivery storage");
@@ -368,7 +368,7 @@ test("release routes by the caller's keep policy and drops the rest", () => {
   assert.deepEqual(probe.last().ids, ["done"], "the kept result rejoins the automatic schedule");
 });
 
-test("release without a predicate consults the configured release policy", () => {
+test("release consults the configured keep policy, and drops everything with none", () => {
   const probe = harness({ idle: false, releaseKeep: (value) => String(value).startsWith("keep:") });
   probe.core.enqueue({ id: "done", value: "keep:done" });
   probe.core.enqueue({ id: "stopped", value: "drop:stopped" });
@@ -378,18 +378,12 @@ test("release without a predicate consults the configured release policy", () =>
   assert.equal(probe.core.isPending("done"), true, "the policy keeps the deliverable result for the automatic schedule");
   assert.equal(probe.core.isPending("stopped"), false, "the policy drops every other stored result");
 
-  // An explicit predicate still overrides the configured policy.
-  const second = probe.core.claim(["later"]);
-  probe.core.enqueue({ id: "later", value: "keep:later" });
-  second.claim.release(() => false);
-  assert.equal(probe.core.isPending("later"), false, "an explicit release predicate overrides the policy");
-
-  // With no policy configured, a predicate-less release drops everything.
+  // With no policy configured, a release drops everything.
   const bare = harness({ idle: false });
   bare.core.enqueue({ id: "solo", value: "v" });
   const third = bare.core.claim(["solo"]);
   third.claim.release();
-  assert.equal(bare.core.isPending("solo"), false, "no policy and no predicate leaves nothing in delivery storage");
+  assert.equal(bare.core.isPending("solo"), false, "no policy leaves nothing in delivery storage");
 });
 
 test("remove and reset clear outstanding claims with the pending set", () => {
@@ -432,7 +426,7 @@ test("a removed identity can be re-claimed and the previous holder cannot touch 
   // The stale handle can neither take nor release the new owner's result.
   assert.deepEqual(first.claim.take(), [undefined]);
   assert.equal(probe.core.isPending("shared"), true, "the take left the new owner's entry alone");
-  first.claim.release(() => true);
+  first.claim.release();
   assert.equal(second.claim.holds("shared"), true, "the release left the new owner's claim alone");
 
   assert.deepEqual(second.claim.take(), ["second-owner"], "only the current owner consumes the result");
