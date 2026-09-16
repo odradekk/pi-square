@@ -11,6 +11,12 @@ import {
 } from "node:fs";
 import { dirname, extname, join, resolve } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
+import {
+  parseYamlSubset,
+  type YamlScalar,
+  type YamlSubsetEntry,
+  type YamlSubsetFinding,
+} from "../core/yaml-subset";
 import { getPackagePath } from "../core/paths";
 
 export type SubagentDefinitionSource = "package" | "agent" | "project";
@@ -125,7 +131,6 @@ const STRING_FIELDS = new Set<SubagentDefinitionField>([
 ]);
 const ARRAY_FIELDS = new Set<SubagentDefinitionField>(["tools", "extensionTools", "skills"]);
 const BOOLEAN_FIELDS = new Set<SubagentDefinitionField>(["inheritParentSystem", "visible"]);
-const KNOWN_FIELDS = new Set(["promptVersion", "name", ...DEFINITION_FIELDS]);
 
 /** How the parser types a field's value, in the configuration guide's wording. */
 export type SubagentFieldValueType = "string" | "string list" | "boolean";
@@ -162,84 +167,72 @@ function findNearestProjectSubagentsDir(cwd: string): string | null {
   }
 }
 
-function stripQuotes(value: string): string {
-  const trimmed = value.trim();
-  if ((trimmed.startsWith(`"`) && trimmed.endsWith(`"`)) || (trimmed.startsWith(`'`) && trimmed.endsWith(`'`))) {
-    return trimmed.slice(1, -1);
-  }
-  return trimmed;
-}
-
-/** Quote-aware split of an inline array body into raw trimmed items, quotes kept. */
-function splitInlineArrayItems(body: string): string[] {
-  const items: string[] = [];
-  let current = "";
-  let quote: string | null = null;
-  for (const ch of body) {
-    if (quote) {
-      if (ch === quote) quote = null;
-      current += ch;
-      continue;
-    }
-    if (ch === `"` || ch === `'`) {
-      quote = ch;
-      current += ch;
-      continue;
-    }
-    if (ch === ",") {
-      const value = current.trim();
-      if (value) items.push(value);
-      current = "";
-      continue;
-    }
-    current += ch;
-  }
-  const tail = current.trim();
-  if (tail) items.push(tail);
-  return items;
-}
-
-/**
- * Inline array items get the same scalar treatment as block list items:
- * quoted strings lose their quotes, exact `null` and `~` spellings clear the
- * item, and escapes resolve — one spelling never diverges between the forms.
- */
-function splitInlineArray(body: string): string[] {
-  const items: string[] = [];
-  for (const raw of splitInlineArrayItems(body)) {
-    const parsed = parseYamlScalar(raw);
-    if (typeof parsed === "string" && parsed.trim()) items.push(parsed.trim());
-  }
-  return items;
-}
-
-function parseYamlScalar(value: string): string | null {
-  const trimmed = value.trim();
-  if (trimmed === "null" || trimmed === "~") return null;
-  return stripQuotes(trimmed).replace(/\\n/g, "\n");
-}
-
-/** Bare block scalar indicators with a chomping or indentation marker (`|-`, `>+`, `|2`). */
-const CHOMPING_INDICATOR_PATTERN = /^[|>][-+0-9]*$/;
-
-/**
- * One shared message for every inline-comment rejection. Quoting is the way to
- * keep a literal '#' such as an issue number in the value; moving the comment
- * to its own line is the way to actually have a comment.
- */
-const INLINE_COMMENT_MESSAGE = "inline comments are not supported — quote the value to keep a literal '#' or move the comment to its own line";
-
 /** One shared message for every blank line that breaks a block list open. */
 function blankLineInListMessage(filePath: string, line: number, key: string): string {
   return `${filePath}: line ${line}: blank line inside the block list for '${key}' — remove blank lines between or before list items`;
 }
 
 /**
+ * Parses a boolean field's scalar spelling. The field-kind table in
+ * `readYamlFields` guarantees only a string or a clear marker reaches this
+ * point; any other spelling rejects with the subset's named error.
+ */
+function parseBoolean(value: string | null, fieldName: string, filePath: string): { value?: boolean | null; error?: string } {
+  if (value === null) return { value: null };
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "true") return { value: true };
+  if (normalized === "false") return { value: false };
+  return { error: `${filePath}: field '${fieldName}' must be true, false, or null` };
+}
+
+function hashContent(content: string): string {
+  return createHash("sha256").update(content, "utf8").digest("hex");
+}
+
+// ── Definition text → fields ─────────────────────────────────────────
+//
+// The shared subset reader (`../core/yaml-subset`) owns the structural
+// layer; this profile applies the subagent definition policy on top: the
+// field-kind table, the named unknown/duplicate/shape errors, and the
+// scalar rules (inline comments, null spellings, quote stripping, `\n`
+// escapes). Values convert only when clean; the layer semantics below
+// consume the resulting fields.
+
+/** The value shape a definition field accepts in the subagent subset. */
+export type YamlFieldKind = "string" | "list" | "boolean";
+
+/** A field read through `readYamlFields`; `value` is null for a clear marker. */
+export interface YamlField {
+  key: string;
+  line: number;
+  value: string | string[] | null;
+}
+
+export interface YamlFieldOptions {
+  /** Label prepended to every error message. */
+  source: string;
+  /** Every accepted field and the shape its value must have. */
+  fields: Readonly<Record<string, YamlFieldKind>>;
+  /** The accepted key shape; see `parseYamlSubset`. */
+  keyPattern: RegExp;
+  /** 1-based number of `text`'s first line; defaults to 1. */
+  lineBase?: number;
+}
+
+export interface YamlFieldsResult {
+  fields: YamlField[];
+  errors: string[];
+  /** The structural findings; the caller maps the ones it names to errors. */
+  findings: YamlSubsetFinding[];
+}
+
+/** One shared message for every inline-comment rejection in the subagent subset. */
+const INLINE_COMMENT_MESSAGE = "inline comments are not supported — quote the value to keep a literal '#' or move the comment to its own line";
+
+/**
  * Index where an inline comment starts inside one YAML-subset value, or -1.
  * A `#` starts a comment when it begins the value or follows a space or tab,
- * matching standard YAML; quoted strings never contain a comment. Inline
- * comments are not supported by this subset, so callers reject the line instead
- * of storing the comment text in the field value.
+ * matching standard YAML; quoted strings never contain a comment.
  */
 function findInlineComment(value: string): number {
   let quote: string | null = null;
@@ -265,33 +258,202 @@ function isQuotedScalar(value: string): boolean {
 
 /**
  * Rejects misspelled null spellings — every casing of `null` other than the
- * exact lowercase word and tilde lookalikes such as `～` — instead of silently
- * storing them as literal strings. `null` and `~` are case-sensitive in this
- * subset; quoted strings are literal by design and stay untouched.
+ * exact lowercase word and tilde lookalikes such as `～` — instead of
+ * silently storing them as literal strings. `null` and `~` are
+ * case-sensitive in this subset; quoted strings are literal by design and
+ * stay untouched.
  */
 function nullSpellingProblem(value: string): string | undefined {
   const trimmed = value.trim();
   if (isQuotedScalar(trimmed)) return undefined;
   if (trimmed !== "null" && trimmed.toLowerCase() === "null") {
-    return `null spellings are case-sensitive; write lowercase null or ~`;
+    return "null spellings are case-sensitive; write lowercase null or ~";
   }
   if (trimmed === "〜" || trimmed === "～") {
-    return `tilde null must be the ASCII ~ character`;
+    return "tilde null must be the ASCII ~ character";
   }
   return undefined;
 }
 
-function parseBoolean(value: unknown, fieldName: string, filePath: string): { value?: boolean | null; error?: string } {
-  if (value === null) return { value: null };
-  if (typeof value !== "string") return { error: `${filePath}: field '${fieldName}' must be true, false, or null` };
-  const normalized = value.trim().toLowerCase();
-  if (normalized === "true") return { value: true };
-  if (normalized === "false") return { value: false };
-  return { error: `${filePath}: field '${fieldName}' must be true, false, or null` };
+/** Strips one pair of matching quotes when they wrap the whole value. */
+function stripQuotes(value: string): string {
+  const trimmed = value.trim();
+  if (isQuotedScalar(trimmed)) return trimmed.slice(1, -1);
+  return trimmed;
 }
 
-function hashContent(content: string): string {
-  return createHash("sha256").update(content, "utf8").digest("hex");
+/**
+ * The subagent subset's scalar conversion: exact lowercase `null` and ASCII
+ * `~` clear, other spellings stay literal, quotes are stripped, and `\n`
+ * escapes resolve.
+ */
+function convertScalarText(raw: string): string | null {
+  const trimmed = raw.trim();
+  if (trimmed === "null" || trimmed === "~") return null;
+  return stripQuotes(trimmed).replace(/\\n/g, "\n");
+}
+
+/**
+ * Applies the subagent scalar policy to one scalar token: inline comments
+ * and misspelled null spellings reject with the subset's named errors, then
+ * the text converts. Returns null alongside a recorded error.
+ */
+function convertScalar(source: string, scalar: YamlScalar, errors: string[]): string | null {
+  if (findInlineComment(scalar.raw) >= 0) {
+    errors.push(`${source}: line ${scalar.line}: ${INLINE_COMMENT_MESSAGE}`);
+    return null;
+  }
+  const spellingProblem = nullSpellingProblem(scalar.raw);
+  if (spellingProblem !== undefined) {
+    errors.push(`${source}: line ${scalar.line}: '${scalar.raw}' — ${spellingProblem}`);
+    return null;
+  }
+  return convertScalarText(scalar.raw);
+}
+
+function fieldKindError(source: string, key: string, kind: YamlFieldKind): string {
+  const expectation = kind === "string" ? "a string or null" : kind === "list" ? "an array or null" : "true, false, or null";
+  return `${source}: field '${key}' must be ${expectation}`;
+}
+
+/**
+ * Converts one entry's value with the subagent scalar policy and returns the
+ * field value. `kind` is undefined for names the field table does not
+ * declare: the value still converts so its policy errors surface, but no
+ * shape check applies. Returns undefined once the conversion recorded an
+ * error; the shape check runs only on clean conversions.
+ */
+function convertEntryValue(
+  source: string,
+  entry: YamlSubsetEntry,
+  errors: string[],
+  kind: YamlFieldKind | undefined,
+): string | string[] | null | undefined {
+  const value = entry.value;
+  if (value.kind === "empty") return null;
+  const before = errors.length;
+  let converted: string | string[] | null = null;
+  if (value.kind === "scalar") {
+    converted = convertScalar(source, value.scalar, errors);
+  } else if (value.kind === "flow-list" && !value.closed) {
+    // An unclosed `[` is a plain scalar in this subset, never a list.
+    converted = convertScalar(source, { raw: value.raw, line: entry.line }, errors);
+  } else if (value.kind === "block") {
+    if (value.indicator !== "|" && value.indicator !== ">") {
+      errors.push(`${source}: line ${entry.line}: block scalar '${value.indicator}' carries an unsupported chomping or indentation indicator — use '|' or '>' alone`);
+    } else {
+      converted = value.content || null;
+    }
+  } else if (value.kind === "flow-list" || value.kind === "block-list") {
+    const items: string[] = [];
+    for (const item of value.items) {
+      // A first item with no text never opened a list in this subset; it
+      // reports as the bare line instead of silently clearing the field.
+      if (value.kind === "block-list" && items.length === 0 && item.raw === "") {
+        errors.push(`${source}: unsupported YAML line ${item.line}: -`);
+      }
+      const itemValue = convertScalar(source, item, errors);
+      if (typeof itemValue === "string" && itemValue.trim()) items.push(itemValue.trim());
+    }
+    converted = items;
+  }
+  // Map values (and blocks rejected above) convert to nothing; the shape
+  // check below names the field when one applies.
+  if (errors.length !== before) return undefined;
+  if (kind === undefined) return converted;
+  if (value.kind === "map") {
+    errors.push(fieldKindError(source, entry.key, kind));
+    return undefined;
+  }
+  const shape = (value.kind === "flow-list" && value.closed) || value.kind === "block-list" ? "list" : "scalar";
+  if (shape === "list" ? kind !== "list" : kind === "list" && converted !== null) {
+    errors.push(fieldKindError(source, entry.key, kind));
+    return undefined;
+  }
+  return converted;
+}
+
+/**
+ * Reads subagent definition text into typed fields. Unknown fields, duplicate
+ * fields, and values whose shape does not match the declared field kind
+ * reject with the subagent subset's named errors; scalar values, list items,
+ * and block scalars convert with the subagent scalar policy. Structural
+ * findings are returned for the caller to name or ignore.
+ */
+export function readYamlFields(text: string, options: YamlFieldOptions): YamlFieldsResult {
+  const document = parseYamlSubset(text, { keyPattern: options.keyPattern, lineBase: options.lineBase });
+  const fields: YamlField[] = [];
+  const errors: string[] = [];
+  const seen = new Set<string>();
+  for (const entry of document.entries) {
+    const known = Object.hasOwn(options.fields, entry.key);
+    if (!known) errors.push(`${options.source}: unknown field '${entry.key}'`);
+    if (seen.has(entry.key)) errors.push(`${options.source}: duplicate field '${entry.key}'`);
+    seen.add(entry.key);
+    // Values convert even for unknown or repeated keys so every policy error
+    // (an inline comment, a misspelled null, a chomping indicator) names its
+    // line; only clean conversions of known fields become fields, and a
+    // repeated key keeps its last clean conversion.
+    const before = errors.length;
+    const converted = convertEntryValue(options.source, entry, errors, known ? options.fields[entry.key]! : undefined);
+    if (!known || errors.length !== before) continue;
+    const existing = fields.findIndex((field) => field.key === entry.key);
+    if (existing >= 0) fields.splice(existing, 1);
+    fields.push({ key: entry.key, line: entry.line, value: converted! });
+  }
+  return { fields, errors, findings: document.findings };
+}
+
+/**
+ * The key shape accepted by the subagent definition subset. The shared
+ * reader (`../core/yaml-subset`) validates keys against this pattern; a line
+ * whose key fails it reports as an unsupported YAML line.
+ */
+export const SUBAGENT_YAML_KEY_PATTERN = /^[A-Za-z][A-Za-z0-9_-]*$/;
+
+/**
+ * Every field the subagent subset accepts and the value shape each must
+ * have, keyed by field name. The `readYamlFields` profile below applies this
+ * table, so the parser, the configuration guide's generated field table
+ * (`./config-guide`), and the reader cannot drift apart (#370).
+ */
+export const SUBAGENT_FIELD_KINDS: Readonly<Record<string, YamlFieldKind>> = Object.freeze({
+  promptVersion: "string",
+  name: "string",
+  ...Object.fromEntries(
+    DEFINITION_FIELDS.map((field): [string, YamlFieldKind] => [
+      field,
+      ARRAY_FIELDS.has(field) ? "list" : BOOLEAN_FIELDS.has(field) ? "boolean" : "string",
+    ]),
+  ),
+});
+
+/**
+ * Names the structural findings the subagent subset rejects and ignores the
+ * ones its flat shape never produces: indentation freedom, map depth, tabs,
+ * and unterminated quotes inside flow lists stay observational rather than
+ * named errors, matching the subset's historical acceptance.
+ */
+function subagentFindingMessage(filePath: string, finding: YamlSubsetFinding): string | undefined {
+  switch (finding.code) {
+    case "blank-line-in-list":
+      return blankLineInListMessage(filePath, finding.line, finding.detail ?? "");
+    case "list-item-indent":
+      return `${filePath}: line ${finding.line}: list items must be indented under their field — write '  - ${(finding.detail ?? "").replace(/^-\s*/, "")}'`;
+    case "tab":
+    case "indent-step":
+    case "nesting-depth":
+    case "unbalanced-quote":
+    case "list-item-shape":
+      // A `-`-led line at a looser indent still reads as an item here.
+      return undefined;
+    case "merge-key":
+    case "first-line-indent":
+    case "unexpected-indent":
+    case "unsupported-line":
+    case "key-shape":
+      return `${filePath}: unsupported YAML line ${finding.line}: ${(finding.detail ?? "").trim()}`;
+  }
 }
 
 function parseYamlDefinition(
@@ -299,216 +461,56 @@ function parseYamlDefinition(
   filePath: string,
   source: SubagentDefinitionSource,
 ): { layer?: SubagentDefinitionLayer; errors: string[]; name?: string } {
-  const errors: string[] = [];
-  const lines = text.replace(/\r\n/g, "\n").split("\n");
+  // Text becomes fields through the shared subset reader; this module keeps
+  // only layer semantics (identity fields, clear markers, overlay patches).
+  const { fields, errors, findings } = readYamlFields(text, {
+    source: filePath,
+    fields: SUBAGENT_FIELD_KINDS,
+    keyPattern: SUBAGENT_YAML_KEY_PATTERN,
+  });
+  const allErrors: string[] = [];
+  for (const finding of findings) {
+    const message = subagentFindingMessage(filePath, finding);
+    if (message !== undefined) allErrors.push(message);
+  }
+  allErrors.push(...errors);
   const data: Record<string, string | string[] | null> = {};
   const seen = new Set<string>();
-
-  let i = 0;
-  while (i < lines.length) {
-    const rawLine = lines[i] ?? "";
-    const trimmed = rawLine.trim();
-    if (!trimmed || trimmed.startsWith("#")) {
-      i += 1;
-      continue;
-    }
-
-    const match = rawLine.match(/^([A-Za-z][A-Za-z0-9_-]*):(?:\s*(.*))?$/);
-    if (!match) {
-      if (/^-\s?/.test(rawLine)) {
-        // Column-zero list items never attach to a field; the message states
-        // the indentation rule instead of a generic unsupported-line error.
-        errors.push(`${filePath}: line ${i + 1}: list items must be indented under their field — write '  - ${trimmed.replace(/^-\s*/, "")}'`);
-      } else {
-        errors.push(`${filePath}: unsupported YAML line ${i + 1}: ${trimmed}`);
-      }
-      i += 1;
-      continue;
-    }
-
-    const key = match[1] ?? "";
-    if (!KNOWN_FIELDS.has(key)) errors.push(`${filePath}: unknown field '${key}'`);
-    if (seen.has(key)) errors.push(`${filePath}: duplicate field '${key}'`);
-    seen.add(key);
-    const rest = (match[2] ?? "").trim();
-
-    if (findInlineComment(rest) >= 0) {
-      errors.push(`${filePath}: line ${i + 1}: ${INLINE_COMMENT_MESSAGE}`);
-      data[key] = null;
-      i += 1;
-      continue;
-    }
-
-    if (rest === "|" || rest === ">" || CHOMPING_INDICATOR_PATTERN.test(rest)) {
-      const fieldLine = i + 1;
-      const currentIndent = rawLine.match(/^(\s*)/)?.[1]?.length ?? 0;
-      let probe = i + 1;
-      let blockIndent = currentIndent + 1;
-      while (probe < lines.length) {
-        const candidate = lines[probe] ?? "";
-        if (!candidate.trim()) {
-          probe += 1;
-          continue;
-        }
-        blockIndent = candidate.match(/^(\s*)/)?.[1]?.length ?? 0;
-        break;
-      }
-      const blockLines: string[] = [];
-      i += 1;
-      // Only lines indented past the field carry block content. Without this
-      // guard a following field at the same indent reads as the body and is
-      // swallowed, taking its own value and the file's identity with it.
-      if (blockIndent > currentIndent) {
-        while (i < lines.length) {
-          const nextLine = lines[i] ?? "";
-          const indent = nextLine.match(/^(\s*)/)?.[1]?.length ?? 0;
-          if (nextLine.trim() && indent < blockIndent) break;
-          blockLines.push(nextLine.trim() ? nextLine.slice(blockIndent) : "");
-          i += 1;
-        }
-      }
-      if (rest !== "|" && rest !== ">") {
-        // Chomping and indentation indicators (`|-`, `>+`, `|2`) are not part
-        // of this subset. A real body is consumed along with the rejection so
-        // it cannot pile orphaned-line errors on top of the named cause.
-        errors.push(`${filePath}: line ${fieldLine}: block scalar '${rest}' carries an unsupported chomping or indentation indicator — use '|' or '>' alone`);
-        data[key] = null;
-        continue;
-      }
-      const value = rest === ">"
-        ? blockLines.join(" ").replace(/\s+/g, " ").trim()
-        : blockLines.join("\n").trim();
-      data[key] = value || null;
-      continue;
-    }
-
-    if (rest.startsWith("[") && rest.endsWith("]")) {
-      // Inline arrays get the same item checks as block lists, so one spelling
-      // of the same value cannot silently diverge between the two forms.
-      let misspelling: { item: string; problem: string } | undefined;
-      for (const item of splitInlineArrayItems(rest.slice(1, -1))) {
-        const problem = nullSpellingProblem(item);
-        if (problem !== undefined) {
-          misspelling = { item, problem };
-          break;
-        }
-      }
-      if (misspelling) {
-        errors.push(`${filePath}: line ${i + 1}: '${misspelling.item}' — ${misspelling.problem}`);
-        data[key] = null;
-        i += 1;
-        continue;
-      }
-      data[key] = splitInlineArray(rest.slice(1, -1));
-      i += 1;
-      continue;
-    }
-
-    if (!rest) {
-      // Probe past blank lines: a blank between the field line and its first
-      // item would silently detach the list, so it is an explicit error
-      // instead of a null value plus an orphaned-item complaint.
-      let probe = i + 1;
-      while (probe < lines.length && !(lines[probe] ?? "").trim()) probe += 1;
-      const probeLine = lines[probe] ?? "";
-      const probeIndent = probeLine.match(/^(\s*)/)?.[1]?.length ?? 0;
-      const isBlockList = probeLine.trim().startsWith("- ") && probeIndent > 0;
-      if (isBlockList && probe > i + 1) {
-        errors.push(blankLineInListMessage(filePath, i + 2, key));
-      }
-      if (isBlockList) {
-        const items: string[] = [];
-        i = probe;
-        while (i < lines.length) {
-          const itemLine = lines[i] ?? "";
-          const itemMatch = itemLine.match(/^\s*-\s*(.*)$/);
-          if (!itemMatch) {
-            if (!itemLine.trim()) {
-              // A blank line followed by more items would silently truncate
-              // the list; report it by name and resume at the continuation.
-              let afterBlanks = i;
-              while (afterBlanks < lines.length && !(lines[afterBlanks] ?? "").trim()) afterBlanks += 1;
-              if ((lines[afterBlanks] ?? "").match(/^\s*-\s/)) {
-                errors.push(blankLineInListMessage(filePath, i + 1, key));
-                i = afterBlanks;
-                continue;
-              }
-            }
-            break;
-          }
-          const itemText = (itemMatch[1] ?? "").trim();
-          if (findInlineComment(itemText) >= 0) {
-            errors.push(`${filePath}: line ${i + 1}: ${INLINE_COMMENT_MESSAGE}`);
-          } else {
-            const itemNullProblem = nullSpellingProblem(itemText);
-            if (itemNullProblem) {
-              errors.push(`${filePath}: line ${i + 1}: '${itemText}' — ${itemNullProblem}`);
-            } else {
-              const parsed = parseYamlScalar(itemMatch[1] ?? "");
-              if (typeof parsed === "string" && parsed.trim()) items.push(parsed.trim());
-            }
-          }
-          i += 1;
-        }
-        data[key] = items;
-        continue;
-      }
-      data[key] = null;
-      i += 1;
-      continue;
-    }
-
-    const nullProblem = nullSpellingProblem(rest);
-    if (nullProblem) {
-      errors.push(`${filePath}: line ${i + 1}: '${rest}' — ${nullProblem}`);
-      data[key] = null;
-      i += 1;
-      continue;
-    }
-
-    data[key] = parseYamlScalar(rest);
-    i += 1;
+  for (const field of fields) {
+    data[field.key] = field.value;
+    seen.add(field.key);
   }
 
   const versionRaw = data.promptVersion;
-  if (versionRaw !== "2") errors.push(`${filePath}: field 'promptVersion' must be 2`);
+  if (versionRaw !== "2") allErrors.push(`${filePath}: field 'promptVersion' must be 2`);
   const name = typeof data.name === "string" ? data.name.trim() : "";
-  if (!name) errors.push(`${filePath}: missing required field 'name'`);
-  else if (!NAME_PATTERN.test(name)) errors.push(`${filePath}: field 'name' must match ${NAME_PATTERN}`);
+  if (!name) allErrors.push(`${filePath}: missing required field 'name'`);
+  else if (!NAME_PATTERN.test(name)) allErrors.push(`${filePath}: field 'name' must match ${NAME_PATTERN}`);
 
   const patch: Partial<SubagentDefinitionPatch> = { promptVersion: 2, name };
   for (const field of DEFINITION_FIELDS) {
     if (!seen.has(field)) continue;
+    // readYamlFields guarantees each field's shape — string fields hold a
+    // string or null, list fields a string[] or null — so only the boolean
+    // spelling can still reject here.
     const value = data[field];
     if (STRING_FIELDS.has(field)) {
-      if (value !== null && typeof value !== "string") {
-        errors.push(`${filePath}: field '${field}' must be a string or null`);
-      } else {
-        (patch as Record<string, unknown>)[field] = typeof value === "string" ? value.trim() || null : null;
-      }
-      continue;
-    }
-    if (ARRAY_FIELDS.has(field)) {
-      if (value !== null && !Array.isArray(value)) {
-        errors.push(`${filePath}: field '${field}' must be an array or null`);
-      } else {
-        (patch as Record<string, unknown>)[field] = value === null
-          ? null
-          : [...new Set(value.map((item) => item.trim()).filter(Boolean))];
-      }
-      continue;
-    }
-    if (BOOLEAN_FIELDS.has(field)) {
-      const parsed = parseBoolean(value, field, filePath);
-      if (parsed.error) errors.push(parsed.error);
+      (patch as Record<string, unknown>)[field] = typeof value === "string" ? value.trim() || null : null;
+    } else if (ARRAY_FIELDS.has(field)) {
+      (patch as Record<string, unknown>)[field] = value === null
+        ? null
+        : [...new Set((value as string[]).map((item) => item.trim()).filter(Boolean))];
+    } else {
+      const parsed = parseBoolean(value as string | null, field, filePath);
+      if (parsed.error) allErrors.push(parsed.error);
       else (patch as Record<string, unknown>)[field] = parsed.value;
     }
   }
 
-  if (errors.length > 0) {
+  if (allErrors.length > 0) {
     // The candidate name keys the invalid entry the discovery layer surfaces;
     // it is undefined when the file never produced a usable name.
-    return { errors, ...(name && NAME_PATTERN.test(name) ? { name } : {}) };
+    return { errors: allErrors, ...(name && NAME_PATTERN.test(name) ? { name } : {}) };
   }
   return {
     layer: {
@@ -517,7 +519,7 @@ function parseYamlDefinition(
       contentHash: hashContent(text),
       patch: patch as SubagentDefinitionPatch,
     },
-    errors,
+    errors: allErrors,
   };
 }
 
