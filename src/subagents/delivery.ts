@@ -9,10 +9,10 @@
  * safe delivery timing, confirmation, resend, interruption suppression,
  * send-failure retention, and the atomic claim/take/release ownership
  * operations — live in `confirmed-delivery.ts`; this module is the Subagent
- * adapter: it supplies the run identity, the V5 notification payload with its
- * entry validation, the message construction, the transcript confirmation
- * parser, the wait-claim adapter, and the aborted-result policy that stores an
- * aborted run only for a waiter that already owns it.
+ * delivery policy bound to that core (odradekk/pi-square#372): which finished
+ * runs enter the store, how one batch renders as a V5 notification, how a
+ * transcript message confirms, and how a released result is routed. Callers
+ * hold the policy-parameterized core; nothing here redeclares a core member.
  *
  * Scope is the current parent session. Nothing here persists across sessions.
  */
@@ -22,30 +22,16 @@ import {
   clipWithHeadTail,
   createConfirmedDeliveryCore,
   type ConfirmedDeliveryClaim,
+  type ConfirmedDeliveryCore,
   type DeliveryClaimFailure,
-  DEFAULT_MAX_BATCH_RESULTS,
-  DEFAULT_MAX_CLAIM_RESERVATIONS,
-  DEFAULT_MAX_PENDING_RESULTS,
-} from "./confirmed-delivery";
-export {
-  subscribeDeliveryLifecycle,
-  type ConfirmedDeliveryLifecycle,
-  type DeliveryEventSource,
-  type DeliveryLifecycleSubscribeOptions,
-  type DeliverySettleForwarding,
 } from "./confirmed-delivery";
 import type { SubagentNotificationDetails, SubagentResultStatus } from "./notification-types";
 import type { SubagentRunDetails } from "./run-types";
+
 export const SUBAGENT_NOTIFICATION_TYPE = "pi-square.subagent-notification";
 
 /** Model-facing budget for one result text. */
 export const MAX_RESULT_CHARS = 24_000;
-/** Results coalesced into a single delivery; the rest follow at the next one. */
-export const MAX_BATCH_RESULTS = DEFAULT_MAX_BATCH_RESULTS;
-/** Hard bound on the pending set so an unattended session stays bounded. */
-export const MAX_PENDING_RESULTS = DEFAULT_MAX_PENDING_RESULTS;
-/** Hard bound on simultaneously held explicit wait reservations. */
-export const MAX_WAIT_RESERVATIONS = DEFAULT_MAX_CLAIM_RESERVATIONS;
 /** Public IDs one wait_subagent call may select. */
 export const MAX_WAIT_IDS = 6;
 const MAX_TASK_CHARS = 300;
@@ -53,13 +39,7 @@ const MAX_TASK_CHARS = 300;
 /** Statuses that flow through automatic delivery to the parent. */
 export type DeliverableStatus = "completed" | "failed";
 
-/** One finished run as the delivery core carries it. */
-interface SubagentDeliveryValue {
-  status: SubagentResultStatus;
-  details: SubagentRunDetails;
-}
-
-/** One run rendered into a delivery message or an explicit wait result. */
+/** One finished run as the delivery core carries and stores it. */
 export interface SubagentDeliveryEntry {
   id: string;
   status: SubagentResultStatus;
@@ -112,74 +92,14 @@ export function parseV5NotificationDetails(details: unknown): ValidatedNotificat
     .filter((entry): entry is ValidatedNotificationEntry => entry !== undefined);
 }
 
-/** The Subagent adapter over one held claim of the delivery core. */
-export interface SubagentDeliveryClaim {
-  /** Reserved public IDs in the order the waiter requested them. */
-  readonly ids: readonly string[];
-  /** False once the claim was taken, released, or cleared by a reset. */
-  readonly active: boolean;
-  /**
-   * True while this wait is the current owner of the run's result. Deleting
-   * the run's history (manager delete-history) ends the reservation, so the
-   * waiter wakes and ends deterministically instead of hanging.
-   */
-  holds(id: string): boolean;
-  /** The stored result of one still-held run once it finished; the waiter's
-   * completeness signal before it takes. */
-  result(id: string): SubagentDeliveryEntry | undefined;
-  /** Consumes every claimed result in request order; missing results yield undefined. */
-  take(): (SubagentDeliveryEntry | undefined)[];
-  /**
-   * Gives up ownership. Completed and failed results stay in the store as
-   * unsent automatic-delivery candidates; aborted results are removed from
-   * delivery storage, because an aborted run that no waiter owns never
-   * notifies the parent.
-   */
-  release(): void;
-}
+/** The Subagent claim over the delivery core's ownership handle. */
+export type SubagentDeliveryClaim = ConfirmedDeliveryClaim<SubagentDeliveryEntry>;
 
 /** Why one explicit wait claim was rejected, with the offending public ID. */
 export type SubagentClaimFailure = DeliveryClaimFailure;
 
-export interface DeliveryController {
-  /**
-   * Registers one finished run. A completed or failed run enters the pending
-   * store for automatic delivery; an aborted run is stored only while an
-   * explicit waiter already owns its claim, and is dropped otherwise.
-   */
-  enqueue(input: { id: string; status: SubagentResultStatus; details: SubagentRunDetails }): void;
-  /** Drops a result, for example when its history is deleted. */
-  remove(id: string): void;
-  /**
-   * Atomically reserves a set of public IDs for one explicit waiter. An ID
-   * already claimed by another waiter, or whose result was already sent for
-   * delivery, rejects the complete request, as does a request that would
-   * exceed the reservation bound.
-   */
-  claim(ids: string[]): { ok: true; claim: SubagentDeliveryClaim } | { ok: false; failure: SubagentClaimFailure };
-  /** True while an explicit waiter owns this run's result. */
-  isClaimed(id: string): boolean;
-  /** True while this run's result was sent for delivery but not confirmed. */
-  isSent(id: string): boolean;
-  /** Confirms delivery from an injected parent message. */
-  observeMessage(message: unknown): void;
-  /** Turn boundary of a running parent; an aborted terminal message suppresses delivery. */
-  handleTurnEnd(message?: unknown): void;
-  /** A new parent run started, so an earlier interruption no longer holds. */
-  handleAgentStart(): void;
-  /** Records whether the finished run ended through a user interruption. */
-  handleAgentEnd(messages: unknown): void;
-  /** Parent is idle: unconfirmed results are lost and are delivered again. */
-  handleAgentSettled(): void;
-  /** True while the result of this run is not confirmed in the parent. */
-  isPending(id: string): boolean;
-  /** Count of results that the parent has not confirmed. */
-  pendingCount(): number;
-  /** IDs of results that the parent has not confirmed. */
-  pendingIds(): string[];
-  /** Clears all state on session start and shutdown. */
-  reset(): void;
-}
+/** The Subagent delivery core: the generic core carrying finished runs. */
+export type SubagentDeliveryCore = ConfirmedDeliveryCore<SubagentDeliveryEntry>;
 
 function normalize(text: unknown): string {
   return String(text ?? "").trim();
@@ -254,22 +174,38 @@ export function notificationResultIds(message: unknown): string[] {
   return parseV5NotificationDetails(candidate.details)?.map((entry) => entry.id) ?? [];
 }
 
-export function createDeliveryController(options: {
+/**
+ * Admission policy: an ordinary aborted run notifies nobody, so it enters the
+ * store only while an explicit waiter already owns its claim — the waiter
+ * receives its aborted outcome, and a release drops it again. Completed and
+ * failed runs always enter.
+ */
+function admitsFinishedRun(input: { id: string; value: SubagentDeliveryEntry }, isClaimed: (id: string) => boolean): boolean {
+  return input.value.status !== "aborted" || isClaimed(input.id);
+}
+
+/**
+ * Release routing for a wait that gives up its claims: completed and failed
+ * results stay in the store as unsent automatic-delivery candidates, while an
+ * aborted result leaves delivery storage entirely, because an aborted run that
+ * no waiter owns never notifies the parent.
+ */
+export function keepReleasedResult(entry: SubagentDeliveryEntry): boolean {
+  return entry.status !== "aborted";
+}
+
+export function createSubagentDeliveryCore(options: {
   pi: Pick<ExtensionAPI, "sendMessage">;
   /** Reads the parent run state; a missing reader assumes an idle parent. */
   isIdle?: () => boolean;
   /** Refreshes pi-square status surfaces after a pending-set change. */
   notify?: () => void;
-}): DeliveryController {
+}): SubagentDeliveryCore {
   let sequence = 0;
-  const core = createConfirmedDeliveryCore<SubagentDeliveryValue>({
+  return createConfirmedDeliveryCore<SubagentDeliveryEntry>({
     send(batch, resent) {
       sequence += 1;
-      const entries: SubagentDeliveryEntry[] = batch.map((entry) => ({
-        id: entry.id,
-        status: entry.value.status,
-        details: entry.value.details,
-      }));
+      const entries: SubagentDeliveryEntry[] = batch.map((entry) => entry.value);
       const details: SubagentNotificationDetails = {
         version: 5,
         deliveryId: `delivery-${sequence}`,
@@ -298,59 +234,12 @@ export function createDeliveryController(options: {
       );
     },
     confirmIds: notificationResultIds,
+    accepts: admitsFinishedRun,
+    // The aborted-result release rule binds to the core, so a wait that
+    // releases without a predicate still routes completed and failed
+    // results back and drops aborted ones (ADR-0016).
+    releaseKeep: keepReleasedResult,
     isIdle: options.isIdle,
     onPendingChange: options.notify,
   });
-
-  function toEntry(id: string, value: SubagentDeliveryValue): SubagentDeliveryEntry {
-    return { id, status: value.status, details: value.details };
-  }
-
-  return {
-    enqueue(input) {
-      // Aborted-result policy: an ordinary aborted run notifies nobody. A run
-      // an explicit waiter already owns still enters the store, claimed and
-      // therefore excluded from automatic delivery, so the waiter receives its
-      // aborted outcome; if the waiter releases first, the entry is dropped.
-      if (input.status === "aborted" && !core.isClaimed(input.id)) return;
-      core.enqueue({ id: input.id, value: { status: input.status, details: input.details } });
-    },
-    remove: (id) => core.remove(id),
-    claim(ids) {
-      const result = core.claim(ids);
-      if (!result.ok) return result;
-      const inner: ConfirmedDeliveryClaim<SubagentDeliveryValue> = result.claim;
-      return {
-        ok: true,
-        claim: {
-          ids: inner.ids,
-          get active() {
-            return inner.active;
-          },
-          holds: (id) => inner.holds(id),
-          result(id) {
-            const value = inner.result(id);
-            return value ? toEntry(id, value) : undefined;
-          },
-          take() {
-            return inner.take().map((value, index) => (value ? toEntry(inner.ids[index]!, value) : undefined));
-          },
-          release() {
-            inner.release((value) => value.status !== "aborted");
-          },
-        },
-      };
-    },
-    isClaimed: (id) => core.isClaimed(id),
-    isSent: (id) => core.isSent(id),
-    observeMessage: (message) => core.observeMessage(message),
-    handleTurnEnd: (message) => core.handleTurnEnd(message),
-    handleAgentStart: () => core.handleAgentStart(),
-    handleAgentEnd: (messages) => core.handleAgentEnd(messages),
-    handleAgentSettled: () => core.handleAgentSettled(),
-    isPending: (id) => core.isPending(id),
-    pendingCount: () => core.pendingCount(),
-    pendingIds: () => core.pendingIds(),
-    reset: () => core.reset(),
-  };
 }

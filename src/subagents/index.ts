@@ -8,7 +8,8 @@ import {
   notifyBackgroundChange,
   replaceBackgroundViewFeed,
 } from "./background";
-import { createDeliveryController, subscribeDeliveryLifecycle } from "./delivery";
+import { subscribeDeliveryLifecycle } from "./confirmed-delivery";
+import { createSubagentDeliveryCore } from "./delivery";
 import { listRetainedSubagentIds } from "./artifacts";
 import { reconcileChildPartitions } from "../anchored-edit/partitions";
 import { discoverSubagents, filterVisibleSubagents } from "./definitions";
@@ -61,10 +62,11 @@ export default function registerSubagents(
     state.registry = discoverSubagents(cwd);
   };
   state.refresh = refresh;
-  // Background results are delivered through the session-owned controller: it
-  // coalesces finished runs, delivers them only at a safe moment, and re-sends
-  // a result the parent never received.
-  const delivery = createDeliveryController({
+  // Background results are delivered through the session-owned core: the
+  // reliable-delivery core parameterized with the Subagent policy coalesces
+  // finished runs, delivers them only at a safe moment, and re-sends a result
+  // the parent never received.
+  const delivery = createSubagentDeliveryCore({
     pi,
     isIdle: () => state.sessionCtx?.isIdle() ?? true,
     notify: () => notifyBackgroundChange(state.background),

@@ -75,12 +75,14 @@ import { buildTrajectory, type ShadowTrajectoryEvidence } from "./trajectory";
 import { resolveShadowTools } from "./tools";
 import { createShadowResultStore, type ShadowResultStore } from "./result-store";
 import {
-  createShadowDeliveryController,
-  MAX_PENDING_RESULTS,
-  shadowNotificationResultIds,
+  DEFAULT_MAX_PENDING_RESULTS,
   subscribeDeliveryLifecycle,
   type DeliverySettleForwarding,
-  type ShadowDeliveryController,
+} from "../subagents/confirmed-delivery";
+import {
+  createShadowDeliveryCore,
+  shadowNotificationResultIds,
+  type ShadowDeliveryCore,
 } from "./delivery";
 import { createCompletionGate, type ShadowCompletionGate } from "./gate";
 
@@ -94,7 +96,7 @@ export interface ShadowMindsState {
   /** Deterministic automatic scheduling for this parent session. */
   scheduler: ShadowScheduler;
   /** Confirmed delivery of Shadow results as advisory evidence (#159). */
-  delivery?: ShadowDeliveryController;
+  delivery?: ShadowDeliveryCore;
   /** Bounded answer-after-review completion gate (#160). */
   gate?: ShadowCompletionGate;
   /** Current parent-run sequence used to bind manual activation provenance. */
@@ -747,7 +749,7 @@ export default function registerShadowMinds(
   // A headless drain makes every delivery quiet (no new turn); the gate
   // owns the held-settle bit itself.
   let draining = false;
-  const shadowDelivery = createShadowDeliveryController({
+  const shadowDelivery = createShadowDeliveryCore({
     pi,
     getResultStore: () => currentStore,
     timing: () => ({
@@ -1042,7 +1044,7 @@ export default function registerShadowMinds(
         // Drain compatible batches one at a time. Each batch is confirmed only
         // from an actual session entry; without confirmation, stop rather than
         // resend in a hot loop. The iteration cap is the pending hard bound.
-        for (let batch = 0; batch < MAX_PENDING_RESULTS && Date.now() < deadline; batch += 1) {
+        for (let batch = 0; batch < DEFAULT_MAX_PENDING_RESULTS && Date.now() < deadline; batch += 1) {
           const before = state.delivery?.pendingCount() ?? 0;
           if (before === 0) break;
           deliverySettleForwarding?.settle();

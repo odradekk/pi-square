@@ -21,7 +21,7 @@ const {
   startBackgroundJob,
   startBackgroundResumeJob,
 } = await loadBackgroundModule();
-const { createDeliveryController } = await loadDeliveryModule();
+const { createSubagentDeliveryCore } = await loadDeliveryModule();
 
 const ID = "subagent_00000000-0000-4000-8000-000000000021";
 
@@ -246,7 +246,7 @@ test("undelivered results survive job compaction and stay pending", async () => 
   const pi = createPiStub();
   // A parent that never becomes idle keeps every completion pending, which is
   // the state that job compaction must not destroy.
-  observed.state.delivery = createDeliveryController({ pi: pi.api, isIdle: () => false });
+  observed.state.delivery = createSubagentDeliveryCore({ pi: pi.api, isIdle: () => false });
   setRunSubagentTaskMock(async () => ({ content: "ACK", details: details("completed", { endedAt: 20, durationMs: 10 }) }));
 
   const total = 22;

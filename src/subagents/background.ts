@@ -5,7 +5,7 @@ import type { SubagentDefinition } from "./definitions";
 import { applyRunFailure, createSubagentError, normalizeSubagentError } from "./errors";
 import { type ChildViewEvent, type ChildViewFeed, createChildViewFeed, publishChildViewEvent } from "./transcript";
 import { resumeSubagentTask, runSubagentTask } from "./session";
-import { createDeliveryController, type DeliveryController } from "./delivery";
+import { createSubagentDeliveryCore, type SubagentDeliveryCore } from "./delivery";
 import type {
   ActiveSubagentConfig,
   BackgroundJobSnapshot,
@@ -37,12 +37,14 @@ export interface BackgroundState {
   onChange?: () => void;
   listeners: Set<() => void>;
   /**
-   * Owns the pending completion results and the explicit wait claims. It is
-   * attached by the session registrar and otherwise created on the first
-   * terminal completion when a Pi API is available; a state with neither
-   * (headless unit-test lifecycles) has nowhere to deliver and keeps none.
+   * Owns the pending completion results and the explicit wait claims: the
+   * reliable-delivery core parameterized with the Subagent delivery policy
+   * (odradekk/pi-square#372). It is attached by the session registrar and
+   * otherwise created on the first terminal completion when a Pi API is
+   * available; a state with neither (headless unit-test lifecycles) has
+   * nowhere to deliver and keeps none.
    */
-  delivery?: DeliveryController;
+  delivery?: SubagentDeliveryCore;
   /**
    * Session-scoped ephemeral live view feed (#306): ordered child view events
    * published by running jobs only while the roster controller observes their
@@ -159,10 +161,10 @@ function snapshot(job: BackgroundJob): BackgroundJobSnapshot {
  * neither an attached controller nor a Pi API (headless unit-test lifecycles)
  * has nowhere to deliver and receives none.
  */
-export function ensureDeliveryController(pi: ExtensionAPI | undefined, state: BackgroundState): DeliveryController | undefined {
+export function ensureDeliveryController(pi: ExtensionAPI | undefined, state: BackgroundState): SubagentDeliveryCore | undefined {
   if (state.delivery) return state.delivery;
   if (!pi) return undefined;
-  state.delivery = createDeliveryController({
+  state.delivery = createSubagentDeliveryCore({
     pi,
     notify: () => emitChange(state),
   });
@@ -180,10 +182,12 @@ function deliverCompletion(pi: ExtensionAPI | undefined, state: BackgroundState,
   if (job.status !== "completed" && job.status !== "failed" && job.status !== "aborted") return;
 
   const delivery = ensureDeliveryController(pi, state);
+  // The policy-bound core applies the aborted admission rule itself: an
+  // ordinary aborted run notifies nobody, while a waiter-owned one is stored
+  // for its claim.
   delivery?.enqueue({
     id: job.id,
-    status: job.status,
-    details: job.details,
+    value: { id: job.id, status: job.status, details: job.details },
   });
 }
 

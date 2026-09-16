@@ -9,14 +9,16 @@ const load = jiti(import.meta.url, { moduleCache: false });
 
 const {
   SHADOW_NOTIFICATION_TYPE,
-  MAX_BATCH_RESULTS,
-  MAX_PENDING_RESULTS,
   buildShadowDeliveryContent,
   shadowNotificationResultIds,
   resolveDeliveryDecision,
-  createShadowDeliveryController,
-  subscribeDeliveryLifecycle,
+  createShadowDeliveryCore,
 } = await load(join(packageRoot, "src", "shadow-minds", "delivery.ts"));
+const {
+  DEFAULT_MAX_BATCH_RESULTS,
+  DEFAULT_MAX_PENDING_RESULTS,
+  subscribeDeliveryLifecycle,
+} = await load(join(packageRoot, "src", "subagents", "confirmed-delivery.ts"));
 
 // ── resolveDeliveryDecision ────────────────────────────────────────
 
@@ -164,10 +166,10 @@ function makeResult(overrides = {}) {
   );
 }
 
-assert.equal(MAX_BATCH_RESULTS, 6, "batches coalesce at most six results");
-assert.equal(MAX_PENDING_RESULTS, 50, "the pending set stays bounded at fifty");
+assert.equal(DEFAULT_MAX_BATCH_RESULTS, 6, "batches coalesce at most six results");
+assert.equal(DEFAULT_MAX_PENDING_RESULTS, 50, "the pending set stays bounded at fifty");
 
-// ── createShadowDeliveryController ─────────────────────────────────
+// ── createShadowDeliveryCore ─────────────────────────────────
 
 function makeHarness(options = {}) {
   const sent = [];
@@ -178,7 +180,7 @@ function makeHarness(options = {}) {
     degraded: [],
     ...options.storeOps,
   };
-  const controller = createShadowDeliveryController({
+  const controller = createShadowDeliveryCore({
     pi: {
       sendMessage(message, sendOptions) {
         sendAttempts += 1;
@@ -221,6 +223,7 @@ function makeHarness(options = {}) {
   assert.equal(sent[0].sendOptions.triggerTurn, true);
   assert.equal(storeOps.sent[0], "shr-1", "the store records the pending handoff");
   assert.deepEqual(storeOps.delivered, [], "delivery is not confirmed before observation");
+  assert.ok(storeOps.changes.length > 0, "every pending-set change reaches the status refresh hook");
   controller.observeMessage({
     customType: SHADOW_NOTIFICATION_TYPE,
     details: { version: 1, results: [{ id: "shr-1", kind: "result" }] },
@@ -394,6 +397,48 @@ function makeHarness(options = {}) {
   controller.handleTurnEnd({});
   assert.equal(sent.length, 0, "a steer is bound to the run that triggered its activation, not the run in which it completed");
   assert.deepEqual(storeOps.degraded, ["shr-1"]);
+}
+
+{
+  // A pending entry bound to a task the user already superseded degrades at
+  // the next boundary even when that boundary is an aborted turn: the
+  // sweep runs before interruption state suppresses the flush.
+  let taskEpoch = 2;
+  const { controller, sent, storeOps } = makeHarness({
+    timing: () => ({ currentRun: 1, currentTaskEpoch: taskEpoch, parentRunning: true }),
+  });
+  controller.enqueueResult(makeResult({ configuredDelivery: "steer" }));
+  assert.equal(controller.pendingCount(), 1, "a busy parent holds the fresh steer for the boundary");
+  taskEpoch = 3; // the user steered a new task mid-run
+  controller.handleTurnEnd({ stopReason: "aborted" });
+  controller.handleAgentEnd([{ stopReason: "aborted" }]);
+  controller.handleAgentSettled();
+  assert.equal(sent.length, 0, "an aborted boundary never delivers");
+  assert.deepEqual(storeOps.degraded, ["shr-1"], "the superseded entry degrades at the aborted boundary");
+  assert.equal(controller.pendingCount(), 0, "the degraded entry leaves the delivery machine");
+}
+
+{
+  // Deleting an inbox entry retires its side record: a later sweep never
+  // degrades the deleted result a second time.
+  const { controller, storeOps } = makeHarness();
+  controller.enqueueResult(makeResult());
+  controller.remove("shr-1");
+  controller.enqueueResult(makeResult({ id: "shr-2" }));
+  assert.deepEqual(storeOps.degraded, [], "the deleted entry is not degraded again");
+}
+
+{
+  // A reset also clears quiet-send evidence: an ID observed after the reset
+  // can never confirm a delivery the reset already dropped.
+  const { controller, storeOps } = makeHarness({
+    timing: () => ({ currentRun: 1, currentTaskEpoch: 1, parentRunning: false, quiet: true }),
+  });
+  controller.enqueueResult(makeResult({ configuredDelivery: "wake" }));
+  controller.handleAgentSettled();
+  controller.reset();
+  assert.equal(controller.confirmQuietDeliveries(["shr-1"]), 0, "quiet evidence does not survive a reset");
+  assert.deepEqual(storeOps.delivered, [], "no deleted delivery is marked delivered");
 }
 
 {

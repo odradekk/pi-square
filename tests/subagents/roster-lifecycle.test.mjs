@@ -34,7 +34,7 @@ const {
 } = backgroundModule;
 const { registerSubagentTool } = toolModule;
 const { registerSubagentManager, __testables: managerTestables } = managerModule;
-const { createDeliveryController } = deliveryModule;
+const { createSubagentDeliveryCore } = deliveryModule;
 const { createSubagentBlockingCallRegistry } = waitModule;
 const { ensureArtifactsDir, initializeSessionFile, writeRunState } = artifactsModule;
 const { createChildViewFeed } = liveEventsModule;
@@ -242,7 +242,7 @@ function lifecycleHarness({ columns = 80, rows = 30, tuiMode = "regular", idle =
     inheritedSystemCore: undefined,
     config: undefined,
   };
-  const delivery = createDeliveryController({
+  const delivery = createSubagentDeliveryCore({
     pi,
     isIdle: () => state.sessionCtx?.isIdle() ?? true,
     notify: () => notifyBackgroundChange(state.background),
@@ -475,7 +475,7 @@ function finishJob(harness, job, status, extra = {}) {
     endedAt: 500_000,
     durationMs: 500_000 - job.details.startedAt,
   };
-  harness.state.background.delivery.enqueue({ id: job.id, status, details: job.details });
+  harness.state.background.delivery.enqueue({ id: job.id, value: { id: job.id, status, details: job.details } });
   harness.fireStore();
 }
 
@@ -1102,7 +1102,7 @@ test("store compaction stays the single retention authority; the roster follows 
     // One child carries an undelivered pending result before compaction ever
     // runs, so its exemption is in force for every cycle below.
     const survivor = jobs[0];
-    harness.state.background.delivery.enqueue({ id: survivor.id, status: "completed", details: survivor.details });
+    harness.state.background.delivery.enqueue({ id: survivor.id, value: { id: survivor.id, status: "completed", details: survivor.details } });
     assert.equal(harness.state.background.delivery.isPending(survivor.id), true);
 
     // Cancel every queued job through the real cancellation seam: each
@@ -1345,7 +1345,7 @@ test("session shutdown closes the overlay and keeps abort and delivery reset in 
     // An undelivered pending result exercises the delivery reset.
     const finished = jobFixture(id(2), "completed", 2, "crawler");
     harness.addChild(finished);
-    harness.state.background.delivery.enqueue({ id: id(2), status: "completed", details: finished.details });
+    harness.state.background.delivery.enqueue({ id: id(2), value: { id: id(2), status: "completed", details: finished.details } });
     assert.ok(harness.state.background.delivery.pendingCount() >= 1);
     // A live-view subscriber exercises the session-scoped feed teardown: no
     // subscriber of this parent session may survive past shutdown.
@@ -1381,7 +1381,7 @@ test("the viewer's own teardown never aborts children or resets delivery", async
     harness.addChild(running);
     const finished = jobFixture(id(2), "completed", 2, "crawler");
     harness.addChild(finished);
-    harness.state.background.delivery.enqueue({ id: id(2), status: "completed", details: finished.details });
+    harness.state.background.delivery.enqueue({ id: id(2), value: { id: id(2), status: "completed", details: finished.details } });
     const pendingBefore = harness.state.background.delivery.pendingCount();
 
     // The roster controller's stop is the viewer teardown alone: no session

@@ -8,10 +8,15 @@
  * atomic result-ownership operations for one explicit consumer (odradekk/pi-square#277):
  * claim, take, and release, synchronized with the automatic flush through the
  * sent-state, capacity, single-consumer, and eviction-exclusion guarantees.
- * The caller supplies result identity and payload, confirmation parsing,
- * optional batch compatibility grouping, message construction and sending, and
- * a pending-change hook for persistence — so the core assumes no particular
- * payload shape and carries no Subagent, display, or store semantics.
+ * The caller parameterizes the core with a delivery policy: result identity
+ * and payload, message construction and sending, confirmation parsing,
+ * optional batch compatibility grouping, an optional admission rule for which
+ * finished results enter the store at all, an optional gate re-check at each
+ * delivery boundary, an optional removal observer for the policy's own side
+ * records, and a pending-change hook for persistence — so the core assumes no
+ * particular payload shape and carries no Subagent, display, or store
+ * semantics. Callers hold the policy-parameterized core directly; no adapter
+ * redeclares the core's members (odradekk/pi-square#372).
  * Adapters that never claim keep exactly their previous automatic-delivery
  * semantics. The shared head/tail text budget (`clipWithHeadTail`) also lives
  * here for the Subagent and Shadow Minds adapters.
@@ -97,12 +102,16 @@ export interface ConfirmedDeliveryClaim<T> {
    */
   take(): (T | undefined)[];
   /**
-   * Gives up ownership without consuming. A stored result whose `keep` is
-   * true stays in the store as an unsent entry eligible for the normal
-   * automatic-delivery schedule; every other stored result is removed from
-   * delivery storage, and reservations without a stored result are dropped.
+   * Gives up ownership without consuming. The core's configured release
+   * policy decides per stored result: a kept result stays in the store as an
+   * unsent entry eligible for the normal automatic-delivery schedule, every
+   * other stored result is removed from delivery storage, and reservations
+   * without a stored result are dropped. The caller cannot override the
+   * policy at the call site, so an adapter's release rule (such as the
+   * aborted-result drop) holds for every consumer; with no policy
+   * configured, every stored result leaves delivery storage.
    */
-  release(keep: (value: T) => boolean): void;
+  release(): void;
 }
 
 export interface ConfirmedDeliveryCore<T> extends ConfirmedDeliveryLifecycle {
@@ -168,6 +177,38 @@ export function createConfirmedDeliveryCore<T>(options: {
   send: (batch: ConfirmedDeliveryBatchEntry<T>[], resent: boolean) => void;
   /** Reads the result identities one delivered message carries; empty when the message is foreign. */
   confirmIds: (message: unknown) => string[];
+  /**
+   * Optional admission policy: false means the finished result enters no store
+   * and produces no delivery side effects at all. The core hands the policy
+   * its own claim lookup so an admission rule can consult ownership it cannot
+   * see from the value alone (odradekk/pi-square#372).
+   */
+  accepts?: (input: { id: string; value: T }, isClaimed: (id: string) => boolean) => boolean;
+  /**
+   * Optional gate re-check at each delivery boundary (turn end and natural
+   * settle), before interruption state is applied and before any batch is
+   * selected — the boundary may still turn out interrupted and flush nothing.
+   * A policy whose send eligibility varies over time (a source-run or task
+   * gate) drops entries that went stale here, so they never join a batch.
+   */
+  beforeFlush?: () => void;
+  /**
+   * Optional removal observer through which a policy retires its own side
+   * records. Fired with `confirmed` after transcript confirmation removed the
+   * entries (after the pending-change hook), with `removed` on every explicit
+   * removal request, and with `reset` after the store was cleared. Silent
+   * pending-cap eviction fires nothing; a policy reconciles that case at its
+   * next boundary check.
+   */
+  onEntriesRemoved?: (ids: readonly string[], reason: "confirmed" | "removed" | "reset") => void;
+  /**
+   * Optional release routing consulted on every release: true rejoins the
+   * automatic schedule, false leaves delivery storage. The only release
+   * rule the core applies — the claim surface takes no per-call override —
+   * so an adapter's policy such as the aborted-result drop holds for every
+   * consumer (odradekk/pi-square#372).
+   */
+  releaseKeep?: (value: T) => boolean;
   /**
    * Optional compatibility key: only results sharing the key of the oldest
    * unsent entry are coalesced into one message. Omitted means every result
@@ -255,6 +296,9 @@ export function createConfirmedDeliveryCore<T>(options: {
 
   return {
     enqueue(input) {
+      // The admission policy decides first: a refused result enters no store
+      // and produces no side effects at all.
+      if (options.accepts && !options.accepts(input, (id) => reservations.has(id))) return;
       const existing = pending.get(input.id);
       pending.set(input.id, {
         id: input.id,
@@ -281,6 +325,10 @@ export function createConfirmedDeliveryCore<T>(options: {
       // claim operation is checked against the identity's current owner.
       const hadReservation = reservations.delete(id);
       const hadEntry = pending.delete(id);
+      // Fired on every explicit removal request, whether or not an entry was
+      // stored: a policy retires its side records before the change hook, as a
+      // wrapping adapter did.
+      options.onEntriesRemoved?.([id], "removed");
       if (hadReservation || hadEntry) notify();
     },
 
@@ -357,19 +405,20 @@ export function createConfirmedDeliveryCore<T>(options: {
             if (changed) notify();
             return values;
           },
-          release(keep) {
+          release() {
             if (!reservation.active) return;
             // Same ownership capture as take(): only entries this claim still
             // owns are routed back to the automatic schedule or dropped.
             const ownedIds = new Set(reservation.ids.filter((id) => reservations.get(id) === reservation));
             finish();
+            const keepEntry = options.releaseKeep ?? (() => false);
             let changed = false;
             let releasedUnsent = false;
             for (const id of reservation.ids) {
               if (!ownedIds.has(id)) continue;
               const entry = pending.get(id);
               if (!entry?.claimed) continue;
-              if (keep(entry.value)) {
+              if (keepEntry(entry.value)) {
                 entry.claimed = false;
                 entry.sent = false;
                 releasedUnsent = true;
@@ -401,10 +450,17 @@ export function createConfirmedDeliveryCore<T>(options: {
       for (const id of ids) {
         if (pending.delete(id)) changed = true;
       }
-      if (changed) notify();
+      if (!changed) return;
+      notify();
+      // A policy retires its side records only after the pending-change hook,
+      // matching the order a wrapping adapter used to apply.
+      options.onEntriesRemoved?.(ids, "confirmed");
     },
 
     handleTurnEnd(message) {
+      // The policy re-checks its gate before interruption state is applied:
+      // stale entries leave even when this boundary turns out aborted.
+      options.beforeFlush?.();
       if (isAbortedMessage(message)) interrupted = true;
       if (interrupted) return;
       flush();
@@ -419,6 +475,7 @@ export function createConfirmedDeliveryCore<T>(options: {
     },
 
     handleAgentSettled() {
+      options.beforeFlush?.();
       // The consumer drains its queues before it settles, so a result that is
       // still unconfirmed here was discarded (an interruption clears queues).
       let lost = false;
@@ -449,10 +506,11 @@ export function createConfirmedDeliveryCore<T>(options: {
       // well: claims never survive into another consumer session.
       for (const reservation of reservations.values()) reservation.active = false;
       reservations.clear();
-      const had = pending.size > 0;
+      const ids = [...pending.keys()];
       pending.clear();
       interrupted = false;
-      if (had) notify();
+      options.onEntriesRemoved?.(ids, "reset");
+      if (ids.length > 0) notify();
     },
   };
 }

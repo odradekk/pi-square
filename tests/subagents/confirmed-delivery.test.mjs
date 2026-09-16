@@ -47,6 +47,10 @@ function harness(options = {}) {
     ...(options.maxBatch ? { maxBatch: options.maxBatch } : {}),
     ...(options.maxPending ? { maxPending: options.maxPending } : {}),
     ...(options.maxReservations ? { maxReservations: options.maxReservations } : {}),
+    ...(options.accepts ? { accepts: options.accepts } : {}),
+    ...(options.beforeFlush ? { beforeFlush: options.beforeFlush } : {}),
+    ...(options.onEntriesRemoved ? { onEntriesRemoved: options.onEntriesRemoved } : {}),
+    ...(options.releaseKeep ? { releaseKeep: options.releaseKeep } : {}),
     isIdle: () => idle,
     onPendingChange: () => { changes += 1; },
   });
@@ -205,6 +209,28 @@ test("remove and reset drop results without delivering them", () => {
   assert.equal(probe.sent.length, 0);
 });
 
+
+test("an aborted message in the run's final messages suppresses delivery until the next run", () => {
+  const probe = harness({ idle: false });
+  probe.core.enqueue({ id: "during-run", value: "v" });
+  probe.core.handleTurnEnd({ stopReason: "endTurn" });
+  assert.equal(probe.sent.length, 1, "the natural turn boundary delivers normally");
+
+  // The run's message array carries an aborted message (a mid-run steer);
+  // the messages boundary latches the interruption even though no aborted
+  // turn end was observed.
+  probe.core.handleAgentEnd([{ stopReason: "endTurn" }, { stopReason: "aborted" }]);
+  probe.core.handleAgentSettled();
+  assert.equal(probe.sent.length, 1, "a run that included an aborted message settles silently");
+
+  probe.setIdle(true);
+  probe.core.enqueue({ id: "after-abort", value: "v2" });
+  assert.equal(probe.sent.length, 1, "later completions are held while the interruption stands");
+
+  probe.core.handleAgentStart();
+  probe.core.handleTurnEnd({ stopReason: "endTurn" });
+  assert.equal(probe.sent.length, 2, "the next run boundary delivers everything held");
+});
 test("re-enqueueing an identity keeps its original completion position", () => {
   const probe = harness({ idle: false });
   probe.core.enqueue({ id: "a", value: "first" });
@@ -253,7 +279,7 @@ test("a claim of an unsent pending result excludes it from flush and batch selec
 });
 
 test("an already-claimed identity rejects the complete request atomically", () => {
-  const probe = harness({ idle: false });
+  const probe = harness({ idle: false, releaseKeep: () => true });
   probe.core.enqueue({ id: "kept", value: "v" });
   probe.core.enqueue({ id: "later", value: "v" });
 
@@ -269,7 +295,7 @@ test("an already-claimed identity rejects the complete request atomically", () =
   const third = probe.core.claim(["unrelated"]);
   assert.equal(third.ok, true, "a rejected claim leaves other identities claimable");
 
-  first.claim.release(() => true);
+  first.claim.release();
   probe.core.handleTurnEnd();
   assert.deepEqual(probe.last().ids, ["kept", "later"], "released unsent entries rejoin the schedule");
 });
@@ -325,14 +351,14 @@ test("take consumes the claimed set in request order and removes it from the sto
   assert.equal(probe.sent.length, 0, "a taken result is never delivered again");
 });
 
-test("release routes by the caller's keep policy and drops the rest", () => {
-  const probe = harness({ idle: false });
+test("release routes by the configured keep policy and drops the rest", () => {
+  const probe = harness({ idle: false, releaseKeep: (value) => String(value).startsWith("keep:") });
   probe.core.enqueue({ id: "done", value: "keep:done" });
   probe.core.enqueue({ id: "stopped", value: "drop:stopped" });
   const active = probe.core.claim(["running", "done", "stopped"]);
   assert.equal(active.ok, true);
 
-  active.claim.release((value) => String(value).startsWith("keep:"));
+  active.claim.release();
   assert.equal(probe.core.isClaimed("running"), false, "an unstored reservation is dropped");
   assert.equal(probe.core.isPending("done"), true, "a kept result stays in the store");
   assert.equal(probe.core.isPending("stopped"), false, "a dropped result leaves delivery storage");
@@ -340,6 +366,24 @@ test("release routes by the caller's keep policy and drops the rest", () => {
 
   probe.core.handleTurnEnd();
   assert.deepEqual(probe.last().ids, ["done"], "the kept result rejoins the automatic schedule");
+});
+
+test("release consults the configured keep policy, and drops everything with none", () => {
+  const probe = harness({ idle: false, releaseKeep: (value) => String(value).startsWith("keep:") });
+  probe.core.enqueue({ id: "done", value: "keep:done" });
+  probe.core.enqueue({ id: "stopped", value: "drop:stopped" });
+  const active = probe.core.claim(["done", "stopped"]);
+  assert.equal(active.ok, true);
+  active.claim.release();
+  assert.equal(probe.core.isPending("done"), true, "the policy keeps the deliverable result for the automatic schedule");
+  assert.equal(probe.core.isPending("stopped"), false, "the policy drops every other stored result");
+
+  // With no policy configured, a release drops everything.
+  const bare = harness({ idle: false });
+  bare.core.enqueue({ id: "solo", value: "v" });
+  const third = bare.core.claim(["solo"]);
+  third.claim.release();
+  assert.equal(bare.core.isPending("solo"), false, "no policy leaves nothing in delivery storage");
 });
 
 test("remove and reset clear outstanding claims with the pending set", () => {
@@ -382,7 +426,7 @@ test("a removed identity can be re-claimed and the previous holder cannot touch 
   // The stale handle can neither take nor release the new owner's result.
   assert.deepEqual(first.claim.take(), [undefined]);
   assert.equal(probe.core.isPending("shared"), true, "the take left the new owner's entry alone");
-  first.claim.release(() => true);
+  first.claim.release();
   assert.equal(second.claim.holds("shared"), true, "the release left the new owner's claim alone");
 
   assert.deepEqual(second.claim.take(), ["second-owner"], "only the current owner consumes the result");
@@ -513,5 +557,127 @@ test("with caller-forwarded settles, the settled event stays unwired and the han
   assert.equal(probe.sent.length, 1, "the caller's forwarded settle flushes the pending result");
   assert.deepEqual(probe.last().ids, ["r1"]);
 });
+// ─── Policy hooks (odradekk/pi-square#372) ────────────────────────────
+//
+// The adapters parameterize the core with a delivery policy instead of
+// wrapping it: an admission rule, a boundary gate re-check, and a removal
+// observer for the policy's own side records.
+
+test("the admission policy runs before any store change and its refusal is silent", () => {
+  const seen = [];
+  const probe = harness({
+    accepts: (input, isClaimed) => {
+      seen.push([input.id, isClaimed(input.id)]);
+      return input.value !== "skip";
+    },
+  });
+  probe.core.enqueue({ id: "skip-1", value: "skip" });
+  assert.equal(probe.core.pendingCount(), 0, "a refused result enters no store");
+  assert.equal(probe.sent.length, 0, "a refused result never sends");
+  assert.equal(probe.changes(), 0, "a refused result fires no pending-change hook");
+
+  probe.core.enqueue({ id: "keep-1", value: "v" });
+  assert.equal(probe.core.pendingCount(), 1);
+  assert.deepEqual(probe.last().ids, ["keep-1"]);
+  assert.deepEqual(seen, [["skip-1", false], ["keep-1", false]], "the policy sees the core's claim lookup");
+});
+
+test("the admission policy can consult ownership through the claim lookup", () => {
+  const probe = harness({
+    idle: false,
+    accepts: (input, isClaimed) => input.value.kind !== "aborted" || isClaimed(input.id),
+  });
+  probe.core.enqueue({ id: "plain", value: { kind: "done" } });
+  probe.core.enqueue({ id: "stopped", value: { kind: "aborted" } });
+  assert.equal(probe.core.isPending("plain"), true);
+  assert.equal(probe.core.isPending("stopped"), false, "an unclaimed aborted result stays out of the store");
+
+  const claim = probe.core.claim(["owned-stop"]);
+  assert.equal(claim.ok, true);
+  probe.core.enqueue({ id: "owned-stop", value: { kind: "aborted" } });
+  assert.equal(probe.core.isPending("owned-stop"), true, "a waiter-owned aborted result is admitted for its claim");
+  assert.deepEqual(claim.claim.take(), [{ kind: "aborted" }]);
+});
+
+test("the boundary gate re-check runs at turn end and settle, even an interrupted boundary", () => {
+  let boundaries = 0;
+  const probe = harness({ idle: false, beforeFlush: () => { boundaries += 1; } });
+  probe.core.enqueue({ id: "r1", value: "v" });
+  assert.equal(boundaries, 0, "an enqueue is no delivery boundary");
+  probe.core.handleTurnEnd({ stopReason: "tool_use" });
+  assert.equal(boundaries, 1);
+  probe.core.handleTurnEnd({ stopReason: "aborted" });
+  assert.equal(boundaries, 2, "an aborted boundary still re-checks the gate before suppressing delivery");
+  probe.core.handleAgentEnd([{ stopReason: "aborted" }]);
+  probe.core.handleAgentSettled();
+  assert.equal(boundaries, 3, "a settle re-checks the gate");
+});
+
+test("the boundary gate re-check drops stale entries before the core selects a batch", () => {
+  let probe;
+  probe = harness({
+    idle: false,
+    beforeFlush: () => {
+      if (probe.core.isPending("stale")) probe.core.remove("stale");
+    },
+  });
+  probe.core.enqueue({ id: "stale", value: "v" });
+  probe.core.enqueue({ id: "fresh", value: "v2" });
+  probe.core.handleTurnEnd({ stopReason: "tool_use" });
+  assert.deepEqual(probe.last().ids, ["fresh"], "the stale entry never joins the batch");
+});
+
+test("the removal observer distinguishes confirmation, explicit removal, and reset with the change-hook order", () => {
+  const events = [];
+  let probe;
+  probe = harness({
+    idle: false,
+    onEntriesRemoved: (ids, reason) => { events.push({ ids, reason, changesAt: probe.changes() }); },
+  });
+  probe.core.enqueue({ id: "a", value: "v" });
+  probe.core.enqueue({ id: "b", value: "v" });
+  probe.core.handleTurnEnd({ stopReason: "tool_use" });
+  probe.confirm(["a"]);
+
+  assert.equal(events.length, 1);
+  assert.equal(events[0].reason, "confirmed");
+  assert.deepEqual(events[0].ids, ["a"]);
+  const changesAfterConfirm = probe.changes();
+  assert.equal(events[0].changesAt, changesAfterConfirm, "a confirmation retires the entry after the change hook");
+
+  probe.core.remove("b");
+  assert.equal(events[1].reason, "removed");
+  assert.deepEqual(events[1].ids, ["b"]);
+  assert.equal(events[1].changesAt, changesAfterConfirm, "an explicit removal retires the entry before the change hook");
+  assert.ok(probe.changes() > events[1].changesAt, "the removal still notifies the change hook");
+
+  probe.core.enqueue({ id: "c", value: "v" });
+  probe.core.reset();
+  assert.equal(events[2].reason, "reset");
+  assert.deepEqual(events[2].ids, ["c"]);
+});
+
+test("silent pending-cap eviction fires no removal event", () => {
+  const events = [];
+  const probe = harness({
+    idle: false,
+    maxPending: 2,
+    onEntriesRemoved: (_ids, reason) => { events.push(reason); },
+  });
+  for (let index = 0; index < 4; index += 1) probe.core.enqueue({ id: `r${index}`, value: `v${index}` });
+  assert.equal(probe.core.pendingCount(), 2);
+  assert.equal(events.length, 0, "eviction stays silent; the policy reconciles it at its next boundary check");
+});
+
+test("the default pending bound drops the oldest results first", () => {
+  const probe = harness({ idle: false });
+  for (let index = 0; index < DEFAULT_MAX_PENDING_RESULTS + 5; index += 1) {
+    probe.core.enqueue({ id: `r${index}`, value: `v${index}` });
+  }
+  assert.equal(probe.core.pendingCount(), DEFAULT_MAX_PENDING_RESULTS);
+  assert.equal(probe.core.isPending("r0"), false, "the oldest results leave first");
+  assert.equal(probe.core.isPending(`r${DEFAULT_MAX_PENDING_RESULTS + 4}`), true);
+});
+
 
 await run();

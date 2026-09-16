@@ -41,9 +41,11 @@ follow from that design, both reproduced against a live Pi 0.84.2 session:
 
 ### pi-square owns the pending set
 
-`src/subagents/delivery.ts` owns every finished `done` or `error` run until the
-parent confirms it. The background lifecycle no longer calls `sendMessage`; it
-hands the run to the controller.
+The confirmed-delivery core (`src/subagents/confirmed-delivery.ts`) owns every
+finished `done` or `error` run until the parent confirms it; since #372,
+`src/subagents/delivery.ts` is the Subagent delivery policy bound to that core.
+The background lifecycle no longer calls `sendMessage`; it hands the run to
+the policy-parameterized core the session holds.
 
 ### Delivery happens only at a safe moment
 

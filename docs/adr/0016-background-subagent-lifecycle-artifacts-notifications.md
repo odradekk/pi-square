@@ -289,9 +289,10 @@ The confirmed-delivery core gains atomic claim, take, and release operations,
 and the parent gains `wait_subagent` as the ordered, bounded consumer of
 claimed terminal results (#277). The core owns what is genuinely shared —
 synchronization with the automatic flush, the sent-state check, capacity, and
-the single-consumer guarantee — while the Subagent adapter owns job
-eligibility, terminal-state mapping, result formatting, and the
-aborted-result policy.
+the single-consumer guarantee — while the Subagent delivery policy (#372) owns
+job eligibility, terminal-state mapping, result formatting, and the
+aborted-result policy, bound to the core through its admission and
+release-policy hooks.
 
 - `wait_subagent` accepts a strict `ids` array of one to six public IDs,
   deduplicates repeated IDs in first-occurrence order, and validates the

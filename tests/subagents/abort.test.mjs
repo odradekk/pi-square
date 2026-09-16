@@ -19,7 +19,7 @@ import {
 
 const { registerAbortSubagentTool } = await loadAbortModule();
 const { cancelBackgroundJobs, createBackgroundState, createQueuedJob, notifyBackgroundChange, startBackgroundJob } = await loadBackgroundModule();
-const { createDeliveryController } = await loadDeliveryModule();
+const { createSubagentDeliveryCore } = await loadDeliveryModule();
 const loadLocal = jiti(import.meta.url, { moduleCache: false });
 const { createSubagentBlockingCallRegistry, registerWaitSubagentTool } = await loadLocal(join(
   import.meta.dirname, "..", "..", "src", "subagents", "wait.ts",
@@ -56,7 +56,7 @@ function createHarness(options = {}) {
   const pi = createPiRecorder();
   const sent = [];
   let busy = options.busy ?? false;
-  const delivery = createDeliveryController({
+  const delivery = createSubagentDeliveryCore({
     pi: { sendMessage(message, opts) { sent.push({ message, opts }); } },
     isIdle: () => !busy,
     notify: () => notifyBackgroundChange(state.background),
@@ -121,7 +121,7 @@ function createHarness(options = {}) {
         job.details.error = overrides.error ?? `Subagent failed: ${status === "aborted" ? "ABORTED" : "SUBAGENT_FAILED"}\nMessage: ${status}`;
       }
       job.details.endedAt = Date.now();
-      delivery.enqueue({ id: job.id, status, details: job.details });
+      delivery.enqueue({ id: job.id, value: { id: job.id, status, details: job.details } });
     },
   };
 }
