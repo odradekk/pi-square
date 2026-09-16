@@ -18,7 +18,7 @@ import {
 } from "./lib/test-helpers.mjs";
 
 const { registerAbortSubagentTool } = await loadAbortModule();
-const { cancelBackgroundJobs, createBackgroundState, createQueuedJob, notifyBackgroundChange, startBackgroundJob } = await loadBackgroundModule();
+const { attachDeliveryController, cancelBackgroundJobs, createBackgroundState, createQueuedJob, notifyBackgroundChange, startBackgroundJob } = await loadBackgroundModule();
 const { createSubagentDeliveryCore } = await loadDeliveryModule();
 const loadLocal = jiti(import.meta.url, { moduleCache: false });
 const { createSubagentBlockingCallRegistry, registerWaitSubagentTool } = await loadLocal(join(
@@ -349,7 +349,7 @@ test("a cancelling target is a valid active target and the tool waits for aborte
   await waitFor(() => probe.state.background.jobs.get(publicId)?.status === "running", "job running");
 
   // The manager Cancel seam moves the run to cancelling while it stays in flight.
-  cancelBackgroundJobs({ pi: probe.pi.api, state: probe.state.background, id: publicId });
+  cancelBackgroundJobs({ state: probe.state.background, id: publicId });
   assert.equal(probe.state.background.jobs.get(publicId).status, "cancelling");
 
   const pending = probe.abortTool.execute("abort", { ids: [publicId] }, undefined, undefined, probe.ctx);

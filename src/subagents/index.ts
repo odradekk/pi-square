@@ -4,6 +4,7 @@ import type { PromptManagerSegment } from "../prompt-manager/types";
 import type { DisplayRuntimeProvider } from "../display/tool-renderer";
 import {
   abortAllBackgroundJobs,
+  attachDeliveryController,
   createBackgroundState,
   notifyBackgroundChange,
   replaceBackgroundViewFeed,
@@ -50,9 +51,22 @@ export default function registerSubagents(
   runtime?: DisplayRuntimeProvider,
   config?: () => PiSquareConfig,
 ): SubagentFeature {
+  // Background results are delivered through the session-owned core: the
+  // reliable-delivery core parameterized with the Subagent policy coalesces
+  // finished runs, delivers them only at a safe moment, and re-sends a result
+  // the parent never received. The core is created here, at registration,
+  // through its single factory and attached to the job store immediately —
+  // the session state has exactly one delivery creation path (#373), so no
+  // later reader needs an optional chain.
+  const delivery = createSubagentDeliveryCore({
+    pi,
+    isIdle: () => state.sessionCtx?.isIdle() ?? true,
+    notify: () => notifyBackgroundChange(background),
+  });
+  const background = attachDeliveryController(createBackgroundState(), delivery);
   const state: SubagentRuntimeState = {
     registry: { definitions: [], invalid: [], errors: [], projectDir: null },
-    background: createBackgroundState(),
+    background,
     sessionCtx: undefined,
     inheritedSystemCore: undefined,
     config,
@@ -62,20 +76,10 @@ export default function registerSubagents(
     state.registry = discoverSubagents(cwd);
   };
   state.refresh = refresh;
-  // Background results are delivered through the session-owned core: the
-  // reliable-delivery core parameterized with the Subagent policy coalesces
-  // finished runs, delivers them only at a safe moment, and re-sends a result
-  // the parent never received.
-  const delivery = createSubagentDeliveryCore({
-    pi,
-    isIdle: () => state.sessionCtx?.isIdle() ?? true,
-    notify: () => notifyBackgroundChange(state.background),
-  });
   // Outstanding blocking subagent calls are session-scoped: a replacement,
   // reload, or shutdown terminates every one of them, and the delivery reset
   // clears any memory-only wait claims.
   const blockingCallRegistry = createSubagentBlockingCallRegistry();
-  state.background.delivery = delivery;
   // The roster ticks through the display runtime's session motion scheduler,
   // resolved at each session start because a replacement session rebuilds the
   // runtime; motion `off` and downgraded environments never schedule a timer.
@@ -155,7 +159,7 @@ export default function registerSubagents(
     state.background.viewFeed?.clear();
     roster.stop();
     blockingCallRegistry.terminateAll("session shutdown");
-    abortAllBackgroundJobs(pi, state.background);
+    abortAllBackgroundJobs(state.background);
     delivery.reset();
     state.sessionCtx = undefined;
     state.inheritedSystemCore = undefined;

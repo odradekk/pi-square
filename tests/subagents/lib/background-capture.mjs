@@ -34,7 +34,6 @@ export const abortAllBackgroundJobs = real.abortAllBackgroundJobs;
 export const cancelBackgroundJobs = real.cancelBackgroundJobs;
 export const createQueuedJob = real.createQueuedJob;
 export const createQueuedResumeJob = real.createQueuedResumeJob;
-export const ensureDeliveryController = real.ensureDeliveryController;
 export const listBackgroundJobs = real.listBackgroundJobs;
 export const notifyBackgroundChange = real.notifyBackgroundChange;
 export const replaceBackgroundViewFeed = real.replaceBackgroundViewFeed;

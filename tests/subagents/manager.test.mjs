@@ -20,7 +20,8 @@ const packageRoot = resolve(import.meta.dirname, "..", "..");
 const load = jiti(import.meta.url, { moduleCache: false });
 const { discoverSubagents } = await load(join(packageRoot, "src", "subagents", "definitions.ts"));
 const { registerSubagentManager, __testables } = await load(join(packageRoot, "src", "subagents", "manager.ts"));
-const { createBackgroundState, createQueuedJob } = await load(join(packageRoot, "src", "subagents", "background.ts"));
+const { attachDeliveryController, createBackgroundState, createQueuedJob } = await load(join(packageRoot, "src", "subagents", "background.ts"));
+const { createSubagentDeliveryCore } = await load(join(packageRoot, "src", "subagents", "delivery.ts"));
 const {
   SubagentManager,
   createProductionServices,
@@ -273,7 +274,7 @@ test("parameterized command emits a custom guide then the raw user request as on
   const events = [];
   const state = {
     registry: discoverSubagents(packageRoot),
-    background: { jobs: new Map(), listeners: new Set() },
+    background: attachDeliveryController(createBackgroundState(), createSubagentDeliveryCore({ pi: { sendMessage() {} } })),
     refresh() {},
   };
   const pi = {
@@ -303,7 +304,7 @@ test("no-argument command opens one non-overlay manager for a stable parent sess
   let customOptions = "unset";
   const state = {
     registry: discoverSubagents(packageRoot),
-    background: { jobs: new Map(), listeners: new Set() },
+    background: attachDeliveryController(createBackgroundState(), createSubagentDeliveryCore({ pi: { sendMessage() {} } })),
     refresh() {},
   };
   const pi = {
@@ -523,7 +524,7 @@ test("the manager lists and cancels only current-parent-session active jobs", ()
   const foreignId = "subagent_22222222-2222-4222-8222-222222222222";
   const state = {
     registry: { definitions: [], invalid: [], errors: [], projectDir: null },
-    background: createBackgroundState(),
+    background: attachDeliveryController(createBackgroundState(), createSubagentDeliveryCore({ pi: { sendMessage() {} } })),
   };
   createQueuedJob({
     state: state.background,
@@ -565,7 +566,7 @@ test("manager cancel re-reads the live job and refuses a finished one", () => {
   const currentId = "subagent_33333333-3333-4333-8333-333333333333";
   const state = {
     registry: { definitions: [], invalid: [], errors: [], projectDir: null },
-    background: createBackgroundState(),
+    background: attachDeliveryController(createBackgroundState(), createSubagentDeliveryCore({ pi: { sendMessage() {} } })),
   };
   const job = createQueuedJob({
     state: state.background,

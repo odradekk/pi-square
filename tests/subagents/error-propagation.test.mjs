@@ -53,7 +53,8 @@ const load = jiti(import.meta.url, {
   alias: { "@earendil-works/pi-coding-agent": mockSdkPath },
 });
 const { registerSubagentTool } = await load(join(packageRoot, "src", "subagents", "tool.ts"));
-const { createBackgroundState } = await load(join(packageRoot, "src", "subagents", "background.ts"));
+const { attachDeliveryController, createBackgroundState } = await load(join(packageRoot, "src", "subagents", "background.ts"));
+const { createSubagentDeliveryCore } = await load(join(packageRoot, "src", "subagents", "delivery.ts"));
 process.env.PI_AGENT_DIR = root;
 mkdirSync(root, { recursive: true });
 
@@ -64,13 +65,17 @@ test("background envelope exposes silent child tool failures as a structured err
     background: createBackgroundState(),
   };
   const tools = new Map();
-  registerSubagentTool({
+  const pi = {
     registerTool(definition) { tools.set(definition.name, definition); },
     registerMessageRenderer() {},
     registerCommand() {},
     sendMessage(message, options) { sent.push({ message, options }); },
     getThinkingLevel() { return "off"; },
-  }, state);
+  };
+  // The session delivery core enters only through the single creation path
+  // (#373), attached exactly as the registration root attaches it.
+  attachDeliveryController(state.background, createSubagentDeliveryCore({ pi }));
+  registerSubagentTool(pi, state);
   const result = await tools.get("delegate_subagent").execute(
     "tool:error",
     { task: "trigger failures" },

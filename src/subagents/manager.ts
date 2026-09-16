@@ -235,8 +235,8 @@ function snapshot(state: SubagentRuntimeState, parentSessionId: string): Manager
     running: activeJobs(state, parentSessionId),
     session,
     activeSessionIds: session.filter((run) => isRunLeaseActive(run.id)).map((run) => run.id),
-    undeliveredIds: state.background.delivery?.pendingIds() ?? [],
-    claimedIds: state.background.delivery?.pendingIds().filter((id) => state.background.delivery?.isClaimed(id)) ?? [],
+    undeliveredIds: state.background.delivery.pendingIds(),
+    claimedIds: state.background.delivery.pendingIds().filter((id) => state.background.delivery.isClaimed(id)),
     definitions: [...state.registry.definitions].sort((a, b) => a.name.localeCompare(b.name)),
     invalid: [...state.registry.invalid].sort((a, b) => a.id.localeCompare(b.id)),
     errors: [...state.registry.errors],
@@ -311,7 +311,7 @@ function createProductionServices(
       if (job.status !== "queued" && job.status !== "running" && job.status !== "cancelling") {
         return { ok: false, message: `Background subagent ${shortId(id)} already finished as ${job.status}.` };
       }
-      cancelBackgroundJobs({ pi, state: state.background, id, reason: "Canceled from /subagent manager." });
+      cancelBackgroundJobs({ state: state.background, id, reason: "Canceled from /subagent manager." });
       return { ok: true, message: `Cancellation requested for ${job.details.agent?.name ?? "generic"} ${shortId(id)}.` };
     },
     queueResume(id, task) {
@@ -323,13 +323,13 @@ function createProductionServices(
       // An unconsumed prior result or an explicit wait claim blocks resume for
       // the same reason the model tool rejects it: a new run under the same
       // public ID would overwrite output the parent has not seen.
-      if (state.background.delivery?.isClaimed(id)) {
+      if (state.background.delivery.isClaimed(id)) {
         return {
           ok: false,
           message: `Subagent '${shortId(id)}' is claimed by an active wait_subagent call; wait for it to consume the result before resuming.`,
         };
       }
-      if (state.background.delivery?.isPending(id)) {
+      if (state.background.delivery.isPending(id)) {
         return {
           ok: false,
           message: `Subagent '${shortId(id)}' has an undelivered result; wait for the background completion delivery or consume it with wait_subagent before resuming.`,
@@ -337,7 +337,6 @@ function createProductionServices(
       }
       const job = createQueuedResumeJob({ state: state.background, details, task, parentSessionId });
       startBackgroundResumeJob({
-        pi,
         state: state.background,
         job,
         ctx,
@@ -374,7 +373,6 @@ function createProductionServices(
         definition,
       });
       startBackgroundJob({
-        pi,
         state: state.background,
         job,
         ctx,
@@ -397,7 +395,7 @@ function createProductionServices(
         deleteParentSessionRun(parentSessionId, id, ctx.sessionManager?.getSessionDir?.() ?? "");
         // Deleting the history states that this result is no longer wanted, so
         // it also leaves the pending delivery set.
-        state.background.delivery?.remove(id);
+        state.background.delivery.remove(id);
         return { ok: true, message: `Deleted subagent history ${shortId(id)}.` };
       } catch (error) {
         return { ok: false, message: error instanceof Error ? error.message : String(error) };

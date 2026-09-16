@@ -242,7 +242,6 @@ export function registerSubagentTool(
       // into its running phase before the caller observes it.
       const queuedDetails = { ...job.details, timeline: [...job.details.timeline] };
       startBackgroundJob({
-        pi,
         state: state.background,
         job,
         ctx,
@@ -317,7 +316,7 @@ export function registerSubagentTool(
       // An unconsumed prior result blocks resume because the pending set is
       // keyed by public ID: a new run under the same ID would enqueue a fresh
       // result that overwrites output the parent has not received yet.
-      if (state.background.delivery?.isClaimed(id)) {
+      if (state.background.delivery.isClaimed(id)) {
         return failureToolResult(createSubagentError({
           code: "RESULT_CLAIMED",
           message: `Subagent '${id}' is claimed by an active wait_subagent call and cannot be resumed.`,
@@ -327,7 +326,7 @@ export function registerSubagentTool(
           suggestedAction: "Let the wait consume the result, then resume the child.",
         }));
       }
-      if (state.background.delivery?.isPending(id)) {
+      if (state.background.delivery.isPending(id)) {
         return failureToolResult(createSubagentError({
           code: "RESULT_PENDING",
           message: `Subagent '${id}' still has an undelivered result and cannot be resumed.`,
@@ -346,7 +345,6 @@ export function registerSubagentTool(
       });
       const queuedDetails = { ...job.details, timeline: [...job.details.timeline] };
       startBackgroundResumeJob({
-        pi,
         state: state.background,
         job,
         ctx,

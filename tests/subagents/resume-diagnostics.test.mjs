@@ -3,9 +3,11 @@ import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { createPromptSnapshot, loadToolModule, run, test } from "./lib/test-helpers.mjs";
+import { createPromptSnapshot, loadBackgroundModule, loadDeliveryModule, loadToolModule, run, test } from "./lib/test-helpers.mjs";
 
 const { registerSubagentTool } = await loadToolModule();
+const { attachDeliveryController, createBackgroundState } = await loadBackgroundModule();
+const { createSubagentDeliveryCore } = await loadDeliveryModule();
 
 const ID = "subagent_00000000-0000-4000-8000-000000000091";
 const agentRoot = join(tmpdir(), `pi-square-resume-tool-${process.pid}-${Date.now()}`);
@@ -26,7 +28,7 @@ function tool() {
     getThinkingLevel() { return "off"; },
   }, {
     registry: { definitions: [], errors: [], projectDir: null },
-    background: { jobs: new Map(), listeners: new Set() },
+    background: attachDeliveryController(createBackgroundState(), createSubagentDeliveryCore({ pi: { sendMessage() {} } })),
   });
   return tools.get("resume_subagent");
 }
