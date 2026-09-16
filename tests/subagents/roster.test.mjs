@@ -73,10 +73,10 @@ function job(id, status, createdAt, name, timeline = [], overrides = {}) {
   };
 }
 
-function toolTimeline(call, result = "SECRET TOOL RESULT") {
+function toolTimeline(tool, args, result = "SECRET TOOL RESULT") {
   return [
-    { kind: "tool", phase: "start", text: call },
-    { kind: "tool", phase: "end", text: result },
+    { kind: "tool", phase: "start", tool, args, text: `${tool} called` },
+    { kind: "tool", phase: "end", tool, text: result },
   ];
 }
 
@@ -476,7 +476,7 @@ test("roster activity shows shell tools as called and never exposes command text
     1,
     "explorer",
     [
-      { kind: "tool", phase: "start", text: `bash ${JSON.stringify({ command })}` },
+      { kind: "tool", phase: "start", tool: "bash", args: { command }, text: "bash called" },
       { kind: "tool", phase: "end", text: "SECRET TOOL RESULT" },
     ],
   );
@@ -631,7 +631,7 @@ test("sanitizes controls and credentials and never exposes tool results", () => 
     "running",
     1,
     "explorer\u001b[31m\n\r",
-    toolTimeline("read Authorization: Bearer exposed-token password=hunter2"),
+    toolTimeline("read", { path: "Authorization: Bearer exposed-token", password: "hunter2" }),
   );
   state.jobs.set(secret.id, secret);
   for (const listener of state.listeners) listener();
@@ -667,7 +667,7 @@ test("roster activity renders no free-form argument values from known tools", ()
     "running",
     index + 1,
     "explorer",
-    [{ kind: "tool", phase: "start", text: `${tool} ${JSON.stringify(args[tool])}` }],
+    [{ kind: "tool", phase: "start", tool, args: args[tool], text: `${tool} called` }],
   ));
   for (const entry of jobs) state.jobs.set(entry.id, entry);
   for (const listener of state.listeners) listener();
