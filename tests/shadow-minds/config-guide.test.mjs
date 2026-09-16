@@ -26,6 +26,7 @@ const { discoverShadowDefinitions, shadowDefinitionContextFingerprint } = await 
 const { ShadowManager } = await load(join(packageRoot, "src", "shadow-minds", "manager.ts"));
 const { DEFAULT_CONFIG, DEFAULT_SHADOW_MINDS } = await load(join(packageRoot, "src", "core", "config.ts"));
 const { SHADOW_DEFAULT_TOOLS, SHADOW_SAFE_TOOLS } = await load(join(packageRoot, "src", "shadow-minds", "tools.ts"));
+const { createRegisteredState, makeServices } = await load(join(packageRoot, "src", "shadow-minds", "state.ts"));
 
 // File-scope agent base with the six fixture definitions (#188): the former
 // package templates live on as test data so discovery is fully controlled by
@@ -538,15 +539,19 @@ function fakePi() {
 
 {
   // A manager review may outlive its guarded command context. Activation must
-  // fail closed instead of throwing from Pi's stale-context getters.
-  const harness = fakePi();
-  const state = registerShadowMinds(harness.pi, () => ({
-    ...DEFAULT_CONFIG,
-    shadowMinds: { enabled: true, defaults: { ...DEFAULT_CONFIG.shadowMinds.defaults } },
-  }), {
-    now: () => 1,
-    async createSession() { throw new Error("must not create"); },
-    async runSession() { throw new Error("must not run"); },
+  // fail closed instead of throwing from Pi's stale-context getters. The
+  // registered state comes from the state factory (#373): manager-service
+  // tests do not need the registration root.
+  const state = createRegisteredState({
+    config: () => ({
+      ...DEFAULT_CONFIG,
+      shadowMinds: { enabled: true, defaults: { ...DEFAULT_CONFIG.shadowMinds.defaults } },
+    }),
+    runtimeDeps: {
+      now: () => 1,
+      async createSession() { throw new Error("must not create"); },
+      async runSession() { throw new Error("must not run"); },
+    },
   });
   const staleCtx = {
     cwd: packageRoot,
@@ -556,7 +561,7 @@ function fakePi() {
     // surface manual activation still reads.
     get model() { throw new Error("stale extension context"); },
   };
-  const service = __testables.makeServices(state, staleCtx);
+  const service = makeServices(state, staleCtx);
   const refused = service.runtime.runManual({ shadowId: "session-synthesizer" });
   assert.equal(refused.ok, false);
   assert.match(refused.message, /no longer active/);
@@ -565,13 +570,17 @@ function fakePi() {
 
 {
   // Manager-reviewed definitions and limits cannot drift before activation.
+  // The registered state comes from the state factory (#373): manager-service
+  // tests do not need the registration root.
   let liveConfig = { ...DEFAULT_CONFIG, shadowMinds: { enabled: true, defaults: { ...DEFAULT_CONFIG.shadowMinds.defaults } } };
   let created = 0;
-  const harness = fakePi();
-  const state = registerShadowMinds(harness.pi, () => liveConfig, {
-    now: () => 1,
-    async createSession() { created += 1; return { session: {} }; },
-    async runSession() { throw new Error("must not run"); },
+  const state = createRegisteredState({
+    config: () => liveConfig,
+    runtimeDeps: {
+      now: () => 1,
+      async createSession() { created += 1; return { session: {} }; },
+      async runSession() { throw new Error("must not run"); },
+    },
   });
   const ctx = {
     cwd: packageRoot,
@@ -585,7 +594,7 @@ function fakePi() {
   };
   state.refresh(fixtureProject);
   const definition = state.registry.definitions.find((entry) => entry.id === "session-synthesizer");
-  const service = __testables.makeServices(state, ctx);
+  const service = makeServices(state, ctx);
   liveConfig = {
     ...liveConfig,
     shadowMinds: {
