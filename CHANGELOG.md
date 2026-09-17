@@ -1,5 +1,34 @@
 # @odradekk/pi-square
 
+## 15.3.1
+
+### Patch Changes
+
+- ea17b34: Shadow Minds: sync the published reference assets with the validator split (#365) and derive the model-reference pattern from the whole-reference cap. The guide describes the schema reference contract block as generated from the bounds entries the parser and validators enforce, and the schema reference publishes the cap-derived pattern.
+
+  Deriving the pattern narrows its second segment from 199 to 197 characters. A `model` value whose segment after the separator is 199 or 200 characters long is therefore rejected where it was previously accepted, because the `model` field is validated by the pattern alone. `parentModels` entries are unaffected: they are checked against the 200-character cap as well as the pattern, so the cap already rejected those lengths.
+
+- 65c4ef8: Subagents: keep tool activity structured in the run record's timeline. A tool timeline entry now stores the tool name plus sanitized, bounded argument fields at the single construction point in `session.ts`; the roster-grade allowlisted projection (`rosterToolArgsDisplay`, `latestRosterToolCallSummary` in `tool-display.ts`) is the only default read for roster, viewer, live-event, and history surfaces, while the manager's wider bounded-summary projection is an explicitly named opt-in in the new `manager-tool-display.ts` (`managerToolArgsDisplay`, `managerToolCallText`, `latestManagerToolCallSummary`). The display modules no longer recover structure from rendered strings: no regular-expression re-parsing, `JSON.parse`, or rendered-summary pattern matching remains. The true query/URL counts persist in the entry's parent-authored `listCounts` field, computed before sanitizing truncation, so projected counts stay the real ones and a model-crafted `{ count, items }` argument object renders as anonymous `called` instead of a fabricated number.
+  For runs written by this version, every visible surface renders byte-identical activity text (counts included). Runs persisted by earlier versions carry text-only timeline entries; their activity renders as anonymous `tool called` everywhere it appears — the latest-activity line of the roster and the `/subagent` manager detail rows, and every row of the expanded Activity section in completion messages — instead of a summary re-parsed from the rendered text.
+- c9b170c: Unify the two strict YAML-subset definition parsers behind one shared reader (`src/core/yaml-subset.ts`, #370). Shadow Minds definition files and subagent definition files are still two formats with different layering semantics, but the structural layer — line scanning, indentation, map nesting, block and flow lists, and block-scalar body extraction with the only-lines-indented-past-the-field rule — now has exactly one implementation, read by both `src/shadow-minds/parser.ts` and `src/subagents/definitions.ts` (whose field-kind profile and scalar policy live beside the parser). The two formats keep their own policy on top: Shadow keeps its typed scalars and named rejections, and subagent definitions keep their field-kind table, clear markers, and scalar rules (inline comments, null spellings, quote stripping). Layering, discovery, and field validation semantics are unchanged. A differential probe of 195 definition texts against the previous parsers confirms every definition that loaded before still loads with the same fields, and reports differences only in the cases listed below.
+
+  Subagent definitions, tightened (previously accepted, now rejected; each now matches the `- item` spelling both references document):
+
+  - A `-item` line without the space after the dash no longer counts as a block-list item — neither to open a list nor after items started; the line reports as an unsupported YAML line. At the first position this rejection is unchanged; mid-list it replaces a silent misread.
+  - A column-zero `- ` item appearing after indented items is now rejected with the indentation message instead of being swallowed into the list, consistent with the column-zero rule the parser already reported at the start of a list.
+
+  Subagent definitions, loosened (previously rejected, now accepted):
+
+  - A whole-line `#` comment inside a block list no longer terminates the list — items on both sides of a comment line stay in the list, matching the documented whole-line-comment rule. A blank line before such a continuation is still the named blank-line-in-list error.
+
+  Subagent definitions, diagnostics on files that were already rejected:
+
+  - A nested mapping under a field (for example `instructions:` followed by an indented `a: b`) now reports the field's type error (`field 'instructions' must be a string or null`) instead of a generic `unsupported YAML line` per nested line.
+
+  Shadow Minds definitions:
+
+  - A file with several independent structural problems now names every one of them instead of stopping at the first, and a tabbed line can carry both its tab error and a structural observation. Valid definitions, including block lists that span blank lines and whole-line comments, load exactly as before.
+
 ## 15.3.0
 
 ### Minor Changes
