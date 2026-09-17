@@ -19,7 +19,7 @@ import { existsSync } from "node:fs";
 import type { ExtensionAPI, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { artifactsDirFor, isValidSubagentId } from "./artifacts";
-import { ensureDeliveryController, subscribeBackgroundState } from "./background";
+import { subscribeBackgroundState } from "./background";
 import { buildDeliveryContent, type SubagentDeliveryClaim, type SubagentDeliveryEntry, MAX_WAIT_IDS } from "./delivery";
 import { clipWithHeadTail } from "./confirmed-delivery";
 import { createSubagentError, failureToolResult } from "./errors";
@@ -146,7 +146,7 @@ function checkEligibility(input: {
 }): ReturnType<typeof failureToolResult> | undefined {
   const { state, id, parentSessionId } = input;
   const delivery = state.background.delivery;
-  if (delivery?.isClaimed(id)) {
+  if (delivery.isClaimed(id)) {
     return failureToolResult(claimedError(id));
   }
 
@@ -181,7 +181,7 @@ function checkEligibility(input: {
     }));
   }
 
-  if (!delivery?.isPending(id)) {
+  if (!delivery.isPending(id)) {
     return failureToolResult(createSubagentError({
       code: "RESULT_DELIVERED",
       message: `Subagent '${id}' has finished and its result is no longer pending; it was already delivered to the parent or cleared with the session.`,
@@ -415,15 +415,9 @@ export function registerWaitSubagentTool(
       if ("error" in normalized) return normalized.error;
       const ids = normalized.ids;
 
-      const delivery = ensureDeliveryController(pi, state.background);
-      if (!delivery) {
-        return failureToolResult(createSubagentError({
-          code: "PERSISTENCE_FAILED",
-          message: "The session delivery controller is unavailable.",
-          operation: "wait",
-          retryable: false,
-        }));
-      }
+      // The delivery controller is attached by the registration root; the
+      // session-shaped background state guarantees it (odradekk/pi-square#373).
+      const delivery = state.background.delivery;
 
       // Only runs of the current parent session are waitable, so the session
       // identity is part of every eligibility decision.

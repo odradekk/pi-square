@@ -1,11 +1,10 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { artifactsDirFor } from "./artifacts";
 import type { ParentContextMessage } from "./context";
 import type { SubagentDefinition } from "./definitions";
 import { applyRunFailure, createSubagentError, normalizeSubagentError } from "./errors";
 import { type ChildViewEvent, type ChildViewFeed, createChildViewFeed, publishChildViewEvent } from "./transcript";
 import { resumeSubagentTask, runSubagentTask } from "./session";
-import { createSubagentDeliveryCore, type SubagentDeliveryCore } from "./delivery";
+import type { SubagentDeliveryCore } from "./delivery";
 import type {
   ActiveSubagentConfig,
   BackgroundJobSnapshot,
@@ -31,20 +30,20 @@ export interface BackgroundJob {
   details: SubagentRunDetails;
 }
 
-/** Session-owned collection of background jobs and change notifications. */
-export interface BackgroundState {
+/**
+ * The background job collection and change notifications, owned from
+ * extension registration. This is the registered background shape (#373):
+ * it owns no delivery controller, so a half-wired store is unrepresentable
+ * and no delivery read needs an optional chain; `onChange` and `viewFeed`
+ * stay optional for their own reasons (a display-refresh test seam and
+ * roster-only attachment). The delivery controller — created only through
+ * `createSubagentDeliveryCore` and attached with `attachDeliveryController` —
+ * promotes the store to the session `BackgroundState`.
+ */
+export interface BackgroundJobStore {
   jobs: Map<string, BackgroundJob>;
   onChange?: () => void;
   listeners: Set<() => void>;
-  /**
-   * Owns the pending completion results and the explicit wait claims: the
-   * reliable-delivery core parameterized with the Subagent delivery policy
-   * (odradekk/pi-square#372). It is attached by the session registrar and
-   * otherwise created on the first terminal completion when a Pi API is
-   * available; a state with neither (headless unit-test lifecycles) has
-   * nowhere to deliver and keeps none.
-   */
-  delivery?: SubagentDeliveryCore;
   /**
    * Session-scoped ephemeral live view feed (#306): ordered child view events
    * published by running jobs only while the roster controller observes their
@@ -53,6 +52,18 @@ export interface BackgroundState {
    * generation while shutdown clears the current one.
    */
   viewFeed?: ChildViewFeed;
+}
+
+/** Session-shaped background state: the job store plus its delivery controller. */
+export interface BackgroundState extends BackgroundJobStore {
+  /**
+   * Owns the pending completion results and the explicit wait claims: the
+   * reliable-delivery core parameterized with the Subagent delivery policy
+   * (odradekk/pi-square#372). The registration root attaches the single
+   * controller through `attachDeliveryController` at registration; every
+   * later read is direct because the member is always present.
+   */
+  delivery: SubagentDeliveryCore;
 }
 
 const MAX_FINISHED_JOBS = 20;
@@ -88,7 +99,7 @@ function jobWasAborted(job: BackgroundJob): boolean {
   return job.status === "aborted" || job.status === "cancelling" || job.abortController.signal.aborted;
 }
 
-function emitChange(state: BackgroundState): void {
+function emitChange(state: BackgroundJobStore): void {
   try {
     state.onChange?.();
   } catch {
@@ -110,7 +121,7 @@ function compactFinishedJobs(state: BackgroundState): void {
   // pending set has its own hard bound.
   const finished = Array.from(state.jobs.values())
     .filter((job) => job.status === "completed" || job.status === "failed" || job.status === "aborted")
-    .filter((job) => !state.delivery?.isPending(job.id) && !state.delivery?.isClaimed(job.id))
+    .filter((job) => !state.delivery.isPending(job.id) && !state.delivery.isClaimed(job.id))
     .sort((a, b) => b.updatedAt - a.updatedAt);
 
   for (const extra of finished.slice(MAX_FINISHED_JOBS)) {
@@ -119,9 +130,10 @@ function compactFinishedJobs(state: BackgroundState): void {
 }
 
 /** Refreshes pi-square status surfaces after an external state change. */
-export function notifyBackgroundChange(state: BackgroundState): void {
+export function notifyBackgroundChange(state: BackgroundJobStore): void {
   emitChange(state);
 }
+
 
 function ensureAbortedDetails(job: BackgroundJob, reason = DEFAULT_CANCEL_REASON): void {
   const endedAt = now();
@@ -156,19 +168,18 @@ function snapshot(job: BackgroundJob): BackgroundJobSnapshot {
 }
 
 /**
- * Returns the session-owned delivery controller, creating it on first use so a
- * completion is never dropped for a missing session registration. A state with
- * neither an attached controller nor a Pi API (headless unit-test lifecycles)
- * has nowhere to deliver and receives none.
+ * Promotes one job store to the session background state by attaching the
+ * delivery controller (#373). The controller is created only through
+ * `createSubagentDeliveryCore` — the registration root at registration,
+ * tests through their own factory call — so a half-wired state is
+ * unrepresentable and no later read needs an optional chain. The promotion
+ * preserves identity: every reference to the store observes the attached
+ * controller.
  */
-export function ensureDeliveryController(pi: ExtensionAPI | undefined, state: BackgroundState): SubagentDeliveryCore | undefined {
-  if (state.delivery) return state.delivery;
-  if (!pi) return undefined;
-  state.delivery = createSubagentDeliveryCore({
-    pi,
-    notify: () => emitChange(state),
-  });
-  return state.delivery;
+export function attachDeliveryController(store: BackgroundJobStore, delivery: SubagentDeliveryCore): BackgroundState {
+  const state = store as BackgroundState;
+  state.delivery = delivery;
+  return state;
 }
 
 /**
@@ -178,31 +189,30 @@ export function ensureDeliveryController(pi: ExtensionAPI | undefined, state: Ba
  * store for automatic delivery; an aborted run is stored only while a waiter
  * already owns its claim.
  */
-function deliverCompletion(pi: ExtensionAPI | undefined, state: BackgroundState, job: BackgroundJob): void {
+function deliverCompletion(state: BackgroundState, job: BackgroundJob): void {
   if (job.status !== "completed" && job.status !== "failed" && job.status !== "aborted") return;
 
-  const delivery = ensureDeliveryController(pi, state);
   // The policy-bound core applies the aborted admission rule itself: an
   // ordinary aborted run notifies nobody, while a waiter-owned one is stored
   // for its claim.
-  delivery?.enqueue({
+  state.delivery.enqueue({
     id: job.id,
     value: { id: job.id, status: job.status, details: job.details },
   });
 }
 
-/** Creates the session-owned background job store for subagent runs. */
-export function createBackgroundState(): BackgroundState {
+/** Creates the registered background job store; attach the delivery controller to reach the session shape. */
+export function createBackgroundState(): BackgroundJobStore {
   return { jobs: new Map(), listeners: new Set(), viewFeed: createChildViewFeed() };
 }
 
 /** Replaces the ephemeral feed so publishers from an older parent generation stay fenced out. */
-export function replaceBackgroundViewFeed(state: BackgroundState): void {
+export function replaceBackgroundViewFeed(state: BackgroundJobStore): void {
   state.viewFeed?.clear();
   state.viewFeed = createChildViewFeed();
 }
 
-export function subscribeBackgroundState(state: BackgroundState, listener: () => void): () => void {
+export function subscribeBackgroundState(state: BackgroundJobStore, listener: () => void): () => void {
   state.listeners ??= new Set();
   state.listeners.add(listener);
   return () => state.listeners.delete(listener);
@@ -211,7 +221,7 @@ export function subscribeBackgroundState(state: BackgroundState, listener: () =>
 /** Registers a background task as queued and returns the mutable job record. */
 export function createQueuedJob(input: {
   /** Background store that owns the queued job. */
-  state: BackgroundState;
+  state: BackgroundJobStore;
   id: string;
   task: string;
   cwd: string;
@@ -268,7 +278,7 @@ export function createQueuedJob(input: {
 }
 
 export function createQueuedResumeJob(input: {
-  state: BackgroundState;
+  state: BackgroundJobStore;
   details: SubagentRunDetails;
   task: string;
   parentSessionId: string;
@@ -308,7 +318,7 @@ export function createQueuedResumeJob(input: {
 }
 
 /** Lists background jobs, most recently updated first. */
-export function listBackgroundJobs(state: BackgroundState): BackgroundJobSnapshot[] {
+export function listBackgroundJobs(state: BackgroundJobStore): BackgroundJobSnapshot[] {
   return Array.from(state.jobs.values())
     .sort((a, b) => b.updatedAt - a.updatedAt)
     .map((job) => snapshot(job));
@@ -316,8 +326,6 @@ export function listBackgroundJobs(state: BackgroundState): BackgroundJobSnapsho
 
 /** Requests cancellation for one job or all active background jobs. */
 export function cancelBackgroundJobs(input: {
-  /** Pi API for the delivery controller; a state that already owns one does not need it. */
-  pi?: ExtensionAPI;
   state: BackgroundState;
   id?: string;
   all?: boolean;
@@ -354,7 +362,7 @@ export function cancelBackgroundJobs(input: {
       changed = true;
       // A waiter that already claimed this run owns its aborted outcome; an
       // ordinary aborted run never notifies the parent.
-      deliverCompletion(input.pi, state, job);
+      deliverCompletion(state, job);
       continue;
     }
     if (job.status === "running") {
@@ -389,7 +397,7 @@ export function cancelBackgroundJobs(input: {
  * into its bounded FIFO through the transcript module's guarded seam, and
  * keeps even a feed defect from reaching the child run.
  */
-function viewEventPublisher(state: BackgroundState, job: BackgroundJob): (event: ChildViewEvent) => void {
+function viewEventPublisher(state: BackgroundJobStore, job: BackgroundJob): (event: ChildViewEvent) => void {
   const feed = state.viewFeed;
   return (event) => {
     publishChildViewEvent(feed, job.id, event);
@@ -397,13 +405,12 @@ function viewEventPublisher(state: BackgroundState, job: BackgroundJob): (event:
 }
 
 function startBackgroundLifecycle(input: {
-  pi: ExtensionAPI;
   state: BackgroundState;
   job: BackgroundJob;
   operation: SubagentOperation;
   execute: (onUpdate: (details: SubagentRunDetails) => void) => Promise<{ details: SubagentRunDetails }>;
 }): void {
-  const { pi, state, job } = input;
+  const { state, job } = input;
   void (async () => {
     if (jobWasAborted(job)) {
       ensureAbortedDetails(job, job.abortReason || job.details.error || DEFAULT_CANCEL_REASON);
@@ -411,7 +418,7 @@ function startBackgroundLifecycle(input: {
       compactFinishedJobs(state);
       emitChange(state);
       // A waiter that already claimed this run owns its aborted outcome.
-      deliverCompletion(pi, state, job);
+      deliverCompletion(state, job);
       return;
     }
 
@@ -436,14 +443,14 @@ function startBackgroundLifecycle(input: {
       compactFinishedJobs(state);
       emitChange(state);
       // A waiter that already claimed this run owns its aborted outcome.
-      deliverCompletion(pi, state, job);
+      deliverCompletion(state, job);
       return;
     }
 
     job.status = terminalStatusFromPhase(result.details.phase);
     compactFinishedJobs(state);
     emitChange(state);
-    deliverCompletion(pi, state, job);
+    deliverCompletion(state, job);
   })().catch((error) => {
     const message = error instanceof Error ? error.message : String(error);
     job.updatedAt = now();
@@ -453,7 +460,7 @@ function startBackgroundLifecycle(input: {
       compactFinishedJobs(state);
       emitChange(state);
       // A waiter that already claimed this run owns its aborted outcome.
-      deliverCompletion(pi, state, job);
+      deliverCompletion(state, job);
       return;
     }
 
@@ -470,12 +477,11 @@ function startBackgroundLifecycle(input: {
     job.details.timeline = [...job.details.timeline, { kind: "error", text: message, isError: true }];
     compactFinishedJobs(state);
     emitChange(state);
-    deliverCompletion(pi, state, job);
+    deliverCompletion(state, job);
   });
 }
 
 export function startBackgroundJob(input: {
-  pi: ExtensionAPI;
   state: BackgroundState;
   job: BackgroundJob;
   ctx: any;
@@ -492,7 +498,6 @@ export function startBackgroundJob(input: {
   parentSessionId: string;
 }): void {
   startBackgroundLifecycle({
-    pi: input.pi,
     state: input.state,
     job: input.job,
     operation: "delegate",
@@ -518,7 +523,6 @@ export function startBackgroundJob(input: {
 }
 
 export function startBackgroundResumeJob(input: {
-  pi: ExtensionAPI;
   state: BackgroundState;
   job: BackgroundJob;
   ctx: any;
@@ -529,7 +533,6 @@ export function startBackgroundResumeJob(input: {
   contextMessages?: ParentContextMessage[];
 }): void {
   startBackgroundLifecycle({
-    pi: input.pi,
     state: input.state,
     job: input.job,
     operation: "resume",
@@ -548,9 +551,8 @@ export function startBackgroundResumeJob(input: {
   });
 }
 
-export function abortAllBackgroundJobs(pi: ExtensionAPI | undefined, state: BackgroundState): void {
+export function abortAllBackgroundJobs(state: BackgroundState): void {
   cancelBackgroundJobs({
-    pi,
     state,
     all: true,
     reason: "Background subagent job aborted during session shutdown.",

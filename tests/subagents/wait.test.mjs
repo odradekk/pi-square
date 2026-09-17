@@ -18,7 +18,7 @@ import {
 } from "./lib/test-helpers.mjs";
 
 const { registerSubagentTool } = await loadToolModule();
-const { createBackgroundState, createQueuedJob, notifyBackgroundChange } = await loadBackgroundModule();
+const { attachDeliveryController, createBackgroundState, createQueuedJob, notifyBackgroundChange } = await loadBackgroundModule();
 const { createSubagentDeliveryCore } = await loadDeliveryModule();
 const loadLocal = jiti(import.meta.url, { moduleCache: false });
 const { createSubagentBlockingCallRegistry } = await loadLocal(join(
@@ -61,8 +61,10 @@ function createHarness(options = {}) {
     isIdle: () => !busy,
     notify: () => notifyBackgroundChange(state.background),
   });
-  state.background.delivery = delivery;
   const registry = createSubagentBlockingCallRegistry();
+  // The session delivery core enters only through the single creation path
+  // (#373), attached exactly as the registration root attaches it.
+  attachDeliveryController(state.background, delivery);
   registerSubagentTool(pi.api, state, undefined, registry);
   const waitTool = pi.tools.get("wait_subagent");
   assert.ok(waitTool, "wait_subagent is registered");

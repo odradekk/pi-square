@@ -26,6 +26,7 @@ const { createPromptSnapshot } = await load(join(packageRoot, "tests", "subagent
 const { SUBAGENT_ROSTER_KEY, createSubagentRosterController } = rosterModule;
 const {
   abortAllBackgroundJobs,
+  attachDeliveryController,
   cancelBackgroundJobs,
   createBackgroundState,
   createQueuedJob,
@@ -248,7 +249,9 @@ function lifecycleHarness({ columns = 80, rows = 30, tuiMode = "regular", idle =
     notify: () => notifyBackgroundChange(state.background),
   });
   const blockingCallRegistry = createSubagentBlockingCallRegistry();
-  state.background.delivery = delivery;
+  // The session delivery core enters only through the single creation path
+  // (#373), attached exactly as the registration root attaches it.
+  attachDeliveryController(state.background, delivery);
   const roster = createSubagentRosterController(state.background, {});
 
   registerSubagentTool(pi, state, undefined, blockingCallRegistry);
@@ -270,7 +273,7 @@ function lifecycleHarness({ columns = 80, rows = 30, tuiMode = "regular", idle =
     state.background.viewFeed?.clear();
     roster.stop();
     blockingCallRegistry.terminateAll("session shutdown");
-    abortAllBackgroundJobs(pi, state.background);
+    abortAllBackgroundJobs(state.background);
     delivery.reset();
     state.sessionCtx = undefined;
     state.inheritedSystemCore = undefined;

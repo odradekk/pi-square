@@ -7,6 +7,7 @@ import {
   createPromptSnapshot,
   getRunSubagentTaskCalls,
   loadBackgroundModule,
+  loadDeliveryModule,
   loadToolModule,
   run,
   setRunSubagentTaskMock,
@@ -14,17 +15,22 @@ import {
 } from "./lib/test-helpers.mjs";
 
 const { registerSubagentTool } = await loadToolModule();
-const { createBackgroundState } = await loadBackgroundModule();
+const { attachDeliveryController, createBackgroundState } = await loadBackgroundModule();
+const { createSubagentDeliveryCore } = await loadDeliveryModule();
 
 const agentRoot = join(tmpdir(), `pi-square-subagent-tool-${process.pid}-${Date.now()}`);
 process.env.PI_AGENT_DIR = agentRoot;
 mkdirSync(agentRoot, { recursive: true });
 
 function createRuntimeState() {
-  return {
+  const state = {
     registry: { definitions: [], errors: [], projectDir: null },
     background: createBackgroundState(),
   };
+  // The session delivery core enters only through the single creation path
+  // (#373), attached exactly as the registration root attaches it.
+  attachDeliveryController(state.background, createSubagentDeliveryCore({ pi: { sendMessage() {} } }));
+  return state;
 }
 
 function createPiRecorder() {

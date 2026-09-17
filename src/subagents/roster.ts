@@ -2,7 +2,7 @@ import type { ExtensionContext, Theme, ThemeColor } from "@earendil-works/pi-cod
 import { matchesKey, truncateToWidth, visibleWidth, type Component } from "@earendil-works/pi-tui";
 import { isOwnedInputSurfaceActive } from "../core/input-surface";
 import type { DisplayRuntime } from "../display/runtime";
-import { listBackgroundJobs, subscribeBackgroundState, type BackgroundState } from "./background";
+import { listBackgroundJobs, subscribeBackgroundState, type BackgroundJobStore } from "./background";
 import { sanitizeSubagentDisplay } from "./display";
 import {
   createChildTranscriptRegistry,
@@ -423,7 +423,7 @@ export interface SubagentRosterOptions {
  * inspection.
  */
 export function createSubagentRosterController(
-  state: BackgroundState,
+  state: BackgroundJobStore,
   options: SubagentRosterOptions = {},
 ): SubagentRosterController {
   const now = options.now ?? Date.now;

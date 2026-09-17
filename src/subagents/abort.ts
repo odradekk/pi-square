@@ -356,7 +356,7 @@ export function registerAbortSubagentTool(
       // abort wins that race.
       const active = targets.filter((target) => isActiveStatus(target.before));
       for (const target of active) {
-        cancelBackgroundJobs({ pi, state: state.background, id: target.id, reason: ABORT_SUBAGENT_REASON });
+        cancelBackgroundJobs({ state: state.background, id: target.id, reason: ABORT_SUBAGENT_REASON });
       }
 
       let waitedMs = 0;

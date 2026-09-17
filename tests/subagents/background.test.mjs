@@ -13,10 +13,12 @@ import {
 } from "./lib/test-helpers.mjs";
 
 const {
+  attachDeliveryController,
   cancelBackgroundJobs,
   createBackgroundState,
   createQueuedJob,
   createQueuedResumeJob,
+  notifyBackgroundChange,
   replaceBackgroundViewFeed,
   startBackgroundJob,
   startBackgroundResumeJob,
@@ -58,6 +60,19 @@ function observedState() {
   let changes = 0;
   state.onChange = () => { changes += 1; };
   return { state, changes: () => changes, reset: () => { changes = 0; } };
+}
+
+// The session delivery core enters only through the single creation path
+// (#373): the test builds it with its own recording pi and attaches it to the
+// job store, exactly as the registration root does.
+function wireDelivery(observed, options = {}) {
+  const pi = createPiStub();
+  attachDeliveryController(observed.state, createSubagentDeliveryCore({
+    pi: pi.api,
+    notify: () => notifyBackgroundChange(observed.state),
+    ...options,
+  }));
+  return pi;
 }
 
 function assertCompletion(pi, status) {
@@ -119,6 +134,7 @@ test("cancelBackgroundJobs accepts the public id", () => {
   const observed = observedState();
   const job = queuedJob(observed);
   observed.reset();
+  wireDelivery(observed);
   const result = cancelBackgroundJobs({ state: observed.state, id: ID, reason: "Stop now." });
   assert.equal(result.canceled[0].id, ID);
   assert.equal(job.status, "aborted");
@@ -134,8 +150,8 @@ test("running cancellation remains resumable and exposes a real cancelling trans
     await new Promise((resolve) => input.signal.addEventListener("abort", resolve, { once: true }));
     return { content: "aborted", details: details("aborted", { error: "Canceled from manager." }) };
   });
-  const pi = createPiStub();
-  startBackgroundJob({ pi: pi.api, state: observed.state, job, ctx: {}, task: "smoke task", parentSessionId: "parent-session" });
+  const pi = wireDelivery(observed);
+  startBackgroundJob({ state: observed.state, job, ctx: {}, task: "smoke task", parentSessionId: "parent-session" });
   await waitFor(() => job.status === "running", "running background job");
   const canceled = cancelBackgroundJobs({ state: observed.state, id: ID, reason: "Canceled from manager." });
   assert.equal(canceled.canceled[0].status, "cancelling");
@@ -155,8 +171,8 @@ test("pre-aborted jobs never invoke the child", async () => {
   job.abortController.abort();
   setRunSubagentTaskMock(async () => { throw new Error("must not execute"); });
 
-  const pi = createPiStub();
-  startBackgroundJob({ pi: pi.api, state: observed.state, job, ctx: {}, task: "smoke task", parentSessionId: "parent-session" });
+  const pi = wireDelivery(observed);
+  startBackgroundJob({ state: observed.state, job, ctx: {}, task: "smoke task", parentSessionId: "parent-session" });
   await waitFor(() => job.details.errorInfo?.code === "ABORTED", "pre-aborted cleanup");
   assert.equal(getRunSubagentTaskCalls().length, 0);
   assert.equal(observed.changes(), 1);
@@ -168,14 +184,14 @@ test("queued, detail-update, and final transitions preserve one id", async () =>
   const observed = observedState();
   const job = queuedJob(observed);
   observed.reset();
-  const pi = createPiStub();
+  const pi = wireDelivery(observed);
   setRunSubagentTaskMock(async (input) => {
     input.onUpdate(details("running"));
     return { details: details("completed", { endedAt: 20, durationMs: 10 }) };
   });
 
   const contextMessages = [{ role: "user", text: "parent context" }];
-  startBackgroundJob({ pi: pi.api, state: observed.state, job, ctx: {}, task: "smoke task", parentSessionId: "parent-session", contextMessages });
+  startBackgroundJob({ state: observed.state, job, ctx: {}, task: "smoke task", parentSessionId: "parent-session", contextMessages });
   await waitFor(() => job.status === "completed", "completed background job");
   // start, detail update, final, and one change for the pending delivery set.
   assert.equal(observed.changes(), 4);
@@ -195,7 +211,7 @@ test("manager resumes use the cancellable background lifecycle and frozen snapsh
     task: "continue",
     parentSessionId: "parent-session",
   });
-  const pi = createPiStub();
+  const pi = wireDelivery(observed);
   setRunSubagentTaskMock(async (input) => {
     assert.equal(input.id, ID);
     assert.equal(input.task, "continue");
@@ -203,7 +219,7 @@ test("manager resumes use the cancellable background lifecycle and frozen snapsh
     return { details: details("completed", { operation: "resume", finalText: "continued", promptSnapshot: persisted.promptSnapshot }) };
   });
 
-  startBackgroundResumeJob({ pi: pi.api, state: observed.state, job, ctx: {}, task: "continue", parentSessionId: "parent-session" });
+  startBackgroundResumeJob({ state: observed.state, job, ctx: {}, task: "continue", parentSessionId: "parent-session" });
   await waitFor(() => job.status === "completed", "completed background resume");
   assert.equal(job.details.operation, "resume");
   assert.equal(job.details.promptSnapshot, persisted.promptSnapshot);
@@ -230,10 +246,10 @@ test("thrown background failures become structured run failures", async () => {
   const observed = observedState();
   const job = queuedJob(observed);
   observed.reset();
-  const pi = createPiStub();
+  const pi = wireDelivery(observed);
   setRunSubagentTaskMock(async () => { throw new Error("synthetic failure"); });
 
-  startBackgroundJob({ pi: pi.api, state: observed.state, job, ctx: {}, task: "smoke task", parentSessionId: "parent-session" });
+  startBackgroundJob({ state: observed.state, job, ctx: {}, task: "smoke task", parentSessionId: "parent-session" });
   await waitFor(() => job.status === "failed", "failed background job");
   assert.equal(job.details.errorInfo.code, "SUBAGENT_FAILED");
   assert.match(job.details.error, /synthetic failure/);
@@ -243,10 +259,9 @@ test("thrown background failures become structured run failures", async () => {
 test("undelivered results survive job compaction and stay pending", async () => {
   process.env.PI_AGENT_DIR = "/tmp/subagents-test-agent";
   const observed = observedState();
-  const pi = createPiStub();
   // A parent that never becomes idle keeps every completion pending, which is
   // the state that job compaction must not destroy.
-  observed.state.delivery = createSubagentDeliveryCore({ pi: pi.api, isIdle: () => false });
+  const pi = wireDelivery(observed, { isIdle: () => false });
   setRunSubagentTaskMock(async () => ({ content: "ACK", details: details("completed", { endedAt: 20, durationMs: 10 }) }));
 
   const total = 22;
@@ -260,7 +275,7 @@ test("undelivered results survive job compaction and stay pending", async () => 
       parentSessionId: "parent-session",
       promptSnapshot: createPromptSnapshot(),
     });
-    startBackgroundJob({ pi: pi.api, state: observed.state, job, ctx: {}, task: "smoke task", parentSessionId: "parent-session" });
+    startBackgroundJob({ state: observed.state, job, ctx: {}, task: "smoke task", parentSessionId: "parent-session" });
   }
 
   await waitFor(
@@ -284,7 +299,7 @@ const busyWait = (ms) => {
 test("live view: feed events flow in order and a broken subscriber changes nothing", async () => {
   process.env.PI_AGENT_DIR = "/tmp/subagents-test-agent";
   const observed = observedState();
-  const pi = createPiStub();
+  const pi = wireDelivery(observed);
   const job = createQueuedJob({
     state: observed.state,
     id: "subagent_00000000-0000-4000-8000-0000000000aa",
@@ -310,7 +325,6 @@ test("live view: feed events flow in order and a broken subscriber changes nothi
   });
 
   startBackgroundJob({
-    pi: pi.api,
     state: observed.state,
     job,
     ctx: {},
@@ -331,7 +345,7 @@ test("live view: feed events flow in order and a broken subscriber changes nothi
 test("a replaced parent feed fences late events from its still-running child", async () => {
   process.env.PI_AGENT_DIR = "/tmp/subagents-test-agent";
   const observed = observedState();
-  const pi = createPiStub();
+  const pi = wireDelivery(observed);
   const job = createQueuedJob({
     state: observed.state,
     id: "subagent_00000000-0000-4000-8000-0000000000ab",
@@ -351,7 +365,6 @@ test("a replaced parent feed fences late events from its still-running child", a
   });
 
   startBackgroundJob({
-    pi: pi.api,
     state: observed.state,
     job,
     ctx: {},
