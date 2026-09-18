@@ -87,6 +87,7 @@ const suites = [
   "context-memory/qualification/qualify.test.mjs",
   "context-memory/continuity/oracles.test.mjs",
   "context-memory/continuity/session.test.mjs",
+  "context-memory/continuity/diagnose.test.mjs",
   "context-memory/progressive/sandbox.test.mjs",
   "context-memory/progressive/evidence.test.mjs",
   "context-memory/progressive/task.test.mjs",

@@ -210,7 +210,7 @@ export function netInputChangeOf(compressions, carrierObservations, requests) {
 }
 
 export async function runContinuitySession({ packageRoot, modelRuntime, model, script, run, signal, contextModifierFactory,
-  thinkingLevel = CONTINUITY_SESSION_CONFIG.thinkingLevel }) {
+  diagnosticObserver, thinkingLevel = CONTINUITY_SESSION_CONFIG.thinkingLevel }) {
   const thinking = requireThinkingConfiguration(model, thinkingLevel);
   const environment = createEnvironment(packageRoot, script);
   let session;
@@ -239,6 +239,12 @@ export async function runContinuitySession({ packageRoot, modelRuntime, model, s
   let finalCarrierCount = null;
   let finalRequests = 0;
   let finalFullCarrierSeen = false;
+  // Explicit local diagnosis only. Observation must not mutate the request or
+  // let a failed recorder change the model's task or the qualification score.
+  function diagnose(event) {
+    if (!diagnosticObserver) return;
+    try { diagnosticObserver(structuredClone({ request: requests.length + 1, phase, ...event })); } catch {}
+  }
   const sessionManager = SessionManager.create(environment.cwd, join(environment.root, "sessions"));
   const persistence = { seedBytes: 0, finalBytes: 0, peakBytes: 0, appendedBytes: 0 };
   const recordedMemoryIds = new Set();
@@ -254,6 +260,7 @@ export async function runContinuitySession({ packageRoot, modelRuntime, model, s
   try {
     const observer = (pi) => {
       pi.on("context", (event) => {
+        diagnose({ type: "context", leafId: sessionManager.getLeafId(), messages: event.messages.map(withoutThinking) });
         contextToolSets.push(pi.getActiveTools());
         retrieval.context(event.messages, sessionManager);
         // Every provider-bound request is observed, not only the final one:
@@ -289,6 +296,7 @@ export async function runContinuitySession({ packageRoot, modelRuntime, model, s
           const rawSource = inspectRawSource(event.messages, script, sourceEntryIds.map((id) => sessionManager.getEntry(id)));
           rawSourceAbsent = rawSource.absent;
           rawSourceDiagnostic = rawSource.diagnostic;
+          diagnose({ type: "probe", rawSourceAbsent, sourceEntryIds: [...sourceEntryIds], rawSourceDiagnostic });
         }
       });
       pi.on("tool_execution_start", (event) => {
@@ -423,7 +431,17 @@ export async function runContinuitySession({ packageRoot, modelRuntime, model, s
         failures.add("request-limit");
         void session.abort();
       }
-      if (event.type === "message_end" && event.message.role === "assistant") requests.push(responseUsage(event.message, phase, requests.length + 1, contextToolSets[requests.length]));
+      if (event.type === "message_end" && event.message.role === "assistant") {
+        if (["error", "aborted"].includes(event.message.stopReason)) diagnose({ type: "response", message: {
+          stopReason: event.message.stopReason, errorMessage: event.message.errorMessage,
+          diagnostic: safeResponseDiagnostic(event.message),
+          diagnostics: (event.message.diagnostics ?? []).slice(0, 8).map((item) => ({ type: item.type,
+            status: Number.isInteger(item.details?.status) ? item.details.status : null,
+            message: typeof item.error?.message === "string" ? item.error.message : null,
+          })),
+        } });
+        requests.push(responseUsage(event.message, phase, requests.length + 1, contextToolSets[requests.length]));
+      }
       // Native compaction is disabled in this harness and the feature never
       // takes it over (#319): any compaction entry is an integrity failure.
       if (event.type === "compaction_start" || event.type === "compaction_end") failures.add("native-compaction-occurred");
@@ -560,6 +578,7 @@ export async function runContinuitySession({ packageRoot, modelRuntime, model, s
       if (!stat.isFile() || stat.isSymbolicLink() || stat.size > FILE_MAX_BYTES) failures.add("artifact-not-bounded-regular-file");
       else artifactText = readFileSync(path, "utf8");
     } catch (error) { if (error.code !== "ENOENT") failures.add("artifact-read-error"); }
+    diagnose({ type: "artifact", request: requests.length, text: artifactText });
     const retrievalResult = retrieval.finalize(artifactText);
     if (!preFinalSourceCovered) coverageFailures.add("source-not-covered-by-final-memory");
     if (!finalContextSeen || !rawSourceAbsent) coverageFailures.add("final-context-has-raw-answer-or-was-not-observed");
@@ -646,6 +665,18 @@ export async function runContinuitySession({ packageRoot, modelRuntime, model, s
         ...(rawSourceDiagnostic ? { rawSourceDiagnostic } : {}), prefixStable: measurements.prefixStable },
     };
   } finally {
+    if (diagnosticObserver) {
+      try {
+        const path = sessionManager.getSessionFile();
+        const stat = lstatSync(path);
+        if (!stat.isFile() || stat.isSymbolicLink() || stat.size > MAX_NATIVE_SESSION_BYTES) throw new Error("diagnostic journal bound");
+        const entries = readFileSync(path, "utf8").split("\n").filter(Boolean).map((line) => {
+          const entry = JSON.parse(line);
+          return entry.type === "message" ? { ...entry, message: withoutThinking(entry.message) } : entry;
+        });
+        diagnose({ type: "session", request: requests.length, leafId: sessionManager.getLeafId(), entries, sourceEntryIds, abandonedEntryIds, compressions });
+      } catch { diagnose({ type: "capture-failure", reason: "native-journal-unavailable" }); }
+    }
     unsubscribe?.();
     if (abortListener) signal?.removeEventListener("abort", abortListener);
     session?.dispose();
