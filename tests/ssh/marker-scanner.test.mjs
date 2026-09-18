@@ -78,4 +78,30 @@ assert.equal(scan.output, "tail");
 assert.equal(pending.flush(), `\r\n${pending.marker.slice(0, 8)}`);
 assert.equal(pending.flush(), "", "flush must clear the pending text");
 
+// The holdback must depend on what could still become a marker, not on how
+// much output preceded it. A long listing followed by a marker prefix is the
+// realistic shape of a command that is about to finish, and a holdback that
+// gives up once the pending text outgrows the marker would leak the prefix
+// into the output page here while every short-prefix case above still passed.
+const longOutput = new SshMarkerScanner("cafe0");
+const listing = "-rw-r--r-- 1 deploy deploy 4096 Sep 18 10:00 releases\r\n".repeat(6);
+scan = longOutput.push(listing + `\r\n${longOutput.marker.slice(0, 14)}`);
+assert.equal(scan.output, listing, "output before a marker prefix is released, the prefix is not");
+assert.doesNotMatch(scan.output, /__PI_SSH_/, "no part of a marker may reach the output page");
+scan = longOutput.push(`${longOutput.marker.slice(14)}0\r\n`);
+assert.deepEqual(scan, { output: "", exitCode: 0 }, "the held prefix completes the marker on the next chunk");
+
+// The same holdback holds when the pending text never completes: the prefix is
+// surrendered only by flush, and still never through the output page.
+const longPartial = new SshMarkerScanner("cafe1");
+scan = longPartial.push(listing + `\r\n${longPartial.marker.slice(0, 20)}`);
+assert.equal(scan.output, listing);
+assert.equal(longPartial.flush(), `\r\n${longPartial.marker.slice(0, 20)}`);
+
+// A token carrying pattern syntax is matched literally, so it can neither fail
+// to compile nor complete on another command's marker.
+const literal = new SshMarkerScanner(".*");
+assert.equal(literal.push("x __PI_SSH_deadbeef__:9\r\n").exitCode, undefined, "a token is never treated as a pattern");
+assert.equal(literal.push(`\r\n${literal.marker}3\r\n`).exitCode, 3, "its own marker still completes the command");
+
 console.log("ssh marker scanner tests: OK");

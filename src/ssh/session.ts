@@ -30,6 +30,10 @@ export interface SshMarkerScan {
   exitCode?: number;
 }
 
+function escapeForPattern(literal: string): string {
+  return literal.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 /**
  * Owns the completion-marker protocol for one foreground command: it derives
  * the unguessable marker embedded in the command frame and recognizes the
@@ -44,7 +48,11 @@ export class SshMarkerScanner {
 
   constructor(token = randomBytes(18).toString("hex")) {
     this.marker = `__PI_SSH_${token}__:`;
-    this.markerPattern = new RegExp(`(?:\\r?\\n)?${this.marker}(-?[0-9]+)\\r?\\n`);
+    // The marker is matched literally, so escape it before it becomes a
+    // pattern. The default hex token needs no escaping, but a caller passing
+    // pattern syntax would otherwise either fail to compile or, worse, build a
+    // marker that matches another command's output and completes on it.
+    this.markerPattern = new RegExp(`(?:\\r?\\n)?${escapeForPattern(this.marker)}(-?[0-9]+)\\r?\\n`);
   }
 
   commandFrame(command: string): string {
@@ -121,6 +129,10 @@ export class SshSession {
   private terminationReason?: string;
   private readonly output = new SshOutputBuffer(SSH_SESSION_BUFFER_BYTES);
   private readonly decoder = new StringDecoder("utf8");
+  // These two are set, cleared, and read together: a command's result state and
+  // the scanner owning its marker. They must stay in lockstep, because
+  // `handleData` falls back to appending raw text whenever either is absent,
+  // and that fallback is exactly the path a completion marker must never take.
   private active?: ActiveCommand;
   private scanner?: SshMarkerScanner;
   private readonly listeners = new Set<() => void>();
