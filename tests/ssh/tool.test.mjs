@@ -178,6 +178,16 @@ ui.confirm = async () => { throw new Error("remote commands must bypass confirma
 response = await tool.execute("5", { operation: "command", session: sessionId, command: "rm file" }, undefined, undefined, ctx);
 assert.equal(parse(response).code, "COMMAND_COMPLETED");
 
+// Schema rejection paths: declared bounds are enforced before any handler runs.
+response = await tool.execute("5-schema-command", { operation: "command", session: sessionId, command: "x".repeat(20_001) }, undefined, undefined, ctx);
+assert.equal(response.isError, true);
+assert.equal(parse(response).code, "INVALID_ARGUMENT");
+assert.match(parse(response).message, /command/);
+response = await tool.execute("5-schema-wait", { operation: "read", session: sessionId, waitMs: 60_001 }, undefined, undefined, ctx);
+assert.equal(response.isError, true);
+assert.equal(parse(response).code, "INVALID_ARGUMENT");
+assert.match(parse(response).message, /waitMs/);
+
 const session = manager.get(sessionId);
 session.isRunning = true;
 response = await tool.execute("6", { operation: "secret_input", session: sessionId, prompt: "sudo password" }, undefined, undefined, ctx);
