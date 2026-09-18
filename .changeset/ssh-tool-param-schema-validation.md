@@ -8,9 +8,9 @@ Previously accepted, now rejected (each form was already rejected by the declare
 
 - `newline` that is not a boolean, for example `"yes"`: it was truthy and appended the newline; it now fails schema validation.
 - `target`, `label`, `prompt`, and `profile` values that are not strings: the old regular-expression match coerced `target` to text (`target: 123` matched the name pattern) and a numeric `label` or `prompt` was used as-is; all four now fail schema validation.
-- `profile` longer than 64 characters: unreachable through real configuration, because the agent configuration schema already caps profile names at 64 characters, but the tool boundary now states and enforces the same bound.
+- `profile` or `target` longer than 64 characters: unreachable through real configuration, because the agent configuration schema already caps both names at 64 characters, but the tool boundary now states and enforces the same bound.
 
-Fixed: `label: null` previously threw a `TypeError` inside `validateParams` that surfaced as an `SSH_ERROR` result carrying `Cannot read properties of null (reading 'length')`; it now returns `INVALID_ARGUMENT` like every other invalid parameter.
+Fixed: `label: null` and `prompt: null` previously threw a `TypeError` inside `validateParams` (accessing `.length` before the pattern check) that surfaced as an `SSH_ERROR` result carrying `Cannot read properties of null (reading 'length')`; both now return `INVALID_ARGUMENT` like every other invalid parameter. `target: null` took a different path — the old regular-expression match coerced it to the text `"null"` and matched, so it was silently accepted; it is covered by the "not a string" rejection above.
 
 The `cursor` property now declares `maximum: Number.MAX_SAFE_INTEGER` instead of leaving its integer bound open. That preserves rejection of unsafe-integer cursors: an oversized cursor would otherwise pass validation and `SshOutputBuffer.read` would silently clamp it to the oldest retained position, replay the whole buffer, and report `cursorExpired: false`.
 
