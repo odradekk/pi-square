@@ -15,10 +15,8 @@ import { safeReason, type SshChannelLike, type SshClientLike } from "./connect";
 
 const BOOTSTRAP_COMMAND = "unset PROMPT_COMMAND 2>/dev/null || :; PS1=''; PS2=''; PROMPT=''; RPROMPT=''; export PS1 PS2";
 
+/** Result state of the one foreground command a session may run. */
 interface ActiveCommand {
-  marker: string;
-  markerPattern: RegExp;
-  pending: string;
   startCursor: number;
   completed: boolean;
   disconnected: boolean;
@@ -27,25 +25,75 @@ interface ActiveCommand {
   resolve: () => void;
 }
 
-function possibleMarkerSuffixLength(text: string, marker: string): number {
-  const markerIndex = text.lastIndexOf(marker);
-  if (markerIndex >= 0 && /^-?[0-9]*\r?$/.test(text.slice(markerIndex + marker.length))) {
-    let start = markerIndex;
-    if (start > 0 && text[start - 1] === "\n") start -= 1;
-    if (start > 0 && text[start - 1] === "\r") start -= 1;
-    return text.length - start;
+export interface SshMarkerScan {
+  output: string;
+  exitCode?: number;
+}
+
+/**
+ * Owns the completion-marker protocol for one foreground command: it derives
+ * the unguessable marker embedded in the command frame and recognizes the
+ * marker (plus its exit code) as it arrives across arbitrary output chunks.
+ * `push` returns only text that is safe to append to the model-facing output
+ * page; any trailing fragment that could still become a marker stays pending.
+ */
+export class SshMarkerScanner {
+  readonly marker: string;
+  private readonly markerPattern: RegExp;
+  private pending = "";
+
+  constructor(token = randomBytes(18).toString("hex")) {
+    this.marker = `__PI_SSH_${token}__:`;
+    this.markerPattern = new RegExp(`(?:\\r?\\n)?${this.marker}(-?[0-9]+)\\r?\\n`);
   }
-  let keep = 0;
-  for (const candidate of [marker, `\n${marker}`, `\r\n${marker}`]) {
-    const limit = Math.min(text.length, candidate.length - 1);
-    for (let length = limit; length > keep; length -= 1) {
-      if (candidate.startsWith(text.slice(-length))) {
-        keep = length;
-        break;
+
+  commandFrame(command: string): string {
+    return `${command}\n__pi_square_rc=$?\nprintf '\\n${this.marker}%s\\n' "$__pi_square_rc"\nunset __pi_square_rc\n`;
+  }
+
+  push(text: string): SshMarkerScan {
+    this.pending += text;
+    const match = this.markerPattern.exec(this.pending);
+    if (match) {
+      const output = this.pending.slice(0, match.index) + this.pending.slice(match.index + match[0].length);
+      this.pending = "";
+      return { output, exitCode: Number.parseInt(match[1]!, 10) };
+    }
+    const keep = this.possibleMarkerSuffixLength();
+    if (this.pending.length <= keep) return { output: "" };
+    const output = this.pending.slice(0, this.pending.length - keep);
+    this.pending = keep > 0 ? this.pending.slice(-keep) : "";
+    return { output };
+  }
+
+  flush(): string {
+    const remaining = this.pending;
+    this.pending = "";
+    return remaining;
+  }
+
+  private possibleMarkerSuffixLength(): number {
+    const text = this.pending;
+    const marker = this.marker;
+    const markerIndex = text.lastIndexOf(marker);
+    if (markerIndex >= 0 && /^-?[0-9]*\r?$/.test(text.slice(markerIndex + marker.length))) {
+      let start = markerIndex;
+      if (start > 0 && text[start - 1] === "\n") start -= 1;
+      if (start > 0 && text[start - 1] === "\r") start -= 1;
+      return text.length - start;
+    }
+    let keep = 0;
+    for (const candidate of [marker, `\n${marker}`, `\r\n${marker}`]) {
+      const limit = Math.min(text.length, candidate.length - 1);
+      for (let length = limit; length > keep; length -= 1) {
+        if (candidate.startsWith(text.slice(-length))) {
+          keep = length;
+          break;
+        }
       }
     }
+    return keep;
   }
-  return keep;
 }
 
 function waitForPromise(promise: Promise<void>, timeoutMs: number, signal?: AbortSignal): Promise<"done" | "timeout" | "aborted"> {
@@ -74,6 +122,7 @@ export class SshSession {
   private readonly output = new SshOutputBuffer(SSH_SESSION_BUFFER_BYTES);
   private readonly decoder = new StringDecoder("utf8");
   private active?: ActiveCommand;
+  private scanner?: SshMarkerScanner;
   private readonly listeners = new Set<() => void>();
   private channelEnded = false;
   private transportEnded = false;
@@ -154,22 +203,18 @@ export class SshSession {
     if (this.active) throw new SshError("COMMAND_ACTIVE", "This SSH session already has a running foreground command");
     const startCursor = this.output.newestCursor;
     let resolveDone!: () => void;
-    const token = randomBytes(18).toString("hex");
-    const marker = `__PI_SSH_${token}__:`;
     const active: ActiveCommand = {
-      marker,
-      markerPattern: new RegExp(`(?:\\r?\\n)?${marker}(-?[0-9]+)\\r?\\n`),
-      pending: "",
       startCursor,
       completed: false,
       disconnected: false,
       done: new Promise<void>((resolvePromise) => { resolveDone = resolvePromise; }),
       resolve: () => resolveDone(),
     };
+    const scanner = new SshMarkerScanner();
     this.active = active;
+    this.scanner = scanner;
     this.touch();
-    const frame = `${command}\n__pi_square_rc=$?\nprintf '\\n${marker}%s\\n' "$__pi_square_rc"\nunset __pi_square_rc\n`;
-    this.channel.write(frame);
+    this.channel.write(scanner.commandFrame(command));
     const outcome = await waitForPromise(active.done, waitMs, signal);
     if (outcome === "aborted") this.interrupt();
     const state = active.completed ? "completed" : active.disconnected ? "disconnected" : "running";
@@ -232,31 +277,24 @@ export class SshSession {
     if (!text) return;
     this.touch();
     const active = this.active;
-    if (!active) {
+    const scanner = this.scanner;
+    if (!active || !scanner) {
       this.output.append(text);
       this.emitChange();
       return;
     }
-    active.pending += text;
-    const match = active.markerPattern.exec(active.pending);
-    if (match && match.index >= 0) {
-      this.output.append(active.pending.slice(0, match.index));
-      const remainder = active.pending.slice(match.index + match[0].length);
-      if (remainder) this.output.append(remainder);
-      active.pending = "";
-      active.exitCode = Number.parseInt(match[1]!, 10);
-      active.completed = true;
-      this.active = undefined;
-      active.resolve();
-      this.emitChange();
-      return;
-    }
-    const keep = possibleMarkerSuffixLength(active.pending, active.marker);
-    if (active.pending.length > keep) {
-      this.output.append(active.pending.slice(0, active.pending.length - keep));
-      active.pending = keep > 0 ? active.pending.slice(-keep) : "";
-    }
+    const scan = scanner.push(text);
+    if (scan.output) this.output.append(scan.output);
+    if (scan.exitCode !== undefined) this.completeActive(active, scan.exitCode);
     this.emitChange();
+  }
+
+  private completeActive(active: ActiveCommand, exitCode: number): void {
+    active.exitCode = exitCode;
+    active.completed = true;
+    this.active = undefined;
+    this.scanner = undefined;
+    active.resolve();
   }
 
   private markDisconnected(reason: string): void {
@@ -310,8 +348,9 @@ export class SshSession {
   private finishActive(disconnected: boolean): void {
     const active = this.active;
     if (!active) return;
-    if (active.pending) this.output.append(active.pending);
-    active.pending = "";
+    const pending = this.scanner?.flush() ?? "";
+    this.scanner = undefined;
+    if (pending) this.output.append(pending);
     active.disconnected = disconnected;
     this.active = undefined;
     active.resolve();
