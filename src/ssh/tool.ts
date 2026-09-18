@@ -1,5 +1,5 @@
 import { StringEnum } from "@earendil-works/pi-ai";
-import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
+import type { AgentToolUpdateCallback, ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
 import { ConfirmationCoordinator } from "../core/confirmation";
@@ -24,7 +24,7 @@ import {
   type SshToolParams,
 } from "./contracts";
 import { sshErrorCode, sshErrorMessage, SshError } from "./errors";
-import { SshSessionManager } from "./manager";
+import type { SshSessionManager } from "./manager";
 import { promptSecret } from "./secret-input";
 import { projectTerminalOutput } from "./terminal-output";
 
@@ -62,9 +62,37 @@ const allowedFields: Record<SshOperation, ReadonlySet<string>> = {
   list: new Set(["operation"]),
 };
 
-function cleanDisplay(value: unknown, max = 4_000): string {
-  return projectTerminalOutput(value, max);
+/** What the tool boundary hands to one dispatched operation. */
+interface SshOperationInput {
+  params: SshToolParams;
+  manager: SshSessionManager;
+  confirmations: ConfirmationCoordinator;
+  approvedTargets: Set<string>;
+  ctx: ExtensionContext;
+  signal?: AbortSignal;
+  onUpdate?: AgentToolUpdateCallback<SshDetails>;
 }
+
+/** The model-facing result every operation returns. */
+type SshToolResult = ReturnType<typeof result>;
+
+/** One operation's implementation, dispatched through `operationHandlers`. */
+type SshOperationHandler = (input: SshOperationInput) => SshToolResult | Promise<SshToolResult>;
+
+/**
+ * The per-operation implementations, parallel to `allowedFields`: one entry
+ * per `SshOperation`, so validation and dispatch cannot drift apart.
+ */
+const operationHandlers: Record<SshOperation, SshOperationHandler> = {
+  connect: connectOperation,
+  command: commandOperation,
+  read: readOperation,
+  input: inputOperation,
+  secret_input: secretInputOperation,
+  interrupt: interruptOperation,
+  close: closeOperation,
+  list: listOperation,
+};
 
 function validateParams(params: SshToolParams): void {
   if (!Value.Check(parameters, params)) {
@@ -198,7 +226,7 @@ function pageDetails(
 function result(details: SshDetails, output?: string) {
   const body = {
     ...details,
-    ...(output !== undefined ? { output: cleanDisplay(output, SSH_MODEL_OUTPUT_CHARS) } : {}),
+    ...(output !== undefined ? { output: projectTerminalOutput(output, SSH_MODEL_OUTPUT_CHARS) } : {}),
   };
   const serialized = JSON.stringify(body);
   if (serialized.length > SSH_MODEL_RESULT_CHARS) {
@@ -217,12 +245,57 @@ function baseDetails(operation: SshOperation, status: SshDetails["status"], code
 
 function failure(operation: SshOperation, error: unknown) {
   const code = sshErrorCode(error);
-  const message = cleanDisplay(sshErrorMessage(error), 1_000);
+  const message = projectTerminalOutput(sshErrorMessage(error), 1_000);
   return result(baseDetails(operation, code === "ABORTED" ? "aborted" : "error", code, message));
 }
 
 function confirmationAvailable(ctx: any): boolean {
   return Boolean(ctx?.hasUI && ctx?.ui && typeof ctx.ui.confirm === "function");
+}
+
+/**
+ * The one masked secret request path shared by connect's private-key
+ * passphrase and secret_input. The interactive-TUI check lives here and runs
+ * lazily on each request, so connect stays available outside the TUI when its
+ * key needs no passphrase; `requireTui` exposes the same refusal to a caller
+ * that must refuse before it inspects anything else, as secret_input does
+ * before checking the running command.
+ */
+interface TuiSecretRequester {
+  /** Refuse when the interactive TUI is unavailable. */
+  requireTui(): void;
+  /** Ask the user for one secret; the refusal runs first. */
+  request(purpose: string): Promise<Buffer | undefined>;
+}
+
+function tuiSecretRequester(
+  ctx: any,
+  signal: AbortSignal | undefined,
+  unavailableMessage: string,
+  contextLines: readonly string[],
+): TuiSecretRequester {
+  const requireTui = () => {
+    if (ctx?.mode !== "tui" || !ctx?.ui) throw new SshError("SECRET_INPUT_UNAVAILABLE", unavailableMessage);
+  };
+  return {
+    requireTui,
+    async request(purpose: string) {
+      requireTui();
+      return promptSecret(ctx.ui, [purpose, ...contextLines].join("\n"), signal);
+    },
+  };
+}
+
+const EMPTY_JSON_ARRAY_CHARS = "[]".length;
+
+/**
+ * The serialized length of a JSON array after appending one item, computed
+ * from the array's current length instead of re-serializing it. An appended
+ * item adds its own text plus one separator unless the array is empty, which
+ * makes the check equivalent to serializing the grown array.
+ */
+function appendedListChars(currentChars: number, itemJson: string, itemCount: number): number {
+  return currentChars + itemJson.length + (itemCount > 0 ? 1 : 0);
 }
 
 function boundedList(manager: SshSessionManager): {
@@ -231,6 +304,7 @@ function boundedList(manager: SshSessionManager): {
   omissions: { profiles: number; targets: number; sessions: number };
 } {
   const profiles: SshProfileSummary[] = [];
+  let profileChars = EMPTY_JSON_ARRAY_CHARS;
   let omittedProfiles = 0;
   let omittedTargets = 0;
   for (const profile of manager.profiles()) {
@@ -240,23 +314,28 @@ function boundedList(manager: SshSessionManager): {
       targets: [],
       maxSessions: profile.maxSessions,
     };
-    if (JSON.stringify([...profiles, summary]).length > SSH_LIST_SECTION_CHARS) {
+    const summaryChars = appendedListChars(profileChars, JSON.stringify(summary), profiles.length);
+    if (summaryChars > SSH_LIST_SECTION_CHARS) {
       omittedProfiles += 1;
       omittedTargets += profile.targets.length;
       continue;
     }
     profiles.push(summary);
+    profileChars = summaryChars;
     for (const target of profile.targets) {
       const targetSummary = { name: target.name, endpoint: `${target.username}@${target.host}:${target.port}` };
-      summary.targets.push(targetSummary);
-      if (JSON.stringify(profiles).length > SSH_LIST_SECTION_CHARS) {
-        summary.targets.pop();
+      const targetChars = appendedListChars(profileChars, JSON.stringify(targetSummary), summary.targets.length);
+      if (targetChars > SSH_LIST_SECTION_CHARS) {
         omittedTargets += 1;
+        continue;
       }
+      summary.targets.push(targetSummary);
+      profileChars = targetChars;
     }
   }
 
   const sessions: SshSessionSummary[] = [];
+  let sessionChars = EMPTY_JSON_ARRAY_CHARS;
   let omittedSessions = 0;
   const rankedSessions = manager.list().sort((left, right) => {
     const leftRank = left.state === "connected" ? left.commandState === "running" ? 0 : 1 : 2;
@@ -264,10 +343,174 @@ function boundedList(manager: SshSessionManager): {
     return leftRank - rightRank || right.createdAt - left.createdAt;
   });
   for (const session of rankedSessions) {
-    if (JSON.stringify([...sessions, session]).length > SSH_LIST_SECTION_CHARS) omittedSessions += 1;
-    else sessions.push(session);
+    const candidateChars = appendedListChars(sessionChars, JSON.stringify(session), sessions.length);
+    if (candidateChars > SSH_LIST_SECTION_CHARS) omittedSessions += 1;
+    else {
+      sessions.push(session);
+      sessionChars = candidateChars;
+    }
   }
   return { profiles, sessions, omissions: { profiles: omittedProfiles, targets: omittedTargets, sessions: omittedSessions } };
+}
+
+/** Report the configured profiles and current sessions within the output bounds. */
+function listOperation({ manager }: SshOperationInput): SshToolResult {
+  const { profiles, sessions, omissions } = boundedList(manager);
+  const omitted = omissions.profiles + omissions.targets + omissions.sessions;
+  const details: SshDetails = {
+    ...baseDetails("list", "success", "OK", `${profiles.length} SSH profiles; ${sessions.length} sessions${omitted > 0 ? `; ${omitted} entries omitted by output limits` : ""}`),
+    sessions,
+    profiles,
+    omissions,
+  };
+  return result(details);
+}
+
+/** Confirm an alternate target, then open a persistent shell session. */
+async function connectOperation({ params, manager, confirmations, approvedTargets, ctx, signal }: SshOperationInput): Promise<SshToolResult> {
+  const { profile, target } = manager.resolve(params.profile!, params.target);
+  const approvalKey = `${profile.name}\0${target.name}\0${target.username}\0${target.host}\0${target.port}`;
+  if (target.name !== profile.defaultTarget && !approvedTargets.has(approvalKey)) {
+    if (!confirmationAvailable(ctx)) throw new SshError("CONFIRMATION_UNAVAILABLE", "Non-default SSH targets require interactive confirmation");
+    const confirmed = await confirmations.run(signal, async (confirmationSignal) => {
+      if (approvedTargets.has(approvalKey)) return true;
+      const approved = await withOwnedInputSurface(() => ctx.ui.confirm(
+        "Connect to alternate SSH target",
+        [
+          `Profile: ${projectTerminalOutput(profile.name, 4_000)}`,
+          `Target: ${projectTerminalOutput(target.name, 4_000)}`,
+          `Endpoint: ${projectTerminalOutput(`${target.username}@${target.host}:${target.port}`, 4_000)}`,
+          `Pinned fingerprints: ${target.fingerprints.map((item) => projectTerminalOutput(item, 4_000)).join(", ")}`,
+          "",
+          "This authorizes this exact configured endpoint for the current Pi session.",
+        ].join("\n"),
+        { signal: confirmationSignal },
+      ));
+      if (approved) approvedTargets.add(approvalKey);
+      return approved;
+    });
+    if (!confirmed) return result(baseDetails("connect", "declined", "DECLINED", "SSH connection was declined"));
+  }
+  const { request: requestPassphrase } = tuiSecretRequester(ctx, signal, "Encrypted SSH keys require the interactive TUI", [
+    `Target: ${target.username}@${target.host}:${target.port}`,
+  ]);
+  const session = await manager.connect(profile.name, target.name, params.label, requestPassphrase, signal);
+  const page = await session.read(undefined, 0, signal);
+  const details = pageDetails("connect", session.summary(), page.page, {
+    status: "success",
+    code: "CONNECTED",
+    message: `Connected ${session.id} to ${session.summary().endpoint}`,
+  });
+  return result(details, page.page.text);
+}
+
+/** Run one foreground command, streaming throttled updates until it resolves. */
+async function commandOperation({ params, manager, signal, onUpdate }: SshOperationInput): Promise<SshToolResult> {
+  const session = manager.get(params.session!);
+  const startCursor = session.summary().newestCursor;
+  let updateTimer: NodeJS.Timeout | undefined;
+  const publish = () => {
+    if (updateTimer) return;
+    updateTimer = setTimeout(() => {
+      updateTimer = undefined;
+      void session.read(startCursor, 0).then((snapshot) => {
+        const partialDetails = pageDetails(
+          "command",
+          session.summary(),
+          snapshot.page,
+          commandOutcome("running", { operation: "command", streaming: true }),
+        );
+        onUpdate?.(result(partialDetails, snapshot.page.text));
+      }).catch(() => {});
+    }, UPDATE_INTERVAL_MS);
+  };
+  const unsubscribe = session.subscribe(publish);
+  try {
+    const commandResult = await session.command(params.command!, params.waitMs ?? SSH_WAIT_DEFAULT_MS, signal);
+    const aborted = Boolean(signal?.aborted);
+    const exitCode = aborted ? undefined : commandResult.exitCode;
+    const details = pageDetails(
+      "command",
+      session.summary(),
+      commandResult.page,
+      commandOutcome(aborted ? "aborted" : commandResult.state, { operation: "command", exitCode }),
+      exitCode,
+    );
+    return result(details, commandResult.page.text);
+  } finally {
+    unsubscribe();
+    if (updateTimer) clearTimeout(updateTimer);
+  }
+}
+
+/** Wait for and return output new to the caller's cursor. */
+async function readOperation({ params, manager, signal }: SshOperationInput): Promise<SshToolResult> {
+  const session = manager.get(params.session!);
+  const readResult = await session.read(params.cursor, Math.min(params.waitMs ?? 0, SSH_READ_WAIT_MAX_MS), signal);
+  const details = pageDetails(
+    "read",
+    session.summary(),
+    readResult.page,
+    commandOutcome(signal?.aborted ? "aborted" : readResult.state, {
+      operation: "read",
+      hasOutput: Boolean(readResult.page.text),
+    }),
+  );
+  return result(details, readResult.page.text);
+}
+
+/** Send non-secret stdin text to the running foreground command. */
+function inputOperation({ params, manager }: SshOperationInput): SshToolResult {
+  const session = manager.get(params.session!);
+  session.input(params.data!, params.newline ?? true);
+  return result({
+    ...baseDetails("input", "success", "INPUT_SENT", "Non-secret input sent to the running remote command"),
+    session: session.summary(),
+  });
+}
+
+/** Send one masked secret to the running foreground command. */
+async function secretInputOperation({ params, manager, ctx, signal }: SshOperationInput): Promise<SshToolResult> {
+  const session = manager.get(params.session!);
+  const secretRequest = tuiSecretRequester(ctx, signal, "Secret SSH input requires the interactive TUI", [
+    `Session: ${session.id}`,
+    `Endpoint: ${session.summary().endpoint}`,
+  ]);
+  // The TUI refusal stays ahead of the running-command check it has always
+  // preceded, so the shared requester exposes it separately from the request.
+  secretRequest.requireTui();
+  if (!session.isRunning) throw new SshError("NO_ACTIVE_COMMAND", "Secret SSH input requires a running foreground command");
+  const purpose = projectTerminalOutput(params.prompt || "Provide a secret requested by the current remote process", 500);
+  const secret = await secretRequest.request(purpose);
+  if (!secret) return result(baseDetails("secret_input", "declined", "DECLINED", "Secret input was cancelled"));
+  try {
+    session.input(secret, true);
+  } finally {
+    secret.fill(0);
+  }
+  return result({
+    ...baseDetails("secret_input", "success", "SECRET_SENT", "Secret input was sent once and was not included in tool content"),
+    session: session.summary(),
+  });
+}
+
+/** Signal the running foreground command. */
+function interruptOperation({ params, manager }: SshOperationInput): SshToolResult {
+  const session = manager.get(params.session!);
+  session.interrupt();
+  return result({
+    ...baseDetails("interrupt", "success", "INTERRUPT_SENT", "Interrupt sent to the running remote command"),
+    session: session.summary(),
+  });
+}
+
+/** Close one session and drop its record from the manager. */
+function closeOperation({ params, manager }: SshOperationInput): SshToolResult {
+  const summary = manager.close(params.session!, "SSH session closed by tool call");
+  return result({
+    ...baseDetails("close", "success", "CLOSED", `Closed SSH session ${params.session}`),
+    session: summary,
+  });
 }
 
 export interface SshToolController {
@@ -299,146 +542,14 @@ export function createSshToolController(
       const operation = OPERATIONS.includes(params?.operation) ? params.operation : "list";
       try {
         validateParams(params);
-
-        if (params.operation === "list") {
-          const { profiles, sessions, omissions } = boundedList(manager);
-          const omitted = omissions.profiles + omissions.targets + omissions.sessions;
-          const details: SshDetails = {
-            ...baseDetails("list", "success", "OK", `${profiles.length} SSH profiles; ${sessions.length} sessions${omitted > 0 ? `; ${omitted} entries omitted by output limits` : ""}`),
-            sessions,
-            profiles,
-            omissions,
-          };
-          return result(details);
-        }
-
-        if (params.operation === "connect") {
-          const { profile, target } = manager.resolve(params.profile!, params.target);
-          const approvalKey = `${profile.name}\0${target.name}\0${target.username}\0${target.host}\0${target.port}`;
-          if (target.name !== profile.defaultTarget && !approvedTargets.has(approvalKey)) {
-            if (!confirmationAvailable(ctx)) throw new SshError("CONFIRMATION_UNAVAILABLE", "Non-default SSH targets require interactive confirmation");
-            const confirmed = await confirmations.run(signal, async (confirmationSignal) => {
-              if (approvedTargets.has(approvalKey)) return true;
-              const approved = await withOwnedInputSurface(() => ctx.ui.confirm(
-                "Connect to alternate SSH target",
-                [
-                  `Profile: ${cleanDisplay(profile.name)}`,
-                  `Target: ${cleanDisplay(target.name)}`,
-                  `Endpoint: ${cleanDisplay(`${target.username}@${target.host}:${target.port}`)}`,
-                  `Pinned fingerprints: ${target.fingerprints.map((item) => cleanDisplay(item)).join(", ")}`,
-                  "",
-                  "This authorizes this exact configured endpoint for the current Pi session.",
-                ].join("\n"),
-                { signal: confirmationSignal },
-              ));
-              if (approved) approvedTargets.add(approvalKey);
-              return approved;
-            });
-            if (!confirmed) return result(baseDetails("connect", "declined", "DECLINED", "SSH connection was declined"));
-          }
-          const requestSecret = async (purpose: string) => {
-            if (ctx?.mode !== "tui" || !ctx?.ui) throw new SshError("SECRET_INPUT_UNAVAILABLE", "Encrypted SSH keys require the interactive TUI");
-            return promptSecret(ctx.ui, `${purpose}\nTarget: ${target.username}@${target.host}:${target.port}`, signal);
-          };
-          const session = await manager.connect(profile.name, target.name, params.label, requestSecret, signal);
-          const page = await session.read(undefined, 0, signal);
-          const details = pageDetails("connect", session.summary(), page.page, {
-            status: "success",
-            code: "CONNECTED",
-            message: `Connected ${session.id} to ${session.summary().endpoint}`,
-          });
-          return result(details, page.page.text);
-        }
-
-        const session = manager.get(params.session!);
-        if (params.operation === "command") {
-          const startCursor = session.summary().newestCursor;
-          let updateTimer: NodeJS.Timeout | undefined;
-          const publish = () => {
-            if (updateTimer) return;
-            updateTimer = setTimeout(() => {
-              updateTimer = undefined;
-              void session.read(startCursor, 0).then((snapshot) => {
-                const partialDetails = pageDetails(
-                  "command",
-                  session.summary(),
-                  snapshot.page,
-                  commandOutcome("running", { operation: "command", streaming: true }),
-                );
-                onUpdate?.(result(partialDetails, snapshot.page.text));
-              }).catch(() => {});
-            }, UPDATE_INTERVAL_MS);
-          };
-          const unsubscribe = session.subscribe(publish);
-          try {
-            const commandResult = await session.command(params.command!, params.waitMs ?? SSH_WAIT_DEFAULT_MS, signal);
-            const aborted = Boolean(signal?.aborted);
-            const exitCode = aborted ? undefined : commandResult.exitCode;
-            const details = pageDetails(
-              "command",
-              session.summary(),
-              commandResult.page,
-              commandOutcome(aborted ? "aborted" : commandResult.state, { operation: "command", exitCode }),
-              exitCode,
-            );
-            return result(details, commandResult.page.text);
-          } finally {
-            unsubscribe();
-            if (updateTimer) clearTimeout(updateTimer);
-          }
-        }
-
-        if (params.operation === "read") {
-          const readResult = await session.read(params.cursor, Math.min(params.waitMs ?? 0, SSH_READ_WAIT_MAX_MS), signal);
-          const details = pageDetails(
-            "read",
-            session.summary(),
-            readResult.page,
-            commandOutcome(signal?.aborted ? "aborted" : readResult.state, {
-              operation: "read",
-              hasOutput: Boolean(readResult.page.text),
-            }),
-          );
-          return result(details, readResult.page.text);
-        }
-
-        if (params.operation === "input") {
-          session.input(params.data!, params.newline ?? true);
-          return result({
-            ...baseDetails("input", "success", "INPUT_SENT", "Non-secret input sent to the running remote command"),
-            session: session.summary(),
-          });
-        }
-
-        if (params.operation === "secret_input") {
-          if (ctx?.mode !== "tui" || !ctx?.ui) throw new SshError("SECRET_INPUT_UNAVAILABLE", "Secret SSH input requires the interactive TUI");
-          if (!session.isRunning) throw new SshError("NO_ACTIVE_COMMAND", "Secret SSH input requires a running foreground command");
-          const purpose = cleanDisplay(params.prompt || "Provide a secret requested by the current remote process", 500);
-          const secret = await promptSecret(ctx.ui, `${purpose}\nSession: ${session.id}\nEndpoint: ${session.summary().endpoint}`, signal);
-          if (!secret) return result(baseDetails("secret_input", "declined", "DECLINED", "Secret input was cancelled"));
-          try {
-            session.input(secret, true);
-          } finally {
-            secret.fill(0);
-          }
-          return result({
-            ...baseDetails("secret_input", "success", "SECRET_SENT", "Secret input was sent once and was not included in tool content"),
-            session: session.summary(),
-          });
-        }
-
-        if (params.operation === "interrupt") {
-          session.interrupt();
-          return result({
-            ...baseDetails("interrupt", "success", "INTERRUPT_SENT", "Interrupt sent to the running remote command"),
-            session: session.summary(),
-          });
-        }
-
-        const summary = manager.close(params.session!, "SSH session closed by tool call");
-        return result({
-          ...baseDetails("close", "success", "CLOSED", `Closed SSH session ${params.session}`),
-          session: summary,
+        return await operationHandlers[params.operation]({
+          params,
+          manager,
+          confirmations,
+          approvedTargets,
+          ctx,
+          signal,
+          onUpdate,
         });
       } catch (error) {
         return failure(operation, error);
@@ -450,11 +561,4 @@ export function createSshToolController(
     definition,
     resetApprovals() { approvedTargets.clear(); },
   };
-}
-
-export function createSshToolDefinition(
-  manager = new SshSessionManager(),
-  confirmations = new ConfirmationCoordinator(),
-): ToolDefinition {
-  return createSshToolController(manager, confirmations).definition;
 }
