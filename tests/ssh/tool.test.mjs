@@ -187,6 +187,16 @@ response = await tool.execute("5-schema-wait", { operation: "read", session: ses
 assert.equal(response.isError, true);
 assert.equal(parse(response).code, "INVALID_ARGUMENT");
 assert.match(parse(response).message, /waitMs/);
+response = await tool.execute("5-schema-cursor", { operation: "read", session: sessionId, cursor: Number.MAX_SAFE_INTEGER + 2 }, undefined, undefined, ctx);
+assert.equal(response.isError, true);
+assert.equal(parse(response).code, "INVALID_ARGUMENT");
+assert.match(parse(response).message, /cursor/);
+response = await tool.execute("5-schema-cursor-max", { operation: "read", session: sessionId, cursor: Number.MAX_SAFE_INTEGER }, undefined, undefined, ctx);
+assert.equal(response.isError, undefined, "the cursor bound is inclusive");
+response = await tool.execute("5-schema-newline", { operation: "input", session: sessionId, data: "yes", newline: "yes" }, undefined, undefined, ctx);
+assert.equal(response.isError, true);
+assert.equal(parse(response).code, "INVALID_ARGUMENT");
+assert.match(parse(response).message, /newline/);
 
 const session = manager.get(sessionId);
 session.isRunning = true;

@@ -43,7 +43,7 @@ const parameters = Type.Object({
   data: Type.Optional(Type.String({ maxLength: SSH_INPUT_MAX_CHARS, description: "Non-secret stdin text; input only" })),
   newline: Type.Optional(Type.Boolean({ default: true, description: "Append a newline to input (default true)" })),
   prompt: Type.Optional(Type.String({ minLength: 1, maxLength: 500, description: "Purpose shown to the user by secure secret input; never contains the secret" })),
-  cursor: Type.Optional(Type.Integer({ minimum: 0, description: "Output cursor returned by a previous call; read only" })),
+  cursor: Type.Optional(Type.Integer({ minimum: 0, maximum: Number.MAX_SAFE_INTEGER, description: "Output cursor returned by a previous call; read only" })),
   waitMs: Type.Optional(Type.Integer({ minimum: 0, maximum: SSH_WAIT_MAX_MS, description: "Bounded wait in milliseconds; command/read only" })),
 }, {
   additionalProperties: false,
