@@ -223,8 +223,7 @@ export class SshSession {
   }
 
   close(reason = "SSH session closed"): void {
-    if (this.currentState === "closed" || this.currentState === "closing") return;
-    this.currentState = "closing";
+    if (this.currentState === "closed") return;
     this.teardown("closed", reason);
   }
 
@@ -270,6 +269,16 @@ export class SshSession {
    * disconnect. The terminal state is already in place when the channel and
    * transport are ended, so their close events re-enter `markDisconnected` as a
    * no-op; the session decoder and any running command are drained first.
+   *
+   * Draining before the two end calls is only safe because neither
+   * `Channel.end()` nor `Client.end()` synchronously delivers inbound data:
+   * both write on the outgoing side and surface anything further through a
+   * later event-loop turn. So no completion marker can arrive after
+   * `finishActive` has cleared the active command, which is what keeps
+   * `handleData`'s no-active-command branch from appending a raw marker to the
+   * model-facing output. If a future ssh2 ever emitted `data` synchronously
+   * from either call, that invariant would break and the drain would have to
+   * move back after the ends.
    */
   private teardown(state: "disconnected" | "closed", reason: string): void {
     this.currentState = state;

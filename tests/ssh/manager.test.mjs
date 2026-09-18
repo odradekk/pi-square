@@ -185,6 +185,26 @@ manager.close(session.id);
 assert.equal(clients[0].endCalls, 1, "closing a disconnected session must not end its transport twice");
 assert.equal(manager.list().length, 0);
 
+const closeMidClients = [];
+const closeMidManager = new SshSessionManager(() => {
+  const client = new FakeClient();
+  closeMidClients.push(client);
+  return client;
+});
+closeMidManager.configure(config());
+const closeMid = await closeMidManager.connect("ops", undefined, undefined, async () => undefined);
+const held = await closeMid.command("hold", 1);
+assert.equal(held.state, "running");
+const pendingRead = closeMid.read(held.page.nextCursor, 500);
+closeMid.close();
+const afterClose = await pendingRead;
+assert.equal(afterClose.state, "disconnected", "closing mid-command must report the command as disconnected");
+assert.equal(afterClose.exitCode, undefined, "a command cut short by close must not report an exit code");
+assert.doesNotMatch(afterClose.page.text, /__PI_SSH_/, "completion markers must never reach model output");
+assert.equal(closeMid.summary().state, "closed");
+assert.equal(closeMidClients[0].endCalls, 1, "closing mid-command must end the transport exactly once");
+closeMidManager.dispose();
+
 const limitedClients = [];
 const limited = new SshSessionManager(() => {
   const client = new FakeClient();
