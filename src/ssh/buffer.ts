@@ -1,8 +1,6 @@
-import { StringDecoder } from "node:string_decoder";
 import { SSH_MODEL_OUTPUT_CHARS, SSH_SESSION_BUFFER_BYTES, type SshOutputPage } from "./contracts";
 
 export class SshOutputBuffer {
-  private readonly decoder = new StringDecoder("utf8");
   private text = "";
   private startCursor = 0;
   private endCursor = 0;
@@ -13,17 +11,11 @@ export class SshOutputBuffer {
     private readonly pageChars = SSH_MODEL_OUTPUT_CHARS,
   ) {}
 
-  append(chunk: Buffer | string): void {
-    const decoded = typeof chunk === "string" ? chunk : this.decoder.write(chunk);
-    if (!decoded) return;
-    this.text += decoded;
-    this.endCursor += decoded.length;
+  append(text: string): void {
+    if (!text) return;
+    this.text += text;
+    this.endCursor += text.length;
     this.trim();
-  }
-
-  end(): void {
-    const remaining = this.decoder.end();
-    if (remaining) this.append(remaining);
   }
 
   get oldestCursor(): number {

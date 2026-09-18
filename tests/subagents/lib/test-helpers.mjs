@@ -64,6 +64,14 @@ export async function resumeSubagentTask(input) {
   return await mockState.impl(input);
 }
 
+// Mirrors session.ts so tool.ts can resolve the child cwd against the mocked seam.
+export function resolveSubagentCwd(baseCwd, maybeCwd) {
+  const input = String(maybeCwd ?? "").trim();
+  if (!input) return baseCwd;
+  const normalized = input.startsWith("@") ? input.slice(1) : input;
+  return normalized.startsWith("/") ? normalized : resolve(baseCwd, normalized);
+}
+
 export async function loadBackgroundModule() {
   return load(join(packageRoot, "src", "subagents", "background.ts"));
 }
@@ -74,6 +82,10 @@ export async function loadDeliveryModule() {
 
 export async function loadToolModule() {
   return loadTool(join(packageRoot, "src", "subagents", "tool.ts"));
+}
+
+export async function loadAbortModule() {
+  return loadTool(join(packageRoot, "src", "subagents", "abort.ts"));
 }
 
 function formatCount(count) {
@@ -96,12 +108,12 @@ export function renderSubagentNotification() {
 
 export function createPromptSnapshot(overrides = {}) {
   return {
-    version: 2,
+    version: 3,
     system: "test system prompt",
     instructions: "test instructions",
     output: "test output",
     manifest: {
-      contractVersion: 2,
+      contractVersion: 3,
       governanceVersion: 1,
       inheritParentSystem: true,
       effectiveSystemHash: "system-hash",
@@ -196,6 +208,49 @@ export function createTuiStub(rows = 24) {
       return renders;
     },
   };
+}
+
+/**
+ * Recording stand-in for the delivery event source (`DeliveryEventSource`):
+ * captures every subscribed handler per event and lets a test emit through
+ * the wiring `subscribeDeliveryLifecycle` installed.
+ */
+export function createDeliveryEventSource() {
+  const handlers = new Map();
+  return {
+    source: {
+      on(event, handler) {
+        if (!handlers.has(event)) handlers.set(event, []);
+        handlers.get(event).push(handler);
+      },
+    },
+    emit(event, payload) {
+      for (const handler of handlers.get(event) ?? []) {
+        if (payload === undefined) handler();
+        else handler(payload);
+      }
+    },
+    wired: (event) => (handlers.get(event) ?? []).length,
+  };
+}
+
+/**
+ * Registers one handler in a single-handler event map by composing it with
+ * the previous one, mirroring Pi, which invokes every handler registered
+ * for one event. A previous handler's returned promise is awaited before the
+ * next handler runs; synchronous handlers stay synchronous.
+ */
+export function addComposedEventHandler(map, event, handler) {
+  const previous = map.get(event);
+  if (!previous) {
+    map.set(event, handler);
+    return;
+  }
+  map.set(event, (e, c) => {
+    const result = previous(e, c);
+    if (result && typeof result.then === "function") return result.then(() => handler(e, c));
+    return handler(e, c);
+  });
 }
 
 export function createExtensionStub() {

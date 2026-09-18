@@ -4,17 +4,22 @@ import type { PromptManagerSegment } from "../prompt-manager/types";
 import type { DisplayRuntimeProvider } from "../display/tool-renderer";
 import {
   abortAllBackgroundJobs,
+  attachDeliveryController,
   createBackgroundState,
   notifyBackgroundChange,
+  replaceBackgroundViewFeed,
 } from "./background";
-import { createDeliveryController } from "./delivery";
+import { subscribeDeliveryLifecycle } from "./confirmed-delivery";
+import { createSubagentDeliveryCore } from "./delivery";
 import { listRetainedSubagentIds } from "./artifacts";
 import { reconcileChildPartitions } from "../anchored-edit/partitions";
 import { discoverSubagents, filterVisibleSubagents } from "./definitions";
 import { registerSubagentManager } from "./manager";
-import { createNativeSubagentStatusController } from "./status";
+import { registerMainTaskInputEvents } from "./main-task-input";
+import { createSubagentRosterController } from "./roster";
 import { anchoredEditingEnabled, registerSubagentTool, type SubagentRuntimeState } from "./tool";
 import { decorateSubagentTool } from "./display-adapter";
+import { createSubagentBlockingCallRegistry } from "./wait";
 
 function formatSubagentCatalog(state: SubagentRuntimeState): string {
   const definitions = filterVisibleSubagents(state.registry).definitions;
@@ -22,7 +27,7 @@ function formatSubagentCatalog(state: SubagentRuntimeState): string {
 
   const lines = [
     "## Available YAML-defined subagents",
-    "Use the delegate tool with agent: \"name\" when one of these specialized child agents fits the task.",
+    "Use the delegate_subagent tool with agent: \"name\" when one of these specialized child agents fits the task.",
   ];
 
   for (const definition of definitions) {
@@ -41,15 +46,27 @@ export interface SubagentFeature {
   buildSubagentCatalog(cwd: string, turnSeq: number): PromptManagerSegment;
   setInheritedSystemCore(systemPrompt: string | undefined): void;
 }
-
 export default function registerSubagents(
   pi: ExtensionAPI,
   runtime?: DisplayRuntimeProvider,
   config?: () => PiSquareConfig,
 ): SubagentFeature {
+  // Background results are delivered through the session-owned core: the
+  // reliable-delivery core parameterized with the Subagent policy coalesces
+  // finished runs, delivers them only at a safe moment, and re-sends a result
+  // the parent never received. The core is created here, at registration,
+  // through its single factory and attached to the job store immediately —
+  // the session state has exactly one delivery creation path (#373), so no
+  // later reader needs an optional chain.
+  const delivery = createSubagentDeliveryCore({
+    pi,
+    isIdle: () => state.sessionCtx?.isIdle() ?? true,
+    notify: () => notifyBackgroundChange(background),
+  });
+  const background = attachDeliveryController(createBackgroundState(), delivery);
   const state: SubagentRuntimeState = {
-    registry: { definitions: [], errors: [], projectDir: null },
-    background: createBackgroundState(),
+    registry: { definitions: [], invalid: [], errors: [], projectDir: null },
+    background,
     sessionCtx: undefined,
     inheritedSystemCore: undefined,
     config,
@@ -59,26 +76,46 @@ export default function registerSubagents(
     state.registry = discoverSubagents(cwd);
   };
   state.refresh = refresh;
-  // Background results are delivered through the session-owned controller: it
-  // coalesces finished runs, delivers them only at a safe moment, and re-sends
-  // a result the parent never received.
-  const delivery = createDeliveryController({
-    pi,
-    isIdle: () => state.sessionCtx?.isIdle() ?? true,
-    notify: () => notifyBackgroundChange(state.background),
-  });
-  state.background.delivery = delivery;
-  const nativeStatus = createNativeSubagentStatusController(state.background);
+  // Outstanding blocking subagent calls are session-scoped: a replacement,
+  // reload, or shutdown terminates every one of them, and the delivery reset
+  // clears any memory-only wait claims.
+  const blockingCallRegistry = createSubagentBlockingCallRegistry();
+  // The roster ticks through the display runtime's session motion scheduler,
+  // resolved at each session start because a replacement session rebuilds the
+  // runtime; motion `off` and downgraded environments never schedule a timer.
+  const roster = createSubagentRosterController(
+    state.background,
+    runtime === undefined
+      ? {}
+      : {
+        display: () => typeof runtime === "function" ? runtime() : runtime,
+      },
+  );
+  registerMainTaskInputEvents(pi, () => roster.advanceMainTaskEpoch());
 
-  registerSubagentTool(pi, state, runtime
-    ? (definition) => decorateSubagentTool(definition, runtime)
-    : undefined);
+  registerSubagentTool(
+    pi,
+    state,
+    runtime ? (definition) => decorateSubagentTool(definition, runtime) : undefined,
+    blockingCallRegistry,
+  );
   registerSubagentManager(pi, state, runtime);
 
   pi.on("session_start", async (_event, ctx) => {
     state.sessionCtx = ctx;
     state.inheritedSystemCore = undefined;
+    blockingCallRegistry.terminateAll("session replaced");
     delivery.reset();
+    // The old session's roster tears down and the new session's roster starts
+    // synchronously, before the first await below: a slow child-partition
+    // reconcile must never leave the previous session's widget, subscription,
+    // or motion tick alive. The session-scoped live view feed is part of that
+    // teardown: a fresh generation replaces it, so subscribers, undelivered
+    // events, and late publications from old children cannot enter the new
+    // parent session.
+    replaceBackgroundViewFeed(state.background);
+    roster.stop();
+    roster.start(ctx);
     refresh(ctx.cwd);
     // Child anchor-store partitions follow subagent artifacts: reconcile the
     // workspace store against the retained children and prune records for
@@ -91,40 +128,37 @@ export default function registerSubagents(
         console.error("Failed to reconcile child anchor-store partitions:", error);
       }
     }
-    nativeStatus.start(ctx);
     if (ctx.hasUI && state.registry.errors.length > 0) {
       const suffix = state.registry.errors.length > 1 ? ` (+${state.registry.errors.length - 1} more)` : "";
       ctx.ui.notify(`subagents: ${state.registry.errors[0]}${suffix}`, "warning");
     }
   });
 
-  // Delivery timing. A running parent receives results at a turn boundary; a
-  // parent that settled naturally receives them at once; a parent that the
-  // user interrupted stays silent until it starts its next turn.
-  pi.on("agent_start", () => {
-    delivery.handleAgentStart();
-  });
-
-  pi.on("turn_end", (event) => {
-    delivery.handleTurnEnd(event.message);
-  });
-
-  pi.on("agent_end", (event) => {
-    delivery.handleAgentEnd(event.messages);
-  });
-
-  pi.on("agent_settled", () => {
-    delivery.handleAgentSettled();
-  });
-
-  // Delivery confirmation: a result counts as delivered only when Pi injects
-  // the message that carries it into the parent transcript.
-  pi.on("message_start", (event) => {
-    delivery.observeMessage(event.message);
-  });
+  // Main-task visibility epoch (#308): a real prompt submitted to main —
+  // interactive or rpc input, never an extension continuation — expires the
+  // roster's ordinary terminal rows from the preceding task. Pi emits the
+  // `input` event only inside `session.prompt`, after slash-command handling,
+  // and local `!` shell commands never reach it — but the event itself cannot
+  // be the boundary: the extension input chain lets a later handler return
+  // action:"handled" so the prompt never reaches the agent, and a prompt that
+  // fails model/auth preflight never starts a run. The epoch therefore
+  // advances only where main provably accepted the prompt: at
+  // `before_agent_start` for an idle prompt (Pi emits it after preflight, once
+  // the message array is built), and at the user `message_start` for a
+  // steer/follow-up queued during a streaming run — the same commit
+  // discipline the Shadow Minds scheduler uses for its task epochs.
+  // Delivery timing and confirmation (ADR-0009). The delivery core subscribes
+  // the Pi lifecycle itself: a running parent receives results at a turn
+  // boundary, a naturally settled parent at once, and an interrupted parent
+  // stays silent until its next run starts; a result counts as delivered only
+  // when the carrying message is observed in the transcript. The main-task
+  // epoch commits its own message_start boundary in main-task-input (#308).
+  subscribeDeliveryLifecycle(delivery, pi);
 
   pi.on("session_shutdown", async () => {
-    nativeStatus.stop();
+    state.background.viewFeed?.clear();
+    roster.stop();
+    blockingCallRegistry.terminateAll("session shutdown");
     abortAllBackgroundJobs(state.background);
     delivery.reset();
     state.sessionCtx = undefined;

@@ -56,12 +56,8 @@ const requiredPackFiles = [
   "src/display-api.ts",
   "shadow-minds/example.md",
   "shadow-minds/schema-reference.md",
-  "subagents/crawler.yaml",
   "subagents/example_profile.yaml",
-  "subagents/explorer.yaml",
-  "subagents/generalist.yaml",
-  "subagents/librarian.yaml",
-  "subagents/oracle.yaml",
+  "subagents/schema-reference.md",
 ];
 const rejectedShadowAsset = spawnSync(
   process.execPath,

@@ -45,19 +45,19 @@ function plainLines(component, width = 80) {
 
 function details(overrides = {}) {
   return {
-    version: 3,
+    version: 4,
     id: "subagent_12345678-abcd-4abc-8abc-123456789abc",
-    mode: "bg",
+    operation: "delegate",
     artifactsDir: "/tmp/private-artifacts",
     sessionFile: "/tmp/private-artifacts/session.jsonl",
     sessionId: "native-private-id",
     originParentSessionId: "parent-private-id",
     lastParentSessionId: "parent-private-id",
     promptSnapshot: {
-      version: 2,
+      version: 3,
       system: "private system",
       manifest: {
-        contractVersion: 2,
+        contractVersion: 3,
         governanceVersion: 1,
         inheritParentSystem: true,
         effectiveSystemHash: "hash",
@@ -67,7 +67,7 @@ function details(overrides = {}) {
         sourceFiles: [],
       },
     },
-    phase: "done",
+    phase: "completed",
     agent: { promptVersion: 2, name: "explorer", effort: "high", inheritParentSystem: true },
     task: "Inspect the parser and report concrete evidence.",
     cwd: "/tmp/project",
@@ -80,8 +80,8 @@ function details(overrides = {}) {
     toolErrors: [],
     usage: { input: 1200, output: 340, cacheRead: 20, cacheWrite: 0, cost: 0.0012, turns: 2 },
     timeline: [
-      { kind: "tool", phase: "start", text: "grep {\"pattern\":\"needle\",\"path\":\"src\"}" },
-      { kind: "tool", phase: "end", text: "grep: SECRET TOOL OUTPUT", isError: false },
+      { kind: "tool", phase: "start", tool: "grep", args: { pattern: "needle", path: "src" }, text: "grep /needle/ in src" },
+      { kind: "tool", phase: "end", tool: "grep", text: "grep: SECRET TOOL OUTPUT", isError: false },
     ],
     ...overrides,
   };
@@ -90,18 +90,44 @@ function details(overrides = {}) {
 const run = details();
 const message = {
   content: "background content",
-  details: { id: run.id, status: "done", result: run },
+  details: {
+    version: 5,
+    deliveryId: "delivery-1",
+    resent: false,
+    results: [{ id: run.id, status: "completed", result: run }],
+  },
 };
 
 // ─── 1. Completion content uses the canonical transcript description ──
 
 {
-  const shared = describeSubagentRun("delegate", run, { expanded: false, isPartial: false, isError: false }, "background content");
-  assert.equal(shared.tool, "delegate", "notification reuses the transcript tool identity");
+  const shared = describeSubagentRun("delegate_subagent", run, { expanded: false, isError: false }, "background content");
+  assert.equal(shared.tool, "delegate_subagent", "notification reuses the transcript tool identity");
   assert.equal(shared.family, "agent", "notification reuses the agent family");
   assert.equal(shared.lifecycle, "completed", "done phase resolves to the completed lifecycle");
   assert.equal(shared.title, "Subagent");
   assert.equal(shared.target, "explorer");
+}
+
+// Legacy timeline entries (persisted before structured tool activity)
+// carry no tool field: they cannot be paired truthfully, so each renders
+// as a standalone anonymous row and never adopts another call's status.
+{
+  const legacy = details({
+    timeline: [
+      { kind: "tool", phase: "start", text: "read src/a.ts" },
+      { kind: "tool", phase: "start", text: "bash npm test" },
+      { kind: "tool", phase: "end", text: "read: ok" },
+      { kind: "tool", phase: "start", tool: "grep", args: { pattern: "needle", path: "." }, text: "grep /needle/ in ." },
+      { kind: "tool", phase: "end", tool: "grep", text: "grep: 1 match" },
+    ],
+  });
+  const description = describeSubagentRun("delegate_subagent", legacy, { expanded: true, isError: false }, "background content");
+  const activity = description.sections.find((section) => section.title === "Activity");
+  const items = activity.blocks[0].items;
+  assert.equal(items.length, 4, "three standalone legacy rows plus one paired structured call");
+  assert.deepEqual(items.map((item) => item.tool), ["tool", "tool", "tool", "grep"], "legacy entries stay anonymous");
+  assert.deepEqual(items.map((item) => item.status), ["running", "running", "done", "done"], "a legacy end never closes another tool's start and the structured pair closes exactly");
 }
 
 // ─── 2. Native shell remains the documented exception ────────────────
@@ -120,7 +146,7 @@ assert.match(collapsed, /✓ Subagent\s+explorer/, "marker, stable title column,
 // visible only when expanded. The inline summary states the outcome.
 assert.doesNotMatch(collapsed, /Finding/, "collapsed hides the result preview");
 assert.match(collapsed, /run 12345678/, "collapsed shows the run ID in the inline summary");
-assert.doesNotMatch(collapsed, /id=12345678|mode=bg|phase=done/, "key=value metadata stays out of the collapsed row");
+assert.doesNotMatch(collapsed, /id=12345678|operation=delegate|phase=completed/, "key=value metadata stays out of the collapsed row");
 
 // ─── 4. Privacy: no prompts, artifacts, raw sessions, or payloads ────
 
@@ -138,8 +164,8 @@ assert.doesNotMatch(collapsed, /subagent_12345678-abcd/, "the full run ID stays 
 assert.match(expanded, /Unique expanded tail/, "expanded reveals the bounded full result");
 assert.match(expanded, /Inspect the parser/, "expanded reveals the delegated task");
 assert.match(expanded, /run 12345678/, "expanded shows the bounded short run identity in the summary");
-assert.match(expanded, /bg/, "expanded shows the delivery mode in the identity row");
-assert.match(expanded, /done/, "expanded shows the terminal phase in the summary");
+assert.match(expanded, /delegate/, "expanded shows the run operation in the identity row");
+assert.match(expanded, /completed/, "expanded shows the terminal phase in the summary");
 assert.match(expanded, /Task/, "expanded uses the shared label-led section rule");
 assert.match(expanded, /Result/, "result section uses the shared section rule");
 assert.match(expanded, /Activity/, "activity section uses the shared section rule");
@@ -147,11 +173,16 @@ assert.match(expanded, /needle/, "allowlisted tool-call summary remains visible"
 
 // ─── 6. Error and aborted deliveries ─────────────────────────────────
 
-const failed = details({ phase: "error", finalText: "", error: "failed" });
+const failed = details({ phase: "failed", finalText: "", error: "failed" });
 const errorBackgrounds = [];
 const errorText = plainLines(renderSubagentNotification({
   content: "failed",
-  details: { id: failed.id, status: "error", result: failed },
+  details: {
+    version: 5,
+    deliveryId: "delivery-2",
+    resent: false,
+    results: [{ id: failed.id, status: "failed", result: failed }],
+  },
 }, { expanded: false }, {
   ...plainTheme,
   bg(color, text) { errorBackgrounds.push(color); return String(text); },
@@ -162,13 +193,49 @@ assert.match(errorText, /× Subagent/, "error renders the failed marker");
 const abortedDetails = details({ phase: "aborted", finalText: "", error: "cancelled" });
 const abortedBackgrounds = [];
 const abortedText = plainLines(renderSubagentNotification(
-  { content: "aborted", details: { id: abortedDetails.id, status: "aborted", result: abortedDetails } },
+  {
+    content: "aborted",
+    details: {
+      version: 5,
+      deliveryId: "delivery-3",
+      resent: false,
+      results: [{ id: abortedDetails.id, status: "failed", result: abortedDetails }],
+    },
+  },
   { expanded: false },
   { ...plainTheme, bg(color, text) { abortedBackgrounds.push(color); return String(text); } },
 ), 80).join("\n");
 assert.match(abortedText, /· Subagent/, "aborted renders the aborted marker, not the failed marker");
 assert.doesNotMatch(abortedText, /× Subagent/, "aborted does not render the failed marker");
 assert.ok(abortedBackgrounds.includes("toolErrorBg"), "aborted notification uses the error shell");
+
+// ─── 6b. A resumed run's completion keeps its Resume identity ─────────
+
+{
+  const resumed = details({ operation: "resume" });
+  const resumedMessage = {
+    content: "resumed content",
+    details: {
+      version: 5,
+      deliveryId: "delivery-4",
+      resent: false,
+      results: [{ id: resumed.id, status: "completed", result: resumed }],
+    },
+  };
+  const resumedText = plainLines(renderSubagentNotification(
+    resumedMessage,
+    { expanded: false },
+    plainTheme,
+  ), 80).join("\n");
+  assert.match(resumedText, /✓ Resume\s+12345678/, "a resumed completion renders the Resume title and short run id");
+  assert.doesNotMatch(resumedText, /Subagent\s+explorer/, "a resumed completion does not render as a fresh delegation");
+  const resumedExpanded = plainLines(renderSubagentNotification(
+    resumedMessage,
+    { expanded: true },
+    plainTheme,
+  ), 80).join("\n");
+  assert.match(resumedExpanded, /resume/, "the identity row states the resumed run kind");
+}
 
 // ─── 7. Unknown payloads fall back without breaking the shell ────────
 
@@ -179,6 +246,50 @@ assert.ok(abortedBackgrounds.includes("toolErrorBg"), "aborted notification uses
     plainTheme,
   );
   assert.match(plainLines(fallback, 80).join("\n"), /Background subagent finished/);
+}
+
+// ─── 7b. A malformed V5 entry renders nothing ────────────────────────
+
+{
+  const valid = details({ id: "subagent_99999999-9999-4999-8999-999999999999" });
+  const malformed = renderSubagentNotification(
+    {
+      content: "one structured run and one malformed entry",
+      details: {
+        version: 5,
+        deliveryId: "delivery-6",
+        resent: false,
+        results: [
+          { id: "run-missing-status", result: details({ id: "subagent_88888888-8888-4888-8888-888888888888" }) },
+          { id: "run-non-v4-result", status: "completed", result: { ...valid, version: 3 } },
+          { id: "run-mismatched-id", status: "failed", result: valid },
+          { id: valid.id, status: "completed", result: valid },
+        ],
+      },
+    },
+    { expanded: false },
+    plainTheme,
+  );
+  const text = plainLines(malformed, 80).join("\n");
+  const renderedRuns = text.split("\n").filter((line) => /Subagent\s+explorer/.test(line));
+  assert.equal(renderedRuns.length, 1, "only the complete entry renders a run");
+  assert.match(renderedRuns[0], /✓ Subagent\s+explorer/, "the complete entry renders its own run");
+  assert.doesNotMatch(text, /88888888/, "a malformed entry renders no run of its own");
+  // With every entry malformed, the delivery falls back to the bounded content.
+  const allMalformed = renderSubagentNotification(
+    {
+      content: "only malformed entries",
+      details: {
+        version: 5,
+        deliveryId: "delivery-7",
+        resent: false,
+        results: [{ id: "run-no-result", status: "completed" }],
+      },
+    },
+    { expanded: false },
+    plainTheme,
+  );
+  assert.match(plainLines(allMalformed, 80).join("\n"), /only malformed entries/);
 }
 
 // ─── 8. Bounded in bundled themes at every boundary width ────────────
@@ -197,13 +308,13 @@ for (const themeName of ["pi-square-theme-dark", "pi-square-theme-light"]) {
 
 assert.doesNotMatch(`${collapsed}\n${expanded}`, /[⌛⏳◐◌\uFE0F]/u, "no emoji presentation characters");
 
-// ─── 9. One V4 delivery stacks every run it carries ──────────────────
+// ─── 9. One V5 delivery stacks every run it carries ──────────────────
 
 {
   const first = details({ id: "subagent_11111111-aaaa-4aaa-8aaa-111111111111", agent: { promptVersion: 2, name: "explorer", inheritParentSystem: true } });
   const second = details({
     id: "subagent_22222222-bbbb-4bbb-8bbb-222222222222",
-    phase: "error",
+    phase: "failed",
     finalText: "",
     error: "second run failed",
     agent: { promptVersion: 2, name: "oracle", inheritParentSystem: true },
@@ -211,12 +322,12 @@ assert.doesNotMatch(`${collapsed}\n${expanded}`, /[⌛⏳◐◌\uFE0F]/u, "no em
   const batch = {
     content: "[Background subagents: 2 results]",
     details: {
-      version: 4,
-      deliveryId: "delivery-1",
+      version: 5,
+      deliveryId: "delivery-5",
       resent: false,
       results: [
-        { id: first.id, status: "done", result: first },
-        { id: second.id, status: "error", result: second },
+        { id: first.id, status: "completed", result: first },
+        { id: second.id, status: "failed", result: second },
       ],
     },
   };
@@ -242,3 +353,257 @@ assert.doesNotMatch(`${collapsed}\n${expanded}`, /[⌛⏳◐◌\uFE0F]/u, "no em
 }
 
 console.log("subagent notification rendering: shared description, privacy, shells, and width contracts passed");
+
+// ─── wait_subagent calm operational display (#277) ───────────────────
+
+const { __testables: subagentAdapterTestables } = await load(join(packageRoot, "src", "subagents", "display-adapter.ts"));
+const waitAdapter = subagentAdapterTestables.createWaitAdapter();
+
+const waitId = (prefix) => `subagent_${prefix}abcd-4abc-8abc-123456789abc`;
+
+// wait call description: selected count and ordered short ids
+{
+  const single = waitAdapter.describeCall(
+    { ids: [waitId("11111111")] },
+    { executionStarted: false },
+  );
+  assert.equal(single.title, "Wait");
+  assert.equal(single.family, "agent");
+  assert.equal(single.lifecycle, "queued");
+  assert.equal(single.target, "11111111");
+  assert.equal(single.qualifiers, undefined);
+
+  const multi = waitAdapter.describeCall(
+    { ids: [waitId("22222222"), waitId("11111111"), waitId("22222222")] },
+    { executionStarted: true },
+  );
+  assert.equal(multi.lifecycle, "running");
+  assert.equal(multi.target, "2 runs");
+  assert.equal(multi.rows.length, 1);
+  assert.equal(multi.rows[0].tone, "muted");
+}
+
+// wait result description: ordered terminal evidence and aggregate summary
+{
+  const summary = (run, status, overrides = {}) => ({
+    id: run.id,
+    operation: "delegate",
+    status,
+    task: run.task,
+    startedAt: run.startedAt,
+    endedAt: run.endedAt,
+    durationMs: run.durationMs,
+    result: status === "completed" ? run.finalText : "",
+    error: status === "completed" ? undefined : (run.error ?? `run ${status}`),
+    usage: run.usage,
+    toolErrors: 0,
+    toolWarnings: 0,
+    ...overrides,
+  });
+  const one = details({ id: waitId("11111111"), task: "first task" });
+  const two = details({ id: waitId("22222222"), task: "second task", phase: "failed", finalText: "", error: "RAW-FAILURE-TEXT" });
+  const three = details({ id: waitId("33333333"), task: "third task", phase: "aborted", finalText: "", error: "RAW-ABORT-TEXT" });
+  const result = {
+    content: [{ type: "text", text: "waited" }],
+    details: {
+      version: 1,
+      ids: [waitId("22222222"), waitId("11111111"), waitId("33333333")],
+      results: [
+        { id: waitId("22222222"), status: "failed", run: summary(two, "failed") },
+        { id: waitId("11111111"), status: "completed", run: summary(one, "completed") },
+        { id: waitId("33333333"), status: "aborted", run: summary(three, "aborted") },
+      ],
+      consumed: true,
+      waitedMs: 2500,
+    },
+  };
+  const args = { ids: [waitId("22222222"), waitId("11111111"), waitId("33333333")] };
+
+  const collapsed = waitAdapter.describeResult(result, { expanded: false }, { isError: true, args });
+  assert.equal(collapsed.lifecycle, "failed");
+  assert.equal(collapsed.title, "Wait");
+  assert.equal(collapsed.target, "3 runs");
+  assert.equal(collapsed.summary, "completed · failed · aborted");
+  assert.deepEqual(collapsed.sections, [], "a collapsed wait entry is exactly one row and shows no payload");
+  assert.ok(collapsed.error.includes("2 of 3"));
+
+  const expanded = waitAdapter.describeResult(result, { expanded: true }, { isError: true, args });
+  // Ordered rows plus one bounded evidence section per run with payload.
+  assert.deepEqual(expanded.sections.map((section) => section.title), [
+    "Results",
+    "Error 22222222",
+    "Result 11111111",
+    "Error 33333333",
+  ]);
+  const rows = expanded.sections[0].blocks;
+  assert.deepEqual(rows.map((row) => row.tone), ["error", "default", "muted"]);
+  assert.ok(rows[0].text.startsWith("22222222 · failed · second task"), rows[0].text);
+  assert.ok(rows[1].text.startsWith("11111111 · completed · first task"), rows[1].text);
+  assert.equal(expanded.sections[1].blocks[0].text, "RAW-FAILURE-TEXT", "the failure raw text appears in its own Error section");
+  assert.equal(expanded.sections[1].blocks[0].tone, "error");
+  assert.equal(expanded.sections[2].blocks[0].text.includes("Unique expanded tail"), true, "the completed evidence carries the result text");
+  assert.equal(expanded.sections[3].blocks[0].text, "RAW-ABORT-TEXT");
+  assert.equal(expanded.durationMs, 2500);
+
+  const allGood = waitAdapter.describeResult(
+    {
+      content: [{ type: "text", text: "waited" }],
+      details: {
+        version: 1,
+        ids: [waitId("11111111")],
+        results: [{ id: waitId("11111111"), status: "completed", run: summary(one, "completed") }],
+        consumed: true,
+        waitedMs: 10,
+      },
+    },
+    { expanded: false },
+    { isError: false, args: { ids: [waitId("11111111")] } },
+  );
+  assert.equal(allGood.lifecycle, "completed");
+  assert.equal(allGood.summary, "completed");
+  assert.equal(allGood.error, undefined);
+}
+
+// a rejected wait renders as one failed row without terminal evidence
+{
+  const description = waitAdapter.describeResult(
+    {
+      content: [{ type: "text", text: "Subagent failed: RESULT_CLAIMED\nMessage: raw claim detail" }],
+      details: {
+        status: "error",
+        error: {
+          code: "RESULT_CLAIMED",
+          message: "A selected subagent result is already claimed by another wait_subagent call.",
+        },
+      },
+    },
+    { expanded: true },
+    { isError: true, args: { ids: [waitId("11111111"), waitId("22222222")] } },
+  );
+  assert.equal(description.title, "Wait");
+  assert.equal(description.lifecycle, "failed");
+  assert.equal(description.target, "2 runs");
+  assert.deepEqual(description.sections, []);
+  assert.match(description.error, /already claimed by another wait_subagent call/);
+  assert.doesNotMatch(description.error, /\n/);
+  assert.match(description.errorRaw, /raw claim detail/);
+}
+
+// ─── abort_subagent calm operational display (#278) ──────────────────
+
+{
+  const abortAdapter = subagentAdapterTestables.createAbortAdapter();
+  const abortId = (prefix) => `subagent_${prefix}abcd-4abc-8abc-123456789abc`;
+
+  // abort call description: selected count and ordered short ids
+  {
+    const single = abortAdapter.describeCall(
+      { ids: [abortId("11111111")] },
+      { executionStarted: false },
+    );
+    assert.equal(single.title, "Abort");
+    assert.equal(single.family, "agent");
+    assert.equal(single.lifecycle, "queued");
+    assert.equal(single.target, "11111111");
+    assert.equal(single.qualifiers, undefined);
+
+    const multi = abortAdapter.describeCall(
+      { ids: [abortId("22222222"), abortId("11111111"), abortId("22222222")] },
+      { executionStarted: true },
+    );
+    assert.equal(multi.lifecycle, "running");
+    assert.equal(multi.target, "2 runs");
+    assert.equal(multi.rows.length, 1);
+    assert.equal(multi.rows[0].tone, "muted");
+  }
+
+  // abort result description: truthful per-target outcomes, success lifecycle
+  // for a successful request even though every active target aborted
+  {
+    const target = (id, before, status, extra = {}) => ({
+      id,
+      before,
+      status,
+      abortApplied: before === "queued" || before === "running" || before === "cancelling",
+      task: `${id} task line`,
+      startedAt: 1,
+      endedAt: 2,
+      durationMs: 1,
+      ...extra,
+    });
+    const result = {
+      content: [{ type: "text", text: "aborted" }],
+      details: {
+        version: 1,
+        ids: [abortId("22222222"), abortId("11111111"), abortId("33333333")],
+        results: [
+          target(abortId("22222222"), "running", "aborted", { reason: "RAW-REASON-7T4K stopped by request" }),
+          target(abortId("11111111"), "completed", "completed"),
+          target(abortId("33333333"), "failed", "failed", { error: "RAW-FAILURE-2V8N earlier failure" }),
+        ],
+        waitedMs: 1200,
+      },
+    };
+    const args = { ids: [abortId("22222222"), abortId("11111111"), abortId("33333333")] };
+
+    const collapsed = abortAdapter.describeResult(result, { expanded: false }, { isError: false, args });
+    assert.equal(collapsed.lifecycle, "completed", "a successful abort request renders as a completed call");
+    assert.equal(collapsed.title, "Abort");
+    assert.equal(collapsed.target, "3 runs");
+    assert.equal(collapsed.summary, "completed · failed · aborted");
+    assert.deepEqual(collapsed.sections, [], "a collapsed abort entry is exactly one row and shows no payload");
+    assert.equal(collapsed.error, undefined, "aborted targets are the expected outcome, not a header failure");
+
+    const expanded = abortAdapter.describeResult(result, { expanded: true }, { isError: false, args });
+    assert.deepEqual(expanded.sections.map((section) => section.title), [
+      "Targets",
+      "Reason 22222222",
+      "Error 33333333",
+    ]);
+    const rows = expanded.sections[0].blocks;
+    assert.deepEqual(rows.map((row) => row.tone), ["muted", "default", "error"]);
+    assert.ok(rows[0].text.startsWith("22222222 · aborted · was running"), rows[0].text);
+    assert.ok(rows[1].text.startsWith("11111111 · completed · was completed"), rows[1].text);
+    assert.ok(rows[2].text.startsWith("33333333 · failed · was failed"), rows[2].text);
+    assert.equal(expanded.sections[1].blocks[0].text, "RAW-REASON-7T4K stopped by request");
+    assert.equal(expanded.sections[1].blocks[0].tone, "muted", "an abort reason is quiet evidence, not a failure");
+    assert.equal(expanded.sections[2].blocks[0].text, "RAW-FAILURE-2V8N earlier failure");
+    assert.equal(expanded.sections[2].blocks[0].tone, "error");
+    assert.equal(expanded.durationMs, 1200);
+    assert.equal(expanded.error, undefined);
+  }
+
+  // a rejected or interrupted abort renders one sentence in the header and
+  // keeps the full raw failure text for the expanded Error section only
+  {
+    const description = abortAdapter.describeResult(
+      {
+        content: [{ type: "text", text: "Subagent failed: ABORTED\nMessage: RAW-INTERRUPTION-6Y3T detail" }],
+        details: { status: "error", error: { code: "ABORTED" } },
+      },
+      { expanded: true },
+      { isError: true, args: { ids: [abortId("11111111")] } },
+    );
+    assert.equal(description.title, "Abort");
+    assert.equal(description.lifecycle, "failed");
+    assert.equal(description.target, "11111111");
+    assert.deepEqual(description.sections, [], "the Error section comes from errorRaw in the component, not the adapter");
+    assert.match(description.error, /abort wait ended before every selected target/);
+    assert.doesNotMatch(description.error, /\n/, "the header error is one sentence");
+    assert.match(description.errorRaw, /RAW-INTERRUPTION-6Y3T/, "the raw text moves to errorRaw");
+    assert.doesNotMatch(description.error, /RAW-INTERRUPTION-6Y3T/);
+
+    const rejected = abortAdapter.describeResult(
+      {
+        content: [{ type: "text", text: "Subagent failed: SUBAGENT_NOT_FOUND\nMessage: RAW-REJECTION-1W7Q detail" }],
+        details: { status: "error", error: { code: "SUBAGENT_NOT_FOUND" } },
+      },
+      { expanded: false },
+      { isError: true, args: { ids: [abortId("22222222")] } },
+    );
+    assert.match(rejected.error, /rejected because a selected subagent is unknown/);
+    assert.match(rejected.errorRaw, /RAW-REJECTION-1W7Q/);
+  }
+}
+
+console.log("abort_subagent rendering: adapter grammar passed");

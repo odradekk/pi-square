@@ -13,11 +13,17 @@ One definition is one Markdown file: a YAML frontmatter block between two
 strict YAML subset:
 
 - plain, single-quoted, and double-quoted scalars only;
-- one-line flow lists (`[a, b]`) and block lists (`- item`);
+- one-line flow lists (`[a, b]`) and block lists whose `- item` lines indent
+  exactly two spaces under their field; a block list written at column zero
+  is rejected and fails the whole file;
 - nested maps indent by exactly two spaces;
 - whole-line `#` comments are author documentation and are skipped;
-- `#` inside or after a value, tabs, anchors, aliases, tags, merge keys,
-  block scalars, and duplicate keys are rejected;
+- `#` inside a plain scalar is rejected, while a single- or double-quoted
+  scalar keeps a literal `#`; a trailing `# comment` after a value is
+  rejected in both forms, so quote the `#` into the value or move the
+  comment to its own line;
+- tabs, anchors, aliases, tags, merge keys, block scalars, and duplicate keys
+  are rejected;
 - unknown fields are rejected.
 
 The file name stem must equal the `id` (`<id>.md`). One file is one layer;
@@ -36,18 +42,22 @@ an inherited list; a provided non-empty body replaces the lower body while an
 omitted or empty body inherits; `outputSchema` is replaced atomically (never
 field-merged) and `null` restores the default summary schema. An effective
 definition must be complete (name and non-empty body among layers,
-`completionGate` only with a `completion` subscription, `requiredTools`
+`completionGate` only with a `completion` subscription, every surviving
+`triggerInstructions` key among the declared `triggers`, `requiredTools`
 within the final tool set) or the whole ID fails closed with diagnostics
-while unrelated IDs stay active.
+while unrelated IDs stay active. Because those rules read the merged
+definition, a lower layer may declare the `triggers` that a higher layer only
+writes instructions for.
 
 ## Runtime boundary
 
 Definitions and project text can never expand the fixed read-only Shadow
 tool catalog. Required tools that are excluded or unavailable fail before
 any model prompt; optional unavailable tools drop with a visible warning.
-The catalog is composed of Pi built-in `read`, `grep`, `find`, `ls` plus the
-opt-in local evidence tools; shell, writes, SSH, Firecrawl parse,
-authenticated GitHub, and delegation are excluded.
+The catalog is composed of the default local evidence built-ins plus the
+optional opt-in remote evidence tools; shell, writes, SSH, and delegation are
+excluded. The `toolCatalog` section of the contract block below names both
+groups and the set an omitted `tools` field selects.
 
 ## Contract
 
@@ -61,6 +71,11 @@ through the production parser.
   "file": {
     "maxBytes": 65536,
     "commentPolicy": "whole-line-only"
+  },
+  "toolCatalog": {
+    "builtIns": ["read", "grep", "find", "ls"],
+    "remoteEvidence": ["web_search", "web_fetch", "library_search", "library_docs"],
+    "defaultSelection": ["read", "grep", "find", "ls"]
   },
   "fields": {
     "id": {
@@ -83,7 +98,7 @@ through the production parser.
       "default": []
     },
     "triggerInstructions": {
-      "keysFromTriggers": true,
+      "keysSubsetOfDeclaredTriggers": true,
       "valueMaxLength": 8000,
       "nullClearsKey": true,
       "merge": "per-key across layers"
@@ -102,7 +117,7 @@ through the production parser.
       "entryPattern": "exact provider/model-id or *"
     },
     "model": {
-      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}\\/[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$"
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}\\/[A-Za-z0-9][A-Za-z0-9._/-]{0,197}$"
     },
     "thinking": {
       "enum": ["off", "minimal", "low", "medium", "high", "xhigh", "max"]
@@ -197,13 +212,41 @@ outputSchema:
 Name the failing target in one line.
 ```
 
-Whole-line comments are skipped, but `#` after a value is rejected:
+A quoted scalar keeps a literal `#`, and a block list indents two spaces
+under its field:
+
+```yaml shadow-valid
+---
+promptVersion: 1
+id: quoted-hash
+name: "Quoted hash # stays literal"
+tools:
+  - read
+  - grep
+---
+Quote the evidence you cite before drawing a conclusion.
+```
+
+Whole-line comments are skipped, but `#` after a plain scalar is rejected:
 
 ```yaml shadow-invalid
 ---
 promptVersion: 1
 id: trailing-comment
 name: Trailing comment # rejected
+---
+Body.
+```
+
+A trailing comment after a quoted value is rejected as well: the closing
+quote never ends the scalar, so the error names the unterminated quote
+rather than the comment.
+
+```yaml shadow-invalid
+---
+promptVersion: 1
+id: quoted-trailing-comment
+name: "Quoted" # rejected
 ---
 Body.
 ```
@@ -224,6 +267,21 @@ outputSchema:
 Body.
 ```
 
+A block list written at column zero instead of two spaces under its field
+is rejected:
+
+```yaml shadow-invalid
+---
+promptVersion: 1
+id: flush-list
+name: Flush list
+tools:
+- read
+- grep
+---
+Body.
+```
+
 A completion gate without a completion subscription fails closed in
 discovery's effective-candidate validation:
 
@@ -233,6 +291,22 @@ promptVersion: 1
 id: gateless
 name: Gateless
 completionGate: true
+---
+Body.
+```
+
+A trigger instruction the definition never subscribes to fails closed in the
+same validation: the instruction could never reach a run, so the whole ID is
+excluded rather than the key being ignored.
+
+```yaml shadow-invalid
+---
+promptVersion: 1
+id: stray-instruction
+name: Stray instruction
+triggers: [failure]
+triggerInstructions:
+  completion: Compare the settled answer against its evidence.
 ---
 Body.
 ```

@@ -12,7 +12,7 @@ const allowedFiles = new Set([
   "CHANGELOG.md",
   "docs/adr/0011-shadow-minds.md",
   "docs/adr/0013-context-memory.md",
-  "docs/adr/0017-context-memory-request-projection.md",
+  "docs/adr/0018-context-memory-request-projection.md",
   "docs/context-memory.md",
   "docs/shadow-minds.md",
   "LICENSE",
@@ -31,12 +31,8 @@ const requiredFiles = [
   "src/display-api.ts",
   "shadow-minds/example.md",
   "shadow-minds/schema-reference.md",
-  "subagents/crawler.yaml",
   "subagents/example_profile.yaml",
-  "subagents/explorer.yaml",
-  "subagents/generalist.yaml",
-  "subagents/librarian.yaml",
-  "subagents/oracle.yaml",
+  "subagents/schema-reference.md",
 ];
 const paths = new Set(pack.files.map((file) => file.path));
 

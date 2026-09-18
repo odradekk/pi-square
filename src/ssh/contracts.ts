@@ -88,6 +88,6 @@ export interface SshDetails {
   sessions?: SshSessionSummary[];
   profiles?: SshProfileSummary[];
   omissions?: { profiles: number; targets: number; sessions: number };
-  output?: Omit<SshOutputPage, "text">;
+  outputPage?: Omit<SshOutputPage, "text">;
   exitCode?: number;
 }

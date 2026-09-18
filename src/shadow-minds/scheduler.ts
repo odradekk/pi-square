@@ -26,8 +26,7 @@ export const TRIGGER_PRIORITY: Readonly<Record<ShadowTrigger, number>> = Object.
  * Pi- and pi-square-owned declarative mutation tools. Unknown third-party
  * tools are never classified as mutations by name guessing.
  */
-export const MUTATION_TOOL_NAMES: readonly string[] = Object.freeze(["edit", "write", "replace"]);
-
+export const MUTATION_TOOL_NAMES: readonly string[] = Object.freeze(["edit", "write", "replace", "insert"]);
 export function isMutationToolName(name: string): boolean {
   return MUTATION_TOOL_NAMES.includes(name);
 }
@@ -726,13 +725,16 @@ export function createShadowScheduler(deps: ShadowSchedulerDeps): ShadowSchedule
 }
 
 /**
- * Anchored mutations expose a declarative classification/status. A recoverable
- * refusal or noop has `isError: false` but changed nothing, so only `applied`
- * qualifies. Pi's built-in edit/write results lack that metadata and a
+ * Anchored mutations (`replace` and `insert`) expose a declarative
+ * classification/status. A recoverable refusal or cancellation-before-commit
+ * has `isError: false` but changed nothing, so only `applied` qualifies; the
+ * warning-bearing truthful success of a committed edit whose state
+ * publication failed keeps its `applied` classification and stays an observed
+ * mutation. Pi's built-in edit/write results lack that metadata and a
  * non-error end remains their authoritative success signal.
  */
 function mutationWasApplied(toolName: string, result: unknown): boolean {
-  if (toolName !== "replace") return true;
+  if (toolName !== "replace" && toolName !== "insert") return true;
   if (!result || typeof result !== "object") return false;
   const details = (result as { details?: unknown }).details;
   if (!details || typeof details !== "object") return false;

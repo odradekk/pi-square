@@ -4,22 +4,19 @@ import { getCatalogEntry } from "./catalog";
 import { createExecutionAdapter } from "./execution-adapters";
 import { createRemoteAdapter } from "./remote-adapters";
 import { createWorkflowAdapter } from "./workflow-adapters";
-import { createSearchAdapter } from "./search-adapters";
 import { decorateToolDefinition, type DisplayRuntimeProvider, type InternalToolDisplayAdapter } from "./tool-renderer";
 import type { DisplayFamily, DisplayMetadataEntry, OperationalLifecycle, OperationalQualifier } from "./types";
 
 const ARG_FIELDS: Readonly<Record<string, readonly string[]>> = Object.freeze({
-  pdf_search: ["path", "query", "limit"],
-  codegraph: ["operation", "projectPath", "query", "maxFiles"],
   bash: ["command", "timeout"],
   pwsh: ["command", "cwd", "timeoutMs"],
   ssh: ["operation", "profile", "target", "label", "session", "command", "prompt", "cursor", "waitMs", "newline"],
-  search: ["queries", "sites", "language", "country", "limit", "no_cache"],
-  fetch: ["urls", "mode", "include_links", "describe_images", "max_tokens", "no_cache"],
-  libs: ["libraryName", "query", "mode", "limit"],
-  docs: ["libraryId", "query", "mode", "kind", "max_tokens"],
-  parse: ["path", "pages", "mode", "max_tokens", "timeout"],
+  web_search: ["queries", "sites", "language", "country", "limit", "no_cache"],
+  web_fetch: ["urls", "mode", "include_links", "describe_images", "max_tokens", "no_cache"],
+  library_search: ["libraryName", "query", "mode", "limit"],
+  library_docs: ["libraryId", "query", "mode", "kind", "max_tokens"],
   replace: ["path", "remove_from", "remove_to", "replacement_text"],
+  insert: ["path", "anchor", "direction", "lines"],
   // github uses per-operation GITHUB_ARG_FIELDS below, not this flat map.
   // Context Memory tools (odradekk/pi-square#215, #339): submitted Memory
   // Markdown, transcript pages, and search snippets must never reach display
@@ -29,51 +26,25 @@ const ARG_FIELDS: Readonly<Record<string, readonly string[]>> = Object.freeze({
   search_memory_source: [],
   ask: ["questions"],
   todo: ["action", "id", "ids", "advance"],
-  delegate: ["agent", "mode", "task", "cwd", "model", "thinkingLevel", "context"],
-  resume: ["id", "task", "context"],
+  delegate_subagent: ["agent", "task", "cwd", "model", "thinkingLevel", "context"],
+  resume_subagent: ["id", "task", "context"],
 });
 
 const TARGET_FIELDS: Readonly<Record<string, readonly string[]>> = Object.freeze({
-  pdf_search: ["query"],
-  codegraph: ["operation"], bash: ["command"], pwsh: ["command"],
-  ssh: ["operation"], search: ["queries"], fetch: ["urls"], libs: ["libraryName"],
-  docs: ["libraryId"], parse: ["path"], replace: ["path"],
+  bash: ["command"], pwsh: ["command"],
+  ssh: ["operation"], web_search: ["queries"], web_fetch: ["urls"], library_search: ["libraryName"],
+  library_docs: ["libraryId"], replace: ["path"], insert: ["path"],
   ask: [], todo: ["action"],
   // No target field for the Context Memory tools: the workflow adapter
   // composes read_memory_source's `block B · page P` target itself, and
   // Memory Markdown must never become a header target (#217).
-  delegate: ["agent"], resume: ["id"],
-});
-
-/** C1 sentence-case titles; unique within each family (`grep` is `Text search`). */
-const TITLES: Readonly<Record<string, string>> = Object.freeze({
-  pdf_search: "PDF search",
-  codegraph: "CodeGraph", bash: "Bash", pwsh: "PowerShell",
-  ssh: "SSH", search: "Web search", fetch: "Web fetch", libs: "Library search",
-  docs: "Documentation", parse: "PDF parse", replace: "Replace", github: "GitHub",
-  ask: "Questions", todo: "Tasks",
-  compact_to_memory_block: "Memory compact", read_memory_source: "Memory source",
-  search_memory_source: "Memory search",
-  delegate: "Subagent", resume: "Resume subagent",
+  delegate_subagent: ["agent"], resume_subagent: ["id"],
 });
 
 /** Target fields that hold a local filesystem path and follow C2. */
 const PATH_TARGET_FIELDS: Readonly<Record<string, readonly string[]>> = Object.freeze({
-  parse: ["path"],
   replace: ["path"],
-});
-
-/** Per-operation target fields for the merged github tool. */
-const GITHUB_TARGET_FIELDS: Readonly<Record<string, readonly string[]>> = Object.freeze({
-  search: ["query"], read: ["path"], tree: ["path"], commit: ["ref"],
-});
-
-/** Per-operation metadata fields for the merged github tool. */
-const GITHUB_ARG_FIELDS: Readonly<Record<string, readonly string[]>> = Object.freeze({
-  search: ["kind", "query", "page", "limit"],
-  read: ["repo", "path", "ref", "line", "limit"],
-  tree: ["repo", "path", "ref", "depth", "offset", "limit"],
-  commit: ["repo", "ref", "page", "limit"],
+  insert: ["path"],
 });
 
 function record(value: unknown): Record<string, unknown> {
@@ -115,14 +86,12 @@ function resolveResultLifecycle(
 
 function metadataForArgs(name: string, args: unknown): DisplayMetadataEntry[] {
   const source = record(args);
-  const fields = name === "github"
-    ? (GITHUB_ARG_FIELDS[String(source.operation)] ?? [])
-    : (ARG_FIELDS[name] ?? []);
+  const fields = ARG_FIELDS[name] ?? [];
   return fields.flatMap((key) => {
     if (!Object.hasOwn(source, key) || source[key] === undefined) return [];
     if (name === "ssh" && key === "prompt") return [{ label: key, value: "secure input requested", tone: "warning" as const }];
     if ((name === "bash" || name === "pwsh") && key === "command") return [];
-    if ((name === "delegate" || name === "resume") && key === "task") return [];
+    if ((name === "delegate_subagent" || name === "resume_subagent") && key === "task") return [];
     if (name === "ask" && key === "questions") {
       return [{ label: "questions", value: String(Array.isArray(source[key]) ? source[key].length : 0) }];
     }
@@ -132,9 +101,7 @@ function metadataForArgs(name: string, args: unknown): DisplayMetadataEntry[] {
 
 function targetFor(name: string, args: unknown, cwd: string): { value?: string; isPath: boolean } {
   const source = record(args);
-  const fields = name === "github"
-    ? (GITHUB_TARGET_FIELDS[String(source.operation)] ?? ["operation"])
-    : (TARGET_FIELDS[name] ?? []);
+  const fields = TARGET_FIELDS[name] ?? [];
   for (const key of fields) {
     const raw = source[key];
     if (raw === undefined) continue;
@@ -151,16 +118,17 @@ function targetFor(name: string, args: unknown, cwd: string): { value?: string; 
 function callPreview(name: string, args: unknown): string | undefined {
   const source = record(args);
   if ((name === "bash" || name === "pwsh") && typeof source.command === "string") return source.command;
-  if ((name === "delegate" || name === "resume") && typeof source.task === "string") return source.task;
+  if ((name === "delegate_subagent" || name === "resume_subagent") && typeof source.task === "string") return source.task;
   return undefined;
 }
 
 /**
  * C7 boundedness signals shared by the extension tools: an explicit
- * `truncated` flag, a truncation detail object (content budgets),
- * the codegraph model-facing output budget, a truncated stderr stream, a
- * paged result with more entries available, and over-long lines truncated
- * by GitHub reads. Any of them raises the `truncated` header badge.
+ * `truncated` flag, a truncation detail object (content budgets), a
+ * truncated output or stderr stream, a paged result with more entries
+ * available, and over-long truncated lines. Any of them raises the
+ * `truncated` qualifier on the operational state; qualifiers refine the
+ * state and never render header badges.
  */
 function isBoundedResult(details: Record<string, unknown>): boolean {
   const truncation = record(details.truncation);
@@ -208,14 +176,7 @@ function summaryRows(detailsValue: unknown): { rows: { text: string }[]; metadat
 }
 
 function createAdapter(name: string, family: DisplayFamily): InternalToolDisplayAdapter<any, unknown, unknown> {
-  const title = TITLES[name] ?? name;
-  function resolveTitle(args: unknown): string {
-    if (name === "github") {
-      const op = record(args).operation;
-      if (typeof op === "string" && op) return `GitHub ${op}`;
-    }
-    return title;
-  }
+  const title = getCatalogEntry(name)?.title ?? name;
   return {
     describeCall(args, context) {
       const preview = callPreview(name, args);
@@ -230,7 +191,7 @@ function createAdapter(name: string, family: DisplayFamily): InternalToolDisplay
         tool: name,
         family,
         lifecycle,
-        title: resolveTitle(args),
+        title,
         target: target.value ?? (context.argsComplete ? undefined : "building arguments"),
         ...(target.isPath ? { targetKind: "path" as const } : {}),
         metadata: metadataForArgs(name, args),
@@ -244,31 +205,31 @@ function createAdapter(name: string, family: DisplayFamily): InternalToolDisplay
       const details = record(result.details);
       const durationMs = typeof details.durationMs === "number" ? details.durationMs : undefined;
       const target = targetFor(name, context.args, context.cwd);
-      const replacePath = record(context.args).path;
+      const anchoredPath = record(context.args).path;
       const failed = (result as AgentToolResult<unknown> & { isError?: boolean }).isError === true;
       // C6: the error row states one human sentence; the raw platform text
       // moves to errorRaw and renders exactly once as an expanded ERROR section.
       const sentence = failed
         ? stringOf(details.error) ?? stringOf(details.message) ?? stringOf(text.split("\n", 1)[0]) ?? "Tool failed"
         : undefined;
-      const outcomeSummary = failed ? undefined : composeInternalSummary(name, result.details, context.args, text);
+      const outcomeSummary = failed ? undefined : composeInternalSummary(name, result.details, text);
       return {
         version: 1,
         tool: name,
         family,
         lifecycle: lc.lifecycle,
         ...(lc.qualifiers.length > 0 ? { qualifiers: lc.qualifiers } : {}),
-        title: resolveTitle(context.args),
+        title,
         target: target.value,
         ...(target.isPath ? { targetKind: "path" as const } : {}),
         metadata: [...metadataForArgs(name, context.args), ...outcome.metadata],
         rows: outcome.rows,
         durationMs,
         ...(text ? { preview: { text } } : {}),
-        ...(name === "replace" && !failed && typeof details.diff === "string" && details.diff
+        ...((name === "replace" || name === "insert") && !failed && typeof details.diff === "string" && details.diff
           ? {
               diff: {
-                path: typeof replacePath === "string" ? replacePath : undefined,
+                path: typeof anchoredPath === "string" ? anchoredPath : undefined,
                 patch: details.diff,
               },
             }
@@ -288,17 +249,12 @@ export function decorateInternalTool<T extends ToolDefinition<any, any, any>>(
   const entry = getCatalogEntry(definition.name);
   if (!entry) throw new Error(`Missing display catalog entry for '${definition.name}'`);
   const base = createAdapter(definition.name, entry.family);
-  const adapter = definition.name === "pdf_search"
-    || definition.name === "codegraph"
-    ? createSearchAdapter(definition.name, base)
-    : definition.name === "bash" || definition.name === "pwsh"
-      ? createExecutionAdapter(definition.name, base)
-      : definition.name === "search"
-        || definition.name === "fetch"
-        || definition.name === "libs"
-        || definition.name === "docs"
-        || definition.name === "parse"
-        || definition.name === "github"
+  const adapter = definition.name === "bash" || definition.name === "pwsh"
+    ? createExecutionAdapter(definition.name, base)
+    : definition.name === "web_search"
+        || definition.name === "web_fetch"
+        || definition.name === "library_search"
+        || definition.name === "library_docs"
         || definition.name === "ssh"
         ? createRemoteAdapter(definition.name, base)
         : definition.name === "ask"

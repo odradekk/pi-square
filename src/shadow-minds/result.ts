@@ -1,5 +1,5 @@
 /**
- * Shadow result submission and inbox (odradekk/pi-square#155).
+ * Shadow result submission (odradekk/pi-square#155).
  *
  * One stable terminating tool, `submit_shadow_result`, carries every Shadow
  * result. Its model-callable schema is fixed — a strict object with one
@@ -7,28 +7,22 @@
  * never changes per Shadow. The payload string is parsed as JSON and
  * validated against the effective bounded output schema; field-level
  * rejections are returned for an in-run retry, and only a valid submission
- * terminates the run. Results land in the session inbox; the bounded
- * recoverable persistent inbox arrives with #157.
+ * terminates the run. Results land in the session result store
+ * (`result-store.ts`), which owns their full lifecycle; the recoverable
+ * persistent partition arrives with #157 (`result-partition.ts`).
  */
 
-import { randomUUID } from "node:crypto";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { sanitizeDisplayLine } from "../display/sanitize";
-import type { ChildSessionUsage } from "../subagents/child-session-executor";
-import {
-  SHADOW_PAYLOAD_MAX_CHARS,
-  validateShadowPayload,
-  type ShadowDelivery,
-  type ShadowOutputSchema,
-  type ShadowTrigger,
-} from "./parser";
+import { SHADOW_PAYLOAD_BOUNDS, validateShadowPayload } from "./payload";
+import type { ShadowOutputSchema } from "./output-schema";
 
 export const SUBMIT_SHADOW_RESULT_TOOL = "submit_shadow_result";
 export const SUBMIT_SHADOW_RESULT_DESCRIPTION = "Submit the final Shadow result. The payload must be a JSON string matching the output schema. A valid submission completes the run; an invalid one returns the exact fields to fix.";
 const SubmitParams = Type.Object({
   payload: Type.String({
-    maxLength: SHADOW_PAYLOAD_MAX_CHARS,
+    maxLength: SHADOW_PAYLOAD_BOUNDS.maxEncodedChars,
     description: "The Shadow result as a JSON string matching the output schema shown in the user message.",
   }),
 }, { additionalProperties: false });
@@ -78,9 +72,9 @@ export function createSubmitShadowResultTool(handlers: SubmitShadowResultHandler
           isError: true,
         };
       }
-      if (params.payload.length > SHADOW_PAYLOAD_MAX_CHARS) {
+      if (params.payload.length > SHADOW_PAYLOAD_BOUNDS.maxEncodedChars) {
         return {
-          content: [{ type: "text" as const, text: `The payload exceeds ${SHADOW_PAYLOAD_MAX_CHARS.toLocaleString("en-US")} characters. Shorten it and submit again.` }],
+          content: [{ type: "text" as const, text: `The payload exceeds ${SHADOW_PAYLOAD_BOUNDS.maxEncodedChars.toLocaleString("en-US")} characters. Shorten it and submit again.` }],
           details: { status: "payload_too_large" },
           isError: true,
         };
@@ -169,288 +163,4 @@ export function summarizeShadowResult(payload: unknown): string {
   return normalized.length <= SHADOW_RESULT_SUMMARY_MAX_CHARS
     ? normalized
     : `${normalized.slice(0, SHADOW_RESULT_SUMMARY_MAX_CHARS - 1)}…`;
-}
-
-export type ShadowResultDelivery = "notified" | "pending" | "delivered";
-export type ShadowResultAttention = "unread" | "read" | "dismissed";
-
-/** How the activation that produced a result entered the runtime. */
-export type ShadowResultSource = "manual" | "automatic";
-
-/** Task identity of the activation that produced a result (scheduling fills it). */
-export interface ShadowTaskIdentity {
-  epoch: number;
-  /** Parent-run sequence in which the automatic activation was observed. */
-  sourceRun?: number;
-  parentEntryId?: string;
-}
-
-/** Bounded provenance and contract metadata every result records (#157). */
-export interface ShadowResultMetadata {
-  /** Hash of the effective definition source that produced the result. */
-  definitionHash?: string;
-  /** Hash of the effective output schema the payload validated against. */
-  schemaHash?: string;
-  /** The definition's configured delivery policy at run time. */
-  configuredDelivery?: ShadowDelivery;
-  /** Manual trial or scheduler-dispatched activation. */
-  source?: ShadowResultSource;
-  /** Canonical highest-priority trigger for an automatic activation. */
-  primaryTrigger?: ShadowTrigger;
-  /** Trigger reasons of the activation; automatic scheduling fills these. */
-  triggers?: ShadowTrigger[];
-  taskIdentity?: ShadowTaskIdentity;
-  /** Terminal lifecycle for a persisted cognitive result. */
-  lifecycle?: "submitted";
-  /** Number of child tool executions observed before submission. */
-  toolCalls?: number;
-  /** Whether deterministic trajectory truncation qualified this result. */
-  trajectoryTruncated?: boolean;
-  /** Bounded per-request usage and TTFT records. */
-  requests?: Array<{
-    input: number;
-    output: number;
-    cacheRead: number;
-    cacheWrite: number;
-    cost: number;
-    ttftMs?: number;
-    /** One-based turn ordinal (#161). */
-    turn?: number;
-    /** Tool executions attributed to this request (#161). */
-    toolCalls?: number;
-    /** Present only when the provider report carried cache fields (#161). */
-    cacheReported?: boolean;
-  }>;
-}
-
-export interface ShadowResultEntity extends ShadowResultMetadata {
-  id: string;
-  shadowId: string;
-  shadowName: string;
-  /** Legacy compatibility field; `source` and `primaryTrigger` are authoritative. */
-  trigger: "manual";
-  note?: string;
-  payload: unknown;
-  summary: string;
-  delivery: ShadowResultDelivery;
-  attention: ShadowResultAttention;
-  createdAt: number;
-  model?: string;
-  usage?: ChildSessionUsage;
-  /** Set once the parent transcript carries this result's bounded reference. */
-  referenced?: boolean;
-}
-
-/** Default in-memory retention; the persistent inbox keeps the same bound. */
-export const SHADOW_INBOX_DEFAULT_MAX_RESULTS = 100;
-
-export interface ShadowInboxAddInput extends ShadowResultMetadata {
-  /** Effective validated schema persisted only as the disk re-validation contract. */
-  validationSchema?: ShadowOutputSchema;
-  shadowId: string;
-  shadowName: string;
-  payload: unknown;
-  note?: string;
-  createdAt: number;
-  model?: string;
-  usage?: ChildSessionUsage;
-}
-
-export interface ShadowInbox {
-  /** Whether the inbox survives the parent session (persistent partition). */
-  readonly persistent: boolean;
-  add(input: ShadowInboxAddInput): ShadowResultEntity;
-  list(): ShadowResultEntity[];
-  /**
-   * Atomic `notified → pending` delivery transition; the confirmed-delivery
-   * slice drives it through to `delivered`. Refused for any other state.
-   */
-  send(id: string): boolean;
-  markRead(id: string): boolean;
-  dismiss(id: string): boolean;
-  delete(id: string): boolean;
-  /**
-   * Persists that the parent transcript already carries this result's
-   * bounded reference entry, so a reopen does not append it again.
-   */
-  markReferenced?(id: string): boolean;
-  /**
-   * Atomically claims the right to append this result's bounded transcript
-   * reference (#181). The claim is acquired before the append and is shared
-   * at the store's lifecycle scope — the persistent partition arbitrates
-   * between overlapping runtime instances and extension instances — so one
-   * authoritative result produces at most one reference. Returns false when
-   * another holder still owns the claim or the result is already referenced.
-   */
-  claimReference?(id: string): boolean;
-  /**
-   * Releases a claim after a failed append so a later update can retry; the
-   * result itself stays available in the inbox.
-   */
-  releaseReferenceClaim?(id: string): void;
-  /**
-   * Downgrades one still-undelivered result's configured delivery to
-   * `notify`; a new parent task forces old-task results inbox-only.
-   */
-  forceNotify?(id: string): boolean;
-  /**
-   * Confirms one delivery from transcript observation; `pending → delivered`.
-   */
-  markDelivered?(id: string): boolean;
-  /**
-   * A degraded delivery returns inbox-only: `pending → notified` with notify
-   * policy. Refused for delivered results.
-   */
-  degradeToNotify?(id: string): boolean;
-  /**
-   * Reopen recovery: results left `pending` by a lost session return
-   * inbox-only with notify policy; delivery never resumes automatically.
-   */
-  recoverPendingDelivery?(): number;
-  /** Bounded retention events when the backing store records them. */
-  events?(): Array<{ kind: "evicted"; id: string; at: number; reason: "count" | "bytes" }>;
-  clear(): void;
-}
-
-/** Retention order: oldest resolved (read, dismissed, or delivered) first. */
-export function evictionCandidate(entries: readonly ShadowResultEntity[]): ShadowResultEntity | undefined {
-  return [...entries]
-    .filter((entry) => entry.attention !== "unread" || entry.delivery === "delivered")
-    .sort((a, b) => a.createdAt - b.createdAt)[0]
-    ?? [...entries].sort((a, b) => a.createdAt - b.createdAt)[0];
-}
-
-/**
- * Session-scoped in-memory result inbox. Newest first; every state
- * transition is observable and unknown IDs are refused. `send` performs the
- * atomic `notified → pending` delivery transition. Retention evicts the
- * oldest resolved (read, dismissed, or delivered) entries before unread
- * notified ones, matching the persistent retention order.
- */
-export function createShadowInbox(options?: { maxResults?: number; makeId?: () => string }): ShadowInbox {
-  const maxResults = Math.min(
-    SHADOW_INBOX_DEFAULT_MAX_RESULTS,
-    Math.max(1, Math.trunc(options?.maxResults ?? SHADOW_INBOX_DEFAULT_MAX_RESULTS)),
-  );
-  const makeId = options?.makeId ?? (() => `shr-${randomUUID()}`);
-  const entries: ShadowResultEntity[] = [];
-  // One in-flight transcript-reference claim per result id (#181): the
-  // fallback store lives in one process, so a plain set coordinates every
-  // overlapping subscriber and runtime rebind sharing this instance.
-  const referenceClaims = new Set<string>();
-  const clone = <T>(value: T): T => structuredClone(value);
-
-  const evictIfNeeded = () => {
-    while (entries.length > maxResults) {
-      const candidate = evictionCandidate(entries);
-      if (!candidate) return;
-      entries.splice(entries.indexOf(candidate), 1);
-    }
-  };
-
-  return {
-    persistent: false,
-    add(input) {
-      const entity: ShadowResultEntity = {
-        id: makeId(),
-        shadowId: input.shadowId,
-        shadowName: input.shadowName,
-        trigger: "manual",
-        ...(input.note?.trim() ? { note: input.note.trim() } : {}),
-        payload: clone(input.payload),
-        summary: summarizeShadowResult(input.payload),
-        delivery: "notified",
-        attention: "unread",
-        createdAt: input.createdAt,
-        ...(input.model ? { model: input.model } : {}),
-        ...(input.usage ? { usage: input.usage } : {}),
-        ...(input.definitionHash ? { definitionHash: input.definitionHash } : {}),
-        ...(input.schemaHash ? { schemaHash: input.schemaHash } : {}),
-        ...(input.configuredDelivery ? { configuredDelivery: input.configuredDelivery } : {}),
-        ...(input.source ? { source: input.source } : {}),
-        ...(input.primaryTrigger ? { primaryTrigger: input.primaryTrigger } : {}),
-        ...(input.triggers ? { triggers: [...input.triggers] } : {}),
-        ...(input.taskIdentity ? { taskIdentity: clone(input.taskIdentity) } : {}),
-      };
-      entries.unshift(entity);
-      evictIfNeeded();
-      return entity;
-    },
-    list() {
-      return entries.map((entry) => clone(entry));
-    },
-    send(id) {
-      const entry = entries.find((item) => item.id === id);
-      if (!entry || entry.delivery !== "notified") return false;
-      entry.delivery = "pending";
-      return true;
-    },
-    markRead(id) {
-      const entry = entries.find((item) => item.id === id);
-      if (!entry) return false;
-      entry.attention = "read";
-      return true;
-    },
-    dismiss(id) {
-      const entry = entries.find((item) => item.id === id);
-      if (!entry) return false;
-      entry.attention = "dismissed";
-      return true;
-    },
-    delete(id) {
-      const index = entries.findIndex((item) => item.id === id);
-      if (index === -1) return false;
-      entries.splice(index, 1);
-      referenceClaims.delete(id);
-      return true;
-    },
-    claimReference(id) {
-      const entry = entries.find((item) => item.id === id);
-      if (!entry || entry.referenced || referenceClaims.has(id)) return false;
-      referenceClaims.add(id);
-      return true;
-    },
-    markReferenced(id) {
-      const entry = entries.find((item) => item.id === id);
-      if (!entry || entry.referenced) return false;
-      entry.referenced = true;
-      referenceClaims.delete(id);
-      return true;
-    },
-    releaseReferenceClaim(id) {
-      referenceClaims.delete(id);
-    },
-    forceNotify(id) {
-      const entry = entries.find((item) => item.id === id);
-      if (!entry || entry.delivery !== "notified" || entry.configuredDelivery === "notify") return false;
-      entry.configuredDelivery = "notify";
-      return true;
-    },
-    markDelivered(id) {
-      const entry = entries.find((item) => item.id === id);
-      if (!entry || entry.delivery !== "pending") return false;
-      entry.delivery = "delivered";
-      return true;
-    },
-    degradeToNotify(id) {
-      const entry = entries.find((item) => item.id === id);
-      if (!entry || entry.delivery === "delivered") return false;
-      entry.configuredDelivery = "notify";
-      if (entry.delivery === "pending") entry.delivery = "notified";
-      return true;
-    },
-    recoverPendingDelivery() {
-      let recovered = 0;
-      for (const entry of entries) {
-        if (entry.delivery !== "pending") continue;
-        entry.delivery = "notified";
-        entry.configuredDelivery = "notify";
-        recovered += 1;
-      }
-      return recovered;
-    },
-    clear() {
-      entries.length = 0;
-    },
-  };
 }

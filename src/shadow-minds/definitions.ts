@@ -24,16 +24,16 @@ import { isWithinWorkspace } from "../core/paths";
 import { diagnostic, type DiagnosticMessage } from "../core/diagnostics";
 import { getAgentPath } from "../core/paths";
 import {
-  DEFAULT_OUTPUT_SCHEMA,
   parseShadowDefinitionFile,
   SHADOW_DEFAULT_TOOLS,
+  SHADOW_FRONTMATTER_FIELDS,
   type ParsedShadowDefinition,
   type ShadowDefinitionFields,
   type ShadowDelivery,
-  type ShadowOutputSchema,
   type ShadowThinkingLevel,
   type ShadowTrigger,
 } from "./parser";
+import { DEFAULT_OUTPUT_SCHEMA, type ShadowOutputSchema } from "./output-schema";
 
 export type ShadowDefinitionScope = "agent" | "project";
 
@@ -174,7 +174,8 @@ function sourceOf(layer: LoadedLayer & { parsed: ParsedShadowDefinition }): Shad
  * Merges the layers of one ID into an effective definition. Returns undefined
  * (with reasons) when the effective definition is invalid — for example an
  * explicitly empty effective body, a completion gate without a completion
- * subscription, or a required tool outside the final tool set.
+ * subscription, a trigger instruction the definition never subscribes to, or
+ * a required tool outside the final tool set.
  */
 function mergeLayers(
   id: string,
@@ -184,24 +185,11 @@ function mergeLayers(
   const fieldSources: Record<string, ShadowDefinitionSource> = {};
   const fields: ShadowDefinitionFields = { id };
 
-  const scalarKeys: (keyof ShadowDefinitionFields)[] = [
-    "name",
-    "enabled",
-    "hidden",
-    "priority",
-    "triggers",
-    "delivery",
-    "completionGate",
-    "parentModels",
-    "model",
-    "thinking",
-    "timeoutSeconds",
-    "maxTurns",
-    "maxToolCalls",
-    "tools",
-    "requiredTools",
-    "debug",
-  ];
+  // Every field that overlays as one whole value. The layer identity field and
+  // the three fields with their own merge rules are handled separately below.
+  const scalarKeys = SHADOW_FRONTMATTER_FIELDS.filter(
+    (key) => key !== "id" && key !== "triggerInstructions" && key !== "outputSchema",
+  );
   for (const key of scalarKeys) {
     for (const layer of layers) {
       const value = layer.parsed.fields[key];
@@ -290,6 +278,17 @@ function mergeLayers(
   if (body.trim() === "") errors.push(`${id}: effective body is explicitly empty`);
   if (effective.completionGate && !effective.triggers.includes("completion")) {
     errors.push(`${id}: completionGate requires a completion trigger subscription`);
+  }
+  // An instruction for a trigger the definition never subscribes to can never
+  // reach a run, so it fails the whole ID rather than being dropped silently
+  // (#346). The merged map is what this checks, so the layering stays intact:
+  // a lower layer may declare the triggers a higher layer only instructs, and
+  // a higher layer may clear a key with null without subscribing to it.
+  const subscribed = new Set<ShadowTrigger>(effective.triggers);
+  for (const key of Object.keys(effective.triggerInstructions) as ShadowTrigger[]) {
+    if (!subscribed.has(key)) {
+      errors.push(`${id}: triggerInstructions.${key} has no '${key}' trigger subscription; add '${key}' to triggers or clear the instruction with '${key}: null'`);
+    }
   }
   const finalTools = new Set(effective.tools ?? SHADOW_DEFAULT_TOOLS);
   for (const required of effective.requiredTools) {

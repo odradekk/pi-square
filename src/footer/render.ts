@@ -6,7 +6,6 @@ import { sanitizeDisplayLine } from "../display/sanitize";
 
 const WIDE_WIDTH = 100;
 const MEDIUM_WIDTH = 64;
-const SUBAGENT_STATUS_KEY = "pi-square.subagents";
 const DISPLAY_STATUS_KEY = "pi-square.display";
 const THINKING_COLORS: Record<string, ThemeColor> = {
   off: "thinkingOff",
@@ -152,31 +151,24 @@ function sanitizeExternalStatus(text: string): string {
 }
 
 /**
- * Per-status marker. Subagent status carries per-job lifecycle markers inside
- * its text; the row-level bullet identifies the status row. Display diagnostics
- * use the warning marker (!). Generic extension statuses use a neutral
- * non-vocabulary dot (·) because they are not operational states and must not
- * borrow a lifecycle marker+tone pair.
+ * Per-status marker. Display diagnostics use the warning marker (!). Generic
+ * extension statuses use a neutral non-vocabulary dot (·) because they are not
+ * operational states and must not borrow a lifecycle marker+tone pair.
  */
 function statusMarker(theme: Theme, key: string): string {
-  if (key === SUBAGENT_STATUS_KEY) return theme.fg("accent", "●");
   if (key === DISPLAY_STATUS_KEY) return theme.fg("warning", "!");
   return theme.fg("muted", "·");
 }
 
 function statusLine(theme: Theme, snapshot: EnhancedFooterSnapshot, width: number): string | undefined {
   if (snapshot.statuses.length === 0) return undefined;
-  const ordered = [...snapshot.statuses].sort((left, right) => {
-    if (left.key === SUBAGENT_STATUS_KEY) return -1;
-    if (right.key === SUBAGENT_STATUS_KEY) return 1;
-    if (left.key === DISPLAY_STATUS_KEY) return -1;
-    if (right.key === DISPLAY_STATUS_KEY) return 1;
-    return left.key.localeCompare(right.key);
-  });
-  const statuses = ordered
-    .map((status) => status.key === SUBAGENT_STATUS_KEY
-      ? `${statusMarker(theme, status.key)} ${status.text.replace(/[\r\n\t]/g, " ").replace(/ +/g, " ").trim()}`
-      : `${statusMarker(theme, status.key)} ${theme.fg("muted", sanitizeExternalStatus(status.text))}`)
+  const statuses = [...snapshot.statuses]
+    .sort((left, right) => {
+      if (left.key === DISPLAY_STATUS_KEY) return -1;
+      if (right.key === DISPLAY_STATUS_KEY) return 1;
+      return left.key.localeCompare(right.key);
+    })
+    .map((status) => `${statusMarker(theme, status.key)} ${theme.fg("muted", sanitizeExternalStatus(status.text))}`)
     .filter((s) => s.trim().length > 1);
   if (statuses.length === 0) return undefined;
   return truncateToWidth(statuses.join(divider(theme)), Math.max(1, width), theme.fg("dim", "..."));

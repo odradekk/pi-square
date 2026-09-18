@@ -99,27 +99,26 @@ const EXPECTED_TITLES = {
   ls: "List",
   edit: "Edit",
   replace: "Replace",
+  insert: "Insert",
   write: "Write",
   find: "Find",
   grep: "Grep",
-  codegraph: "CodeGraph",
-  pdf_search: "PDF search",
   bash: "Bash",
   pwsh: "PowerShell",
-  search: "Web search",
-  fetch: "Web fetch",
-  libs: "Library search",
-  docs: "Documentation",
-  parse: "PDF parse",
-  github: "GitHub",
+  web_search: "Web search",
+  web_fetch: "Web fetch",
+  library_search: "Library search",
+  library_docs: "Library docs",
   ssh: "SSH",
   todo: "Tasks",
   ask: "Questions",
   compact_to_memory_block: "Memory compact",
   read_memory_source: "Memory source",
   search_memory_source: "Memory search",
-  delegate: "Subagent",
-  resume: "Resume",
+  delegate_subagent: "Subagent",
+  resume_subagent: "Resume",
+  wait_subagent: "Wait",
+  abort_subagent: "Abort",
 };
 
 // ─── C1: every catalog tool renders a sentence-case title ───────────
@@ -140,7 +139,7 @@ const EXPECTED_TITLES = {
       };
     const decorated = BUILTIN_FACTORIES[entry.name]
       ? decorateBuiltinDefinition(definition, TMP, () => runtime)
-      : entry.name.startsWith("subagent_")
+      : entry.family === "agent"
         ? decorateSubagentTool(definition, () => runtime)
         : decorateInternalTool(definition, () => runtime);
     // Complete arguments, execution not started → a quiet fallback marker.
@@ -431,10 +430,10 @@ const EXPECTED_TITLES = {
 {
   const description = {
     version: 1,
-    tool: "pdf_search",
+    tool: "grep",
     family: "search",
     lifecycle: "completed",
-    title: "PDF search",
+    title: "Grep",
     target: "needle",
     rows: [{ text: "3 matches" }],
     truncated: true,
@@ -476,56 +475,6 @@ const EXPECTED_TITLES = {
   const resultHeader = stripVTControlCharacters(result.render(80)[0]);
   assert.doesNotMatch(resultHeader, /\[truncated\]/, "a bounded read result renders no truncated badge");
   runtime.dispose();
-
-  // The search-family boundedness signals stay badge-free too: paged
-  // pdf_search results with more matches available, and the codegraph
-  // output budget.
-  const stub = (name) => ({
-    name,
-    description: name,
-    parameters: { type: "object", properties: {}, additionalProperties: false },
-    execute() { return { content: [] }; },
-  });
-  const pdfRuntime = newRuntime();
-  const pdf = decorateInternalTool(stub("pdf_search"), () => pdfRuntime);
-  const pdfResult = pdf.renderResult(
-    {
-      content: [{ type: "text", text: "pdf_search returned=5" }],
-      details: {
-        status: "success",
-        totalMatches: 24,
-        returned: 5,
-        hasMore: true,
-        matches: [{ page: 3, type: "exact", context: "needle found here", matchedText: "needle" }],
-      },
-    },
-    { expanded: false, isPartial: false },
-    plainTheme,
-    makeCtx({ path: "reports/q3.pdf", query: "needle" }, {}, { executionStarted: true, isError: false }),
-  );
-  assert.doesNotMatch(
-    stripVTControlCharacters(pdfResult.render(80)[0]),
-    /\[truncated\]/,
-    "a paged pdf_search result renders no truncated badge",
-  );
-  pdfRuntime.dispose();
-  const codegraphRuntime = newRuntime();
-  const codegraph = decorateInternalTool(stub("codegraph"), () => codegraphRuntime);
-  const codegraphResult = codegraph.renderResult(
-    {
-      content: [{ type: "text", text: "{}" }],
-      details: { operation: "explore", phase: "done", outputTruncated: true },
-    },
-    { expanded: false, isPartial: false },
-    plainTheme,
-    makeCtx({ operation: "explore", query: "auth" }, {}, { executionStarted: true, isError: false }),
-  );
-  assert.doesNotMatch(
-    stripVTControlCharacters(codegraphResult.render(80)[0]),
-    /\[truncated\]/,
-    "a codegraph result bounded by the output budget renders no badge",
-  );
-  codegraphRuntime.dispose();
 }
 
 // ─── Boundedness: every new header shape at every width and theme ───
@@ -543,7 +492,7 @@ const EXPECTED_TITLES = {
       qualifiers: ["truncated"], durationMs: 1250, rows: [{ text: "60 lines" }], truncated: true,
     },
     {
-      version: 1, tool: "delegate", family: "agent", lifecycle: "running",
+      version: 1, tool: "delegate_subagent", family: "agent", lifecycle: "running",
       title: "Subagent", target: "explorer", qualifiers: ["cancelling", "partial"], durationMs: 4000,
     },
   ];

@@ -2,7 +2,7 @@
 "@odradekk/pi-square": minor
 ---
 
-Context Memory: rebuild the newest Memory suffix from complete original sources (odradekk/pi-square#321, parent spec #317, ADR-0017)
+Context Memory: rebuild the newest Memory suffix from complete original sources (odradekk/pi-square#321, parent spec #317, ADR-0018)
 
 - Extends the experimental, default-off Context Memory maintenance machine above the half-budget boundary, where the previous revision refused appends with `MAINTENANCE_PENDING`. When rendered Memory sits above half its configured budget, the pending maintenance request now selects the shortest newest adjacent block suffix whose removal leaves the kept prefix within half the budget, measured with the one deterministic rendered-Memory token measure the half-budget rule, `/context`, and the submission budget already share. Blocks whose complete originals sit below a native compaction's kept boundary can never re-enter a request, so they stay in the prefix — a v1 compaction-carried baseline never rebuilds and no summary is ever summarized.
 - While the rebuild request is pending, every due request serves the suffix's complete original sources raw and in order while their summaries are absent: the request carries the prefix-only carrier byte-exact, the selected blocks' Markdown nowhere, and the fixed rebuild advisory exactly once. The serving persists unchanged across any number of deferred ordinary tool requests, never accumulates, and grows only through the explicit re-scope at a served request boundary — the same #320 fixed-source contract, now over originals instead of new history.

@@ -8,6 +8,7 @@ export {
 	MAX_HASH_LINES,
 	lineHashes,
 	_lineHashesPure,
+	_insertLineHashesPure,
 	initHasher,
 	canon,
 } from "./hash";

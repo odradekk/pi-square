@@ -46,6 +46,28 @@ function assistantCall(parts) {
 }
 
 {
+  // #288: the anchored insert projects only its bounded path field; anchor,
+  // direction, and line payloads never reach the trajectory, and the result
+  // body collapses to a scale descriptor.
+  const longPath = `src/${"a".repeat(90)}-PATH-TAIL.ts`;
+  const trajectory = buildTrajectory([
+    assistantCall([toolCall("ci", "insert", {
+      path: longPath,
+      anchor: "aB3",
+      direction: "before",
+      lines: ["INSERTED-PAYLOAD-LINE", "SECOND-PAYLOAD-LINE"],
+    })]),
+    toolResult("ci", "insert", [{ type: "text", text: "+ qW5│RESULT-DIFF-ROW\nunchanged context" }]),
+  ]);
+  assert.match(trajectory.text, /tool insert ok · path=src\/a+… · 2 lines/);
+  assert.ok(!trajectory.text.includes("PATH-TAIL"), "the path projection is bounded");
+  assert.ok(!trajectory.text.includes("INSERTED-PAYLOAD-LINE"), "line payloads never reach the trajectory");
+  assert.ok(!trajectory.text.includes("aB3"), "anchors never reach the trajectory");
+  assert.ok(!trajectory.text.includes("before"), "non-registry argument fields never reach the trajectory");
+  assert.ok(!trajectory.text.includes("RESULT-DIFF-ROW"), "diff bodies never reach the trajectory");
+}
+
+{
   // bash commands render the command field; the result body never appears.
   const trajectory = buildTrajectory([
     assistantCall([toolCall("c9", "bash", { command: "npm test", timeout: 60 })]),
@@ -58,10 +80,10 @@ function assistantCall(parts) {
 {
   // Arrays render joined and bounded; long values are clipped.
   const trajectory = buildTrajectory([
-    assistantCall([toolCall("c2", "search", { queries: ["alpha", "beta"] })]),
-    toolResult("c2", "search", [{ type: "text", text: "ok" }]),
+    assistantCall([toolCall("c2", "web_search", { queries: ["alpha", "beta"] })]),
+    toolResult("c2", "web_search", [{ type: "text", text: "ok" }]),
   ]);
-  assert.match(trajectory.text, /tool search ok · queries=alpha, beta · 2 chars/);
+  assert.match(trajectory.text, /tool web_search ok · queries=alpha, beta · 2 chars/);
 }
 
 // ── Mandatory bounded credential cleaning on known fields ───────────
@@ -77,8 +99,8 @@ function assistantCall(parts) {
 
 {
   const trajectory = buildTrajectory([
-    assistantCall([toolCall("c4", "fetch", { urls: ["https://x/api?api_key=sk-abc123"] })]),
-    toolResult("c4", "fetch", [{ type: "text", text: "page" }]),
+    assistantCall([toolCall("c4", "web_fetch", { urls: ["https://x/api?api_key=sk-abc123"] })]),
+    toolResult("c4", "web_fetch", [{ type: "text", text: "page" }]),
   ]);
   assert.ok(!trajectory.text.includes("sk-abc123"), "query secrets are redacted");
   assert.match(trajectory.text, /api_key=\[REDACTED\]/);

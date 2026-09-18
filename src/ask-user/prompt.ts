@@ -14,6 +14,7 @@ import {
   visibleWidth,
   wrapTextWithAnsi,
 } from "@earendil-works/pi-tui";
+import { withOwnedInputSurface } from "../core/input-surface";
 import { sanitizeDisplayText } from "../display/sanitize";
 import type {
   AnswerDraft,
@@ -1000,11 +1001,11 @@ export async function promptQuestions(
   signal?.addEventListener("abort", onAbort, { once: true });
 
   try {
-    return await ui.custom<PromptOutcome>((tui, theme, keybindings, done) => {
+    return await withOwnedInputSurface(() => ui.custom<PromptOutcome>((tui, theme, keybindings, done) => {
       close = done;
       if (aborted || signal?.aborted) done({ status: "cancelled", reason: "aborted" });
       return new AskWizard(questions, tui, theme, keybindings, done, onProgress);
-    });
+    }));
   } finally {
     signal?.removeEventListener("abort", onAbort);
   }

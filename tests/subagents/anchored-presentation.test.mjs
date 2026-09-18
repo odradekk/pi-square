@@ -9,11 +9,13 @@ import { run, test } from "./lib/test-helpers.mjs";
 const packageRoot = resolve(import.meta.dirname, "..", "..");
 const load = jiti(import.meta.url, { moduleCache: false });
 const {
-  formatToolCall,
-  latestToolCallSummary,
-  toolDisplayFromArgs,
-  toolEventDisplay,
+  rosterToolArgsDisplay,
+  sanitizeToolActivityArgs,
 } = await load(join(packageRoot, "src", "subagents", "tool-display.ts"));
+const {
+  managerToolArgsDisplay,
+  managerToolCallText,
+} = await load(join(packageRoot, "src", "subagents", "manager-tool-display.ts"));
 const { describeSubagentRun } = await load(join(packageRoot, "src", "subagents", "display-adapter.ts"));
 const { renderSubagentNotification } = await load(join(packageRoot, "src", "subagents", "render.ts"));
 const { __testables } = await load(join(packageRoot, "src", "subagents", "session.ts"));
@@ -29,21 +31,30 @@ function plainLines(component, width = 80) {
   return component.render(width).map((line) => stripVTControlCharacters(line));
 }
 
+function v5(result, status) {
+  return {
+    version: 5,
+    deliveryId: "delivery-1",
+    resent: false,
+    results: [{ id: result.id, status, result }],
+  };
+}
+
 function details(overrides = {}) {
   return {
-    version: 3,
+    version: 4,
     id: "subagent_12345678-abcd-4abc-8abc-123456789abc",
-    mode: "bg",
+    operation: "delegate",
     artifactsDir: "/tmp/private-artifacts",
     sessionFile: "/tmp/private-artifacts/session.jsonl",
     sessionId: "native-private-id",
     originParentSessionId: "parent-private-id",
     lastParentSessionId: "parent-private-id",
     promptSnapshot: {
-      version: 2,
+      version: 3,
       system: "private system",
       manifest: {
-        contractVersion: 2,
+        contractVersion: 3,
         governanceVersion: 1,
         inheritParentSystem: true,
         effectiveSystemHash: "hash",
@@ -53,7 +64,7 @@ function details(overrides = {}) {
         sourceFiles: [],
       },
     },
-    phase: "done",
+    phase: "completed",
     agent: { promptVersion: 2, name: "worker", effort: "high", inheritParentSystem: true },
     task: "Edit src/a.txt.",
     cwd: "/tmp/project",
@@ -75,29 +86,33 @@ function details(overrides = {}) {
 
 test("replace summaries name the target file", () => {
   assert.equal(
-    formatToolCall("replace", { path: "src/a.txt", remove_from: "abc", remove_to: "def", replacement_text: "X", secret: "private" }),
+    managerToolCallText("replace", { path: "src/a.txt", remove_from: "abc", remove_to: "def", replacement_text: "X", secret: "private" }),
     "replace src/a.txt",
   );
-  assert.doesNotMatch(formatToolCall("replace", { path: "src/a.txt", secret: "private" }), /private/);
+  assert.doesNotMatch(managerToolCallText("replace", { path: "src/a.txt", secret: "private" }), /private/);
+});
+
+test("insert summaries name the target file", () => {
+  assert.equal(
+    managerToolCallText("insert", { path: "src/a.txt", anchor: "abc", direction: "after", lines: ["x"], secret: "private" }),
+    "insert src/a.txt",
+  );
+  assert.doesNotMatch(managerToolCallText("insert", { path: "src/a.txt", lines: ["secret-text"] }), /secret-text/);
 });
 
 test("anchored summaries shorten long paths and never leak arguments", () => {
   const long = `nested/${"segment/".repeat(20)}tail.txt`;
-  const summary = formatToolCall("replace", { path: long, replacement_text: "secret-text" });
+  const summary = managerToolCallText("replace", { path: long, replacement_text: "secret-text" });
   assert.match(summary, /^replace /);
   assert.ok(Array.from(summary).length <= 120, "the summary stays within the formatter bound");
   assert.doesNotMatch(summary, /secret-text/);
 });
 
-test("legacy JSON timeline entries use the same anchored formatter", () => {
-  const replace = toolEventDisplay({
-    kind: "tool",
-    phase: "start",
-    text: 'replace {"path":"src/a.txt","remove_from":"abc","replacement_text":"X"}',
-  });
-  assert.deepEqual(replace, { tool: "replace", summary: "src/a.txt" });
+test("structured timeline entries use the same anchored formatters", () => {
+  const args = sanitizeToolActivityArgs({ path: "src/a.txt", remove_from: "abc", replacement_text: "X" });
+  assert.deepEqual(managerToolArgsDisplay("replace", args), { tool: "replace", summary: "src/a.txt" });
+  assert.deepEqual(rosterToolArgsDisplay("replace", args), { tool: "replace", summary: "called" });
 });
-
 // ─── 2. Refusal detection at the tool boundary ─────────────────────
 
 test("warning results from anchored tools are refusals, not successes or failures", () => {
@@ -153,6 +168,21 @@ test("an anchored refusal is recorded as a warning, never as a tool error", () =
   assert.equal(end.isWarning, true, "the timeline end carries the warning flag");
 });
 
+test("an anchored insert refusal is recorded as a warning, never as a tool error", () => {
+  const runDetails = details();
+  const code = __testables.classifyToolEnd(
+    runDetails,
+    "insert",
+    { content: [{ type: "text", text: "[E_RANGE_STALE] stale anchor" }], details: { status: "warning", errorCode: "E_RANGE_STALE" } },
+    false,
+  );
+  assert.equal(code, "E_RANGE_STALE");
+  assert.equal(runDetails.toolWarnings.length, 1, "the insert refusal lands in the warnings list");
+  assert.equal(runDetails.toolWarnings[0].tool, "insert");
+  assert.match(runDetails.toolWarnings[0].message, /\[E_RANGE_STALE\]/);
+  assert.equal(runDetails.toolErrors.length, 0, "an insert refusal is not a tool error");
+});
+
 test("a thrown write-lock refusal is reclassified to a warning, not a failure", () => {
   const runDetails = details();
   __testables.classifyToolEnd(
@@ -200,7 +230,7 @@ test("a run with anchored refusals completes with a warning qualifier, not a fai
     ],
     toolWarnings: [{ tool: "replace", message: "replace refused with [E_RANGE_STALE]" }],
   });
-  const description = describeSubagentRun("delegate", refused, { expanded: false, isPartial: false, isError: false }, "background content");
+  const description = describeSubagentRun("delegate_subagent", refused, { expanded: false, isError: false }, "background content");
   assert.equal(description.lifecycle, "completed", "an anchor refusal is not a failed lifecycle");
   assert.ok(description.qualifiers.includes("warning"), "the refusal surfaces as a warning qualifier");
   assert.match(description.summary ?? "", /1 anchored refusal/);
@@ -214,7 +244,7 @@ test("a genuine tool error remains distinct from an anchored refusal", () => {
     ],
     toolErrors: [{ tool: "read", message: "[E_NOT_FOUND] No such file" }],
   });
-  const description = describeSubagentRun("delegate", failed, { expanded: false, isPartial: false, isError: false }, "background content");
+  const description = describeSubagentRun("delegate_subagent", failed, { expanded: false, isError: false }, "background content");
   assert.equal(description.lifecycle, "completed");
   assert.ok(description.qualifiers.includes("warning"), "a tool error still warns");
   assert.match(description.summary ?? "", /1 tool error/);
@@ -225,16 +255,16 @@ test("expanded notification shows the anchored activity and the refusal, without
   initTheme();
   const refused = details({
     timeline: [
-      { kind: "tool", phase: "start", text: 'read {"path":"src/a.txt"}' },
-      { kind: "tool", phase: "end", text: "read: ok" },
-      { kind: "tool", phase: "start", text: 'replace {"path":"src/a.txt","remove_from":"abc"}' },
-      { kind: "tool", phase: "end", text: "replace: [E_RANGE_STALE] stale range", isWarning: true },
+      { kind: "tool", phase: "start", tool: "read", args: { path: "src/a.txt" }, text: "read src/a.txt" },
+      { kind: "tool", phase: "end", tool: "read", text: "read: ok" },
+      { kind: "tool", phase: "start", tool: "replace", args: { path: "src/a.txt", remove_from: "abc" }, text: "replace src/a.txt" },
+      { kind: "tool", phase: "end", tool: "replace", text: "replace: [E_RANGE_STALE] stale range", isWarning: true },
     ],
     toolWarnings: [{ tool: "replace", message: "replace refused with [E_RANGE_STALE]" }],
     finalText: "Done.",
   });
   const rendered = plainLines(renderSubagentNotification(
-    { content: "done", details: { id: refused.id, status: "done", result: refused } },
+    { content: "done", details: v5(refused, "completed") },
     { expanded: true },
     plainTheme,
   ), 80).join("\n");
@@ -256,7 +286,7 @@ test("collapsed notification keeps the warning marker and no payload", () => {
     finalText: "Done.",
   });
   const collapsed = plainLines(renderSubagentNotification(
-    { content: "done", details: { id: refused.id, status: "done", result: refused } },
+    { content: "done", details: v5(refused, "completed") },
     { expanded: false },
     plainTheme,
   ), 80).join("\n");

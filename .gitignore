@@ -2,7 +2,7 @@
 node_modules
 node_modules/
 
-# CodeGraph index database
+# Legacy CodeGraph index data from retired tooling; deletion is the user's decision
 .codegraph/
 
 # Build and test output
@@ -41,3 +41,6 @@ tests/context-memory/cache-experiment/report/
 
 # Private progressive experiment sessions, seeds and reports (#359)
 tests/context-memory/progressive/private-runs/
+
+# Atomic-edit backup files (extension-less temp copies next to their target)
+.tmp-*

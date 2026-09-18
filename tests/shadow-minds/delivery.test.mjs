@@ -2,18 +2,23 @@ import assert from "node:assert/strict";
 import { join, resolve } from "node:path";
 import jiti from "jiti";
 
+import { createDeliveryEventSource } from "../subagents/lib/test-helpers.mjs";
+
 const packageRoot = resolve(import.meta.dirname, "..", "..");
 const load = jiti(import.meta.url, { moduleCache: false });
 
 const {
   SHADOW_NOTIFICATION_TYPE,
-  MAX_BATCH_RESULTS,
-  MAX_PENDING_RESULTS,
   buildShadowDeliveryContent,
   shadowNotificationResultIds,
   resolveDeliveryDecision,
-  createShadowDeliveryController,
+  createShadowDeliveryCore,
 } = await load(join(packageRoot, "src", "shadow-minds", "delivery.ts"));
+const {
+  DEFAULT_MAX_BATCH_RESULTS,
+  DEFAULT_MAX_PENDING_RESULTS,
+  subscribeDeliveryLifecycle,
+} = await load(join(packageRoot, "src", "subagents", "confirmed-delivery.ts"));
 
 // ── resolveDeliveryDecision ────────────────────────────────────────
 
@@ -161,21 +166,21 @@ function makeResult(overrides = {}) {
   );
 }
 
-assert.equal(MAX_BATCH_RESULTS, 6, "batches coalesce at most six results");
-assert.equal(MAX_PENDING_RESULTS, 50, "the pending set stays bounded at fifty");
+assert.equal(DEFAULT_MAX_BATCH_RESULTS, 6, "batches coalesce at most six results");
+assert.equal(DEFAULT_MAX_PENDING_RESULTS, 50, "the pending set stays bounded at fifty");
 
-// ── createShadowDeliveryController ─────────────────────────────────
+// ── createShadowDeliveryCore ─────────────────────────────────
 
 function makeHarness(options = {}) {
   const sent = [];
   let sendAttempts = 0;
-  const runtimeOps = {
-    sendResultForDelivery: [],
-    markDelivered: [],
+  const storeOps = {
+    sent: [],
+    delivered: [],
     degraded: [],
-    ...options.runtimeOps,
+    ...options.storeOps,
   };
-  const controller = createShadowDeliveryController({
+  const controller = createShadowDeliveryCore({
     pi: {
       sendMessage(message, sendOptions) {
         sendAttempts += 1;
@@ -183,81 +188,82 @@ function makeHarness(options = {}) {
         sent.push({ message, sendOptions });
       },
     },
-    getRuntime: () => ({
-      sendResultForDelivery: (id) => {
-        runtimeOps.sendResultForDelivery.push(id);
+    getResultStore: () => ({
+      send: (id) => {
+        storeOps.sent.push(id);
         return true;
       },
-      markResultDelivered: (id) => {
-        runtimeOps.markDelivered.push(id);
+      markDelivered: (id) => {
+        storeOps.delivered.push(id);
         return true;
       },
-      degradeResultDelivery: (id) => {
-        runtimeOps.degraded.push(id);
+      degradeToNotify: (id) => {
+        storeOps.degraded.push(id);
         return true;
       },
     }),
     timing: options.timing ?? (() => ({ currentRun: 1, currentTaskEpoch: 1, parentRunning: true })),
-    onDegrade: (count) => runtimeOps.degradeNotices.push(count),
-    onPendingChange: () => runtimeOps.changes.push(true),
+    onDegrade: (count) => storeOps.degradeNotices.push(count),
+    onPendingChange: () => storeOps.changes.push(true),
   });
-  runtimeOps.degradeNotices = [];
-  runtimeOps.changes = [];
-  return { controller, sent, runtimeOps };
+  storeOps.degradeNotices = [];
+  storeOps.changes = [];
+  return { controller, sent, storeOps };
 }
 
 {
   // Steer delivers at the turn boundary of its source run and confirms
   // through transcript observation.
-  const { controller, sent, runtimeOps } = makeHarness();
+  const { controller, sent, storeOps } = makeHarness();
   controller.enqueueResult(makeResult());
   assert.equal(sent.length, 0, "a busy parent does not receive the result at once");
   controller.handleTurnEnd({ stopReason: "tool_use" });
   assert.equal(sent.length, 1, "the result enters the model at the turn boundary");
   assert.equal(sent[0].sendOptions.deliverAs, "steer", "a running parent is steered");
   assert.equal(sent[0].sendOptions.triggerTurn, true);
-  assert.equal(runtimeOps.sendResultForDelivery[0], "shr-1", "the inbox records the pending handoff");
-  assert.deepEqual(runtimeOps.markDelivered, [], "delivery is not confirmed before observation");
+  assert.equal(storeOps.sent[0], "shr-1", "the store records the pending handoff");
+  assert.deepEqual(storeOps.delivered, [], "delivery is not confirmed before observation");
+  assert.ok(storeOps.changes.length > 0, "every pending-set change reaches the status refresh hook");
   controller.observeMessage({
     customType: SHADOW_NOTIFICATION_TYPE,
     details: { version: 1, results: [{ id: "shr-1", kind: "result" }] },
   });
-  assert.deepEqual(runtimeOps.markDelivered, ["shr-1"], "a transcript observation confirms the delivery");
+  assert.deepEqual(storeOps.delivered, ["shr-1"], "a transcript observation confirms the delivery");
   assert.equal(controller.pendingCount(), 0, "a confirmed result leaves the pending set");
 }
 
 {
   // Late steer: the run settles before the turn boundary, so the result
   // degrades to notify without ever reaching the model.
-  const { controller, sent, runtimeOps } = makeHarness({
+  const { controller, sent, storeOps } = makeHarness({
     timing: () => ({ currentRun: 1, currentTaskEpoch: 1, parentRunning: false }),
   });
   controller.enqueueResult(makeResult());
   assert.equal(sent.length, 0, "an idle parent never receives a steer at enqueue time");
-  assert.deepEqual(runtimeOps.degraded, ["shr-1"], "the late steer degrades in the inbox");
+  assert.deepEqual(storeOps.degraded, ["shr-1"], "the late steer degrades to inbox-only");
   assert.equal(controller.pendingCount(), 0, "a degraded result leaves the delivery machine");
 }
 
 {
   // Wake: idle parent, current task — the result starts a follow-up turn.
-  const { controller, sent, runtimeOps } = makeHarness({
+  const { controller, sent, storeOps } = makeHarness({
     timing: () => ({ currentRun: 1, currentTaskEpoch: 2, parentRunning: false }),
   });
   controller.enqueueResult(makeResult({ configuredDelivery: "wake" }));
   assert.equal(sent.length, 1, "an idle parent receives the wake result at once");
   assert.equal(sent[0].sendOptions.triggerTurn, true, "the wake starts a follow-up turn");
   assert.equal(sent[0].sendOptions.deliverAs, undefined, "an idle parent needs no queue mode");
-  assert.equal(runtimeOps.markDelivered.length, 0);
+  assert.equal(storeOps.delivered.length, 0);
 }
 
 {
   // Wake with a stale task degrades instead of waking a new task.
-  const { controller, sent, runtimeOps } = makeHarness({
+  const { controller, sent, storeOps } = makeHarness({
     timing: () => ({ currentRun: 3, currentTaskEpoch: 3, parentRunning: false }),
   });
   controller.enqueueResult(makeResult({ configuredDelivery: "wake" }));
   assert.equal(sent.length, 0, "a stale task is never woken");
-  assert.deepEqual(runtimeOps.degraded, ["shr-1"]);
+  assert.deepEqual(storeOps.degraded, ["shr-1"]);
 }
 
 {
@@ -290,7 +296,7 @@ function makeHarness(options = {}) {
 
 {
   // Send failure retains the result for the next safe moment.
-  const { controller, sent, runtimeOps } = makeHarness({
+  const { controller, sent, storeOps } = makeHarness({
     failSendOnce: true,
     timing: () => ({ currentRun: 1, currentTaskEpoch: 1, parentRunning: false }),
   });
@@ -299,7 +305,7 @@ function makeHarness(options = {}) {
   assert.equal(controller.pendingCount(), 1, "the result stays pending after a send failure");
   controller.handleAgentSettled();
   assert.equal(sent.length, 1, "a natural settle retries the delivery");
-  assert.deepEqual(runtimeOps.markDelivered, [], "nothing is confirmed yet");
+  assert.deepEqual(storeOps.delivered, [], "nothing is confirmed yet");
 }
 
 {
@@ -324,7 +330,7 @@ function makeHarness(options = {}) {
 
 {
   // Send to agent promotes a notified result through the same machine.
-  const { controller, sent, runtimeOps } = makeHarness({
+  const { controller, sent, storeOps } = makeHarness({
     timing: () => ({ currentRun: 1, currentTaskEpoch: 5, parentRunning: false }),
   });
   const notifyResult = makeResult({ configuredDelivery: "notify", taskIdentity: { epoch: 1 } });
@@ -333,7 +339,7 @@ function makeHarness(options = {}) {
   assert.equal(controller.sendResultToAgent(notifyResult), true, "an explicit send promotes the result");
   assert.equal(sent.length, 1, "the explicit send reaches the model");
   assert.equal(sent[0].sendOptions.triggerTurn, true);
-  assert.deepEqual(runtimeOps.sendResultForDelivery, ["shr-1"], "the explicit send transitions the inbox state");
+  assert.deepEqual(storeOps.sent, ["shr-1"], "the explicit send transitions the store state");
 }
 
 {
@@ -384,36 +390,78 @@ function makeHarness(options = {}) {
 }
 
 {
-  const { controller, sent, runtimeOps } = makeHarness({
+  const { controller, sent, storeOps } = makeHarness({
     timing: () => ({ currentRun: 2, currentTaskEpoch: 1, parentRunning: true }),
   });
   controller.enqueueResult(makeResult({ taskIdentity: { epoch: 1, sourceRun: 1 } }));
   controller.handleTurnEnd({});
   assert.equal(sent.length, 0, "a steer is bound to the run that triggered its activation, not the run in which it completed");
-  assert.deepEqual(runtimeOps.degraded, ["shr-1"]);
+  assert.deepEqual(storeOps.degraded, ["shr-1"]);
 }
 
 {
-  const { controller, sent, runtimeOps } = makeHarness({
+  // A pending entry bound to a task the user already superseded degrades at
+  // the next boundary even when that boundary is an aborted turn: the
+  // sweep runs before interruption state suppresses the flush.
+  let taskEpoch = 2;
+  const { controller, sent, storeOps } = makeHarness({
+    timing: () => ({ currentRun: 1, currentTaskEpoch: taskEpoch, parentRunning: true }),
+  });
+  controller.enqueueResult(makeResult({ configuredDelivery: "steer" }));
+  assert.equal(controller.pendingCount(), 1, "a busy parent holds the fresh steer for the boundary");
+  taskEpoch = 3; // the user steered a new task mid-run
+  controller.handleTurnEnd({ stopReason: "aborted" });
+  controller.handleAgentEnd([{ stopReason: "aborted" }]);
+  controller.handleAgentSettled();
+  assert.equal(sent.length, 0, "an aborted boundary never delivers");
+  assert.deepEqual(storeOps.degraded, ["shr-1"], "the superseded entry degrades at the aborted boundary");
+  assert.equal(controller.pendingCount(), 0, "the degraded entry leaves the delivery machine");
+}
+
+{
+  // Deleting an inbox entry retires its side record: a later sweep never
+  // degrades the deleted result a second time.
+  const { controller, storeOps } = makeHarness();
+  controller.enqueueResult(makeResult());
+  controller.remove("shr-1");
+  controller.enqueueResult(makeResult({ id: "shr-2" }));
+  assert.deepEqual(storeOps.degraded, [], "the deleted entry is not degraded again");
+}
+
+{
+  // A reset also clears quiet-send evidence: an ID observed after the reset
+  // can never confirm a delivery the reset already dropped.
+  const { controller, storeOps } = makeHarness({
+    timing: () => ({ currentRun: 1, currentTaskEpoch: 1, parentRunning: false, quiet: true }),
+  });
+  controller.enqueueResult(makeResult({ configuredDelivery: "wake" }));
+  controller.handleAgentSettled();
+  controller.reset();
+  assert.equal(controller.confirmQuietDeliveries(["shr-1"]), 0, "quiet evidence does not survive a reset");
+  assert.deepEqual(storeOps.delivered, [], "no deleted delivery is marked delivered");
+}
+
+{
+  const { controller, sent, storeOps } = makeHarness({
     timing: () => ({ currentRun: 1, currentTaskEpoch: 1, parentRunning: false }),
   });
   controller.sendErrorSummary({ id: "run-cleanup", shadowId: "ground", shadowName: "Ground", phase: "error", message: "boom" });
   const notification = sent[0].message;
   controller.observeMessage(notification);
   controller.handleAgentSettled();
-  assert.deepEqual(runtimeOps.degradeNotices, [], "a confirmed failure summary leaves no stale side record to reconcile");
+  assert.deepEqual(storeOps.degradeNotices, [], "a confirmed failure summary leaves no stale side record to reconcile");
 }
 {
   // Pending-cap guard: beyond fifty unconfirmed entries, the oldest
   // degrades visibly instead of being silently dropped with a stranded
   // "sending" inbox row.
-  const { controller, sent, runtimeOps } = makeHarness();
+  const { controller, sent, storeOps } = makeHarness();
   for (let n = 1; n <= 51; n += 1) {
     controller.enqueueResult(makeResult({ id: `shr-${n}`, configuredDelivery: "wake", payload: { summary: `F${n}.` } }));
   }
   assert.equal(controller.pendingCount(), 50, "the pending set holds at most fifty");
-  assert.deepEqual(runtimeOps.degraded, ["shr-1"], "the oldest entry degrades visibly");
-  const views = { shr1Degraded: runtimeOps.degraded.length };
+  assert.deepEqual(storeOps.degraded, ["shr-1"], "the oldest entry degrades visibly");
+  const views = { shr1Degraded: storeOps.degraded.length };
   controller.handleTurnEnd({});
   assert.equal(sent.length, 1, "the capacity guard never blocks delivery");
   assert.match(sent[0].message.content, /\[Shadow advisory: 6 results\]/);
@@ -426,7 +474,7 @@ function makeHarness(options = {}) {
   // A quiet append never reaches extension handlers as message_start. The
   // drain confirms only IDs it subsequently observes in persisted session
   // entries; a fire-and-forget send call alone is not authoritative.
-  const { controller, sent, runtimeOps } = makeHarness({
+  const { controller, sent, storeOps } = makeHarness({
     timing: () => ({ currentRun: 1, currentTaskEpoch: 1, parentRunning: false, quiet: true }),
   });
   controller.enqueueResult(makeResult({ configuredDelivery: "wake" }));
@@ -434,11 +482,11 @@ function makeHarness(options = {}) {
   controller.handleAgentSettled();
   assert.equal(sent.length, 1, "the settle point flushes quietly");
   assert.equal(sent[0].sendOptions.triggerTurn, false, "a quiet send never starts a turn");
-  assert.equal(runtimeOps.markDelivered.length, 0, "nothing is confirmed before transcript observation");
+  assert.equal(storeOps.delivered.length, 0, "nothing is confirmed before transcript observation");
   assert.equal(controller.confirmQuietDeliveries([]), 0, "an unobserved fire-and-forget send is never confirmed");
   assert.equal(controller.pendingCount(), 1);
   assert.equal(controller.confirmQuietDeliveries(["shr-1"]), 1, "an observed persisted notification confirms the quiet send");
-  assert.deepEqual(runtimeOps.markDelivered, ["shr-1"], "the inbox records the delivered state");
+  assert.deepEqual(storeOps.delivered, ["shr-1"], "the store records the delivered state");
   assert.equal(controller.pendingCount(), 0);
   assert.equal(controller.confirmQuietDeliveries(["shr-1"]), 0, "the confirmation is single-shot");
 
@@ -471,5 +519,52 @@ function makeHarness(options = {}) {
   const secondIds = sent[1].message.details.results.map((entry) => entry.id);
   assert.equal(controller.confirmQuietDeliveries(secondIds), 2);
   assert.equal(controller.pendingCount(), 0);
+}
+// ── Lifecycle subscription wiring (odradekk/pi-square#369) ─────────
+//
+// The registration root hands the controller to the core's subscribe entry
+// with caller-forwarded settles (the completion gate parks the settled
+// event); these tests drive the controller as the lifecycle sink through a
+// recording event source.
+
+{
+  // Steer delivers at the turn boundary and confirms through the subscribed
+  // wiring; the settled event stays caller-forwarded for the gate.
+  const { controller, sent, storeOps } = makeHarness();
+  const events = createDeliveryEventSource();
+  const lifecycle = subscribeDeliveryLifecycle(controller, events.source, { subscribeSettled: false });
+  assert.equal(events.wired("agent_settled"), 0, "the caller owns the settled event");
+  controller.enqueueResult(makeResult());
+  assert.equal(sent.length, 0, "a busy parent still waits for the boundary");
+  events.emit("turn_end", { message: { stopReason: "tool_use" } });
+  assert.equal(sent.length, 1, "the boundary delivers through the subscribed wiring");
+  assert.equal(storeOps.sent[0], "shr-1", "the store records the pending handoff");
+
+  events.emit("message_start", {
+    message: {
+      customType: SHADOW_NOTIFICATION_TYPE,
+      details: { version: 1, results: [{ id: "shr-1", kind: "result" }] },
+    },
+  });
+  assert.deepEqual(storeOps.delivered, ["shr-1"], "the observation confirms through the subscribed wiring");
+  assert.equal(controller.pendingCount(), 0);
+
+  // Unconfirmed path: the forwarded settle resends, then confirms.
+  const second = makeResult({ id: "shr-2" });
+  controller.enqueueResult(second);
+  events.emit("turn_end", { message: { stopReason: "tool_use" } });
+  assert.equal(sent.length, 2);
+  events.emit("agent_settled");
+  assert.equal(sent.length, 2, "the settled event never reaches the lifecycle directly");
+  lifecycle.settle();
+  assert.equal(sent.length, 3, "the caller's forwarded settle resends the unconfirmed result");
+  assert.match(sent[2].message.content, /\(resent\)/, "the repeat is marked as resent");
+  events.emit("message_start", {
+    message: {
+      customType: SHADOW_NOTIFICATION_TYPE,
+      details: { version: 1, results: [{ id: "shr-2", kind: "result" }] },
+    },
+  });
+  assert.deepEqual(storeOps.delivered, ["shr-1", "shr-2"], "the resent delivery confirms once");
 }
 console.log("shadow-minds delivery tests: OK");

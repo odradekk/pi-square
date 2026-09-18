@@ -3,7 +3,7 @@ import type {
   SubagentErrorInfo,
   SubagentFailureDetails,
   SubagentRunDetails,
-} from "./types";
+} from "./run-types";
 
 const MAX_CAUSE_LENGTH = 2000;
 const ANSI_PATTERN = /\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g;
@@ -134,7 +134,7 @@ export function failureToolResult(error: SubagentError | SubagentErrorInfo) {
 
 export function applyRunFailure(details: SubagentRunDetails, error: SubagentError | SubagentErrorInfo): void {
   const info = error instanceof SubagentError ? error.info : error;
-  details.phase = info.code === "ABORTED" ? "aborted" : "error";
+  details.phase = info.code === "ABORTED" ? "aborted" : "failed";
   details.errorInfo = info;
   details.error = formatSubagentError(info);
   details.retries = Math.max(details.retries, info.retries);

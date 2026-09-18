@@ -1,10 +1,10 @@
 import { createHash } from "node:crypto";
 import type { SubagentDefinition } from "./definitions";
 import type { ParentContextMessage } from "./context";
-import type { PromptManifest, PromptSourceRef, SubagentPromptSnapshot } from "./types";
+import type { PromptManifest, PromptSourceRef, SubagentPromptSnapshot } from "./run-types";
 
 export const SUBAGENT_GOVERNANCE_VERSION = 1 as const;
-export const SUBAGENT_PROMPT_CONTRACT_VERSION = 2 as const;
+export const SUBAGENT_PROMPT_CONTRACT_VERSION = 3 as const;
 
 export const SUBAGENT_GOVERNANCE = `You are a delegated Pi subagent operating in an isolated child session.
 
@@ -73,18 +73,15 @@ function manifestSources(definition: SubagentDefinition | undefined): {
 export function compileFreshPrompt(input: {
   definition?: SubagentDefinition;
   inheritedSystemCore?: string;
-  callPolicy?: string;
   parentMessages?: ParentContextMessage[];
 }): SubagentPromptSnapshot {
   const inheritParentSystem = input.definition?.inheritParentSystem ?? true;
   const parentSystem = inheritParentSystem ? input.inheritedSystemCore?.trim() || undefined : undefined;
   const policy = input.definition?.policy?.trim() || undefined;
-  const callPolicy = input.callPolicy?.trim() || undefined;
   const parts = [
     SUBAGENT_GOVERNANCE,
     section("parent_system_core", parentSystem),
     section("agent_policy", policy),
-    section("call_policy", callPolicy),
   ].filter((value): value is string => Boolean(value));
   const system = parts.join("\n\n");
   const instructions = input.definition?.instructions?.trim() || undefined;
@@ -99,7 +96,6 @@ export function compileFreshPrompt(input: {
     governanceHash: hashPromptValue(SUBAGENT_GOVERNANCE),
     ...(optionalHash(parentSystem) ? { parentSystemHash: optionalHash(parentSystem) } : {}),
     ...(optionalHash(policy) ? { policyHash: optionalHash(policy) } : {}),
-    ...(optionalHash(callPolicy) ? { callPolicyHash: optionalHash(callPolicy) } : {}),
     ...(optionalHash(instructions) ? { instructionsHash: optionalHash(instructions) } : {}),
     ...(optionalHash(output) ? { outputHash: optionalHash(output) } : {}),
     ...(input.definition ? { definitionHash: definitionFingerprint(input.definition) } : {}),
@@ -107,7 +103,7 @@ export function compileFreshPrompt(input: {
     ...((input.parentMessages?.length ?? 0) > 0 ? { contextHash: hashPromptValue(contextText) } : {}),
     ...sources,
   };
-  return { version: 2, system, instructions, output, manifest };
+  return { version: 3, system, instructions, output, manifest };
 }
 
 export function finalizePromptSnapshot(

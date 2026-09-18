@@ -6,7 +6,7 @@ import { fmtReadPreview } from "../../../src/anchored-edit/read";
 describe("fmtReadPreview", () => {
   it("returns empty file marker for empty content", async () => {
     const result = await fmtReadPreview("", {}, undefined);
-    expect(result.text).toContain("[File is empty. Use replace to insert content.]");
+    expect(result.text).toContain("[File is empty. Use insert with the anchor row above to add its first lines.]");
   });
 
   it("returns empty file marker for content with only newline", async () => {

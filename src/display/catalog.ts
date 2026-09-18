@@ -14,6 +14,8 @@ import {
 
 export interface DisplayToolCatalogEntry {
   readonly name: string;
+  /** Canonical sentence-case operational title. */
+  readonly title: string;
   readonly family: DisplayFamily;
   readonly parent: boolean;
   readonly child: boolean;
@@ -26,6 +28,7 @@ export const DISPLAY_CATALOG: readonly DisplayToolCatalogEntry[] = Object.freeze
   // ── filesystem ──────────────────────────────────────────────────
   {
     name: "read",
+    title: "Read",
     family: "filesystem",
     parent: true,
     child: true,
@@ -33,6 +36,7 @@ export const DISPLAY_CATALOG: readonly DisplayToolCatalogEntry[] = Object.freeze
   },
   {
     name: "ls",
+    title: "List",
     family: "filesystem",
     parent: true,
     child: true,
@@ -40,6 +44,7 @@ export const DISPLAY_CATALOG: readonly DisplayToolCatalogEntry[] = Object.freeze
   },
   {
     name: "edit",
+    title: "Edit",
     family: "filesystem",
     parent: true,
     child: true,
@@ -47,13 +52,23 @@ export const DISPLAY_CATALOG: readonly DisplayToolCatalogEntry[] = Object.freeze
   },
   {
     name: "replace",
+    title: "Replace",
     family: "filesystem",
     parent: true,
     child: false,
     description: "Replace an anchored range in a workspace file",
   },
   {
+    name: "insert",
+    title: "Insert",
+    family: "filesystem",
+    parent: true,
+    child: false,
+    description: "Insert lines before or after an anchored line in a workspace file",
+  },
+  {
     name: "write",
+    title: "Write",
     family: "filesystem",
     parent: true,
     child: true,
@@ -61,6 +76,7 @@ export const DISPLAY_CATALOG: readonly DisplayToolCatalogEntry[] = Object.freeze
   },
   {
     name: "find",
+    title: "Find",
     family: "filesystem",
     parent: true,
     child: true,
@@ -69,28 +85,16 @@ export const DISPLAY_CATALOG: readonly DisplayToolCatalogEntry[] = Object.freeze
   // ── search ──────────────────────────────────────────────────────
   {
     name: "grep",
+    title: "Grep",
     family: "search",
     parent: true,
     child: true,
     description: "Search file contents using literal or regex patterns",
   },
-  {
-    name: "codegraph",
-    family: "search",
-    parent: true,
-    child: true,
-    description: "Query a local semantic code graph index",
-  },
-  {
-    name: "pdf_search",
-    family: "search",
-    parent: true,
-    child: true,
-    description: "Search local PDF documents for text",
-  },
   // ── execution ───────────────────────────────────────────────────
   {
     name: "bash",
+    title: "Bash",
     family: "execution",
     parent: true,
     child: true,
@@ -99,6 +103,7 @@ export const DISPLAY_CATALOG: readonly DisplayToolCatalogEntry[] = Object.freeze
   },
   {
     name: "pwsh",
+    title: "PowerShell",
     family: "execution",
     parent: true,
     child: true,
@@ -107,49 +112,40 @@ export const DISPLAY_CATALOG: readonly DisplayToolCatalogEntry[] = Object.freeze
   },
   // ── remote ──────────────────────────────────────────────────────
   {
-    name: "search",
+    name: "web_search",
+    title: "Web search",
     family: "remote",
     parent: true,
     child: true,
     description: "Search the web using Jina",
   },
   {
-    name: "fetch",
+    name: "web_fetch",
+    title: "Web fetch",
     family: "remote",
     parent: true,
     child: true,
     description: "Retrieve readable content from URLs",
   },
   {
-    name: "libs",
+    name: "library_search",
+    title: "Library search",
     family: "remote",
     parent: true,
     child: true,
     description: "Search library documentation via Context7",
   },
   {
-    name: "docs",
+    name: "library_docs",
+    title: "Library docs",
     family: "remote",
     parent: true,
     child: true,
     description: "Retrieve library documentation via Context7",
   },
   {
-    name: "parse",
-    family: "remote",
-    parent: true,
-    child: false,
-    description: "Parse selected local PDF pages through Firecrawl",
-  },
-  {
-    name: "github",
-    family: "remote",
-    parent: true,
-    child: true,
-    description: "Search, read, browse, and inspect GitHub repositories",
-  },
-  {
     name: "ssh",
+    title: "SSH",
     family: "remote",
     parent: true,
     child: false,
@@ -158,6 +154,7 @@ export const DISPLAY_CATALOG: readonly DisplayToolCatalogEntry[] = Object.freeze
   // ── workflow ────────────────────────────────────────────────────
   {
     name: "todo",
+    title: "Tasks",
     family: "workflow",
     parent: true,
     child: false,
@@ -165,6 +162,7 @@ export const DISPLAY_CATALOG: readonly DisplayToolCatalogEntry[] = Object.freeze
   },
   {
     name: "ask",
+    title: "Questions",
     family: "workflow",
     parent: true,
     child: false,
@@ -172,6 +170,7 @@ export const DISPLAY_CATALOG: readonly DisplayToolCatalogEntry[] = Object.freeze
   },
   {
     name: "compact_to_memory_block",
+    title: "Memory compact",
     family: "workflow",
     parent: true,
     child: false,
@@ -179,6 +178,7 @@ export const DISPLAY_CATALOG: readonly DisplayToolCatalogEntry[] = Object.freeze
   },
   {
     name: "read_memory_source",
+    title: "Memory source",
     family: "workflow",
     parent: true,
     child: false,
@@ -186,6 +186,7 @@ export const DISPLAY_CATALOG: readonly DisplayToolCatalogEntry[] = Object.freeze
   },
   {
     name: "search_memory_source",
+    title: "Memory search",
     family: "workflow",
     parent: true,
     child: false,
@@ -193,18 +194,36 @@ export const DISPLAY_CATALOG: readonly DisplayToolCatalogEntry[] = Object.freeze
   },
   // ── agent ───────────────────────────────────────────────────────
   {
-    name: "delegate",
+    name: "delegate_subagent",
+    title: "Subagent",
     family: "agent",
     parent: true,
     child: false,
-    description: "Delegate work to a child subagent",
+    description: "Queue a fresh child subagent in the background",
   },
   {
-    name: "resume",
+    name: "resume_subagent",
+    title: "Resume subagent",
     family: "agent",
     parent: true,
     child: false,
-    description: "Resume an existing child subagent",
+    description: "Queue a continuation for an existing child subagent",
+  },
+  {
+    name: "wait_subagent",
+    title: "Wait",
+    family: "agent",
+    parent: true,
+    child: false,
+    description: "Wait for selected background subagents and consume their results",
+  },
+  {
+    name: "abort_subagent",
+    title: "Abort",
+    family: "agent",
+    parent: true,
+    child: false,
+    description: "Stop selected background subagents and wait until they abort",
   },
 ] satisfies readonly DisplayToolCatalogEntry[]).map((entry) => Object.freeze(entry)));
 

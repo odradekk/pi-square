@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -8,6 +8,19 @@ import jiti from "jiti";
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const agentDir = mkdtempSync(join(tmpdir(), "pi-square-contract-agent-"));
+// The package layer ships no delegatable roles (#334), so the catalog segment
+// is exercised through an agent-layer definition this test owns.
+mkdirSync(join(agentDir, "subagents"), { recursive: true });
+writeFileSync(join(agentDir, "subagents", "contract-role.yaml"), [
+  "promptVersion: 2",
+  "name: contract-role",
+  "description: Contract-test role proving agent-layer definitions reach the parent catalog.",
+  "tools:",
+  "  - read",
+  "skills:",
+  "  - none",
+  "",
+].join("\n"), "utf8");
 const previous = process.env.PI_CODING_AGENT_DIR;
 process.env.PI_CODING_AGENT_DIR = agentDir;
 
@@ -16,6 +29,7 @@ try {
   const register = (await load("../src/index.ts")).default;
   const { childToolNames, createChildTools } = await load("../src/tool-catalog.ts");
   const { createAnchoredReplaceToolDefinition } = await load("../src/anchored-edit/workspace-replace.ts");
+  const { createAnchoredInsertToolDefinition } = await load("../src/anchored-edit/workspace-insert.ts");
   const { createChildAnchoredReplaceTool } = await load("../src/anchored-edit/child-edit.ts");
   const replaceTool = createAnchoredReplaceToolDefinition(process.cwd());
   assert.equal(replaceTool.parameters.type, "object");
@@ -24,7 +38,17 @@ try {
   assert.deepEqual(replaceTool.parameters.required, ["remove_from", "remove_to", "replacement_text"]);
   assert.equal(replaceTool.renderCall, undefined, "replace definitions stay renderer-free before parent decoration");
   assert.equal(replaceTool.renderResult, undefined, "replace definitions stay renderer-free before parent decoration");
+  const insertTool = createAnchoredInsertToolDefinition(process.cwd());
+  assert.equal(insertTool.parameters.type, "object");
+  assert.equal(insertTool.parameters.anyOf, undefined);
+  assert.equal(insertTool.parameters.oneOf, undefined);
+  assert.equal(insertTool.parameters.additionalProperties, false);
+  assert.deepEqual(insertTool.parameters.required, ["anchor", "direction", "lines"]);
+  assert.deepEqual(insertTool.parameters.properties.direction.enum, ["before", "after"]);
+  assert.equal(insertTool.renderCall, undefined, "insert definitions stay renderer-free before parent decoration");
+  assert.equal(insertTool.renderResult, undefined, "insert definitions stay renderer-free before parent decoration");
   assert.ok(!childToolNames.includes("replace"), "replace stays out of the extension catalog; the capability mapping grants it to children");
+  assert.ok(!childToolNames.includes("insert"), "insert stays out of the extension catalog; the child edit capability is a later slice (#287)");
   const childReplace = createChildAnchoredReplaceTool(process.cwd(), "subagent-child");
   assert.deepEqual(childReplace.parameters, replaceTool.parameters, "the child replace schema matches the parent's exactly");
   assert.equal(childReplace.renderCall, undefined, "child replace definitions stay renderer-free");
@@ -57,26 +81,16 @@ try {
   register(pi);
 
   assert.deepEqual([...tools.keys()].sort(), [
-    "ask", "codegraph", "compact_to_memory_block", "delegate", "docs", "fetch", "github",
-    "libs", "parse", "pdf_search", "read_memory_source", "resume", "search",
-    "search_memory_source", "ssh", "todo",
+    "abort_subagent", "ask", "compact_to_memory_block", "delegate_subagent",
+    "library_docs", "library_search", "read_memory_source", "resume_subagent",
+    "search_memory_source", "ssh", "todo", "wait_subagent", "web_fetch", "web_search",
   ]);
-  assert.ok(childToolNames.includes("codegraph"));
-  assert.ok(childToolNames.includes("pdf_search"), "pdf_search must be available through explicit child opt-in");
-  assert.deepEqual(createChildTools(["pdf_search"]).definitions.map((definition) => definition.name), ["pdf_search"]);
-  const childCodeGraph = createChildTools(["codegraph"]).definitions[0];
-  assert.equal(childCodeGraph.parameters.type, "object");
-  assert.equal(childCodeGraph.parameters.anyOf, undefined);
-  assert.deepEqual(childCodeGraph.parameters.required, ["operation"]);
-  assert.deepEqual(childCodeGraph.parameters.properties.operation.enum, ["explore", "status"]);
-  const parentCodeGraph = tools.get("codegraph");
-  assert.equal(parentCodeGraph.parameters.type, "object");
-  assert.equal(parentCodeGraph.parameters.anyOf, undefined);
-  assert.deepEqual(parentCodeGraph.parameters.required, ["operation"]);
-  assert.deepEqual(parentCodeGraph.parameters.properties.operation.enum, ["explore", "status", "init", "sync", "reindex"]);
+  assert.ok(childToolNames.includes("web_search"), "web_search must be available through explicit child opt-in");
+  assert.deepEqual(createChildTools(["web_search"]).definitions.map((definition) => definition.name), ["web_search"]);
   assert.ok(!childToolNames.includes("scheme_eval"));
-  assert.ok(!childToolNames.includes("parse"), "parse requires parent-session confirmation");
-  assert.equal(createChildTools(["parse"]).definitions.length, 0);
+  assert.ok(!childToolNames.includes("pdf_search"), "pdf_search is retired and stays invalid");
+  assert.ok(!childToolNames.includes("parse"), "parse is retired and stays invalid");
+  assert.equal(createChildTools(["pdf_search", "parse", "search", "fetch", "libs", "docs"]).definitions.length, 0);
   assert.ok(!childToolNames.includes("ssh"), "ssh must remain parent-only");
   assert.equal(createChildTools(["ssh"]).definitions.length, 0);
   const sshTool = tools.get("ssh");
@@ -95,32 +109,30 @@ try {
   assert.equal(askTool?.parameters?.properties?.questions?.maxItems, 10);
   assert.equal(askTool?.parameters?.properties?.questions?.items?.properties?.allowComment?.default, false);
   assert.equal(askTool?.parameters?.properties?.questions?.items?.properties?.required?.default, true);
-  const delegateTool = tools.get("delegate");
-  const resumeTool = tools.get("resume");
-  // Old tool names must be absent after consolidation.
-  assert.equal(tools.get("subagent_delegate"), undefined);
-  assert.equal(tools.get("subagent_resume"), undefined);
-  assert.equal(tools.get("github_search"), undefined);
-  assert.equal(tools.get("github_read"), undefined);
-  assert.equal(tools.get("github_tree"), undefined);
-  assert.equal(tools.get("github_commit"), undefined);
-  for (const subagentTool of [delegateTool, resumeTool]) {
+  const delegateTool = tools.get("delegate_subagent");
+  const resumeTool = tools.get("resume_subagent");
+  const waitTool = tools.get("wait_subagent");
+  const abortTool = tools.get("abort_subagent");
+  for (const subagentTool of [delegateTool, resumeTool, waitTool, abortTool]) {
     assert.equal(typeof subagentTool?.renderCall, "function");
     assert.equal(typeof subagentTool?.renderResult, "function");
     assert.equal(subagentTool?.renderShell, "self");
   }
   // Provider-compatibility contract: both subagent schemas are strict top-level
-  // objects without unions; delegate must not declare id (GPT models populate
-  // every declared property, which the fg/bg validation rejected).
-  for (const schema of [delegateTool?.parameters, resumeTool?.parameters]) {
+  // objects without unions; delegate_subagent must not declare id (GPT models
+  // populate every declared property, which the validation would reject).
+  for (const schema of [delegateTool?.parameters, resumeTool?.parameters, waitTool?.parameters, abortTool?.parameters]) {
     assert.equal(schema?.type, "object");
     assert.equal(schema?.anyOf, undefined);
     assert.equal(schema?.additionalProperties, false);
   }
-  assert.deepEqual(delegateTool?.parameters?.required, ["mode", "task"]);
+  assert.deepEqual(delegateTool?.parameters?.required, ["task"]);
   assert.equal(delegateTool?.parameters?.properties?.id, undefined);
-  assert.deepEqual(delegateTool?.parameters?.properties?.mode?.anyOf?.map((branch) => branch.const), ["fg", "bg"]);
   assert.deepEqual(resumeTool?.parameters?.required, ["id", "task"]);
+  assert.deepEqual(waitTool?.parameters?.required, ["ids"]);
+  assert.equal(waitTool?.parameters?.properties?.ids?.maxItems, 6);
+  assert.deepEqual(abortTool?.parameters?.required, ["ids"]);
+  assert.equal(abortTool?.parameters?.properties?.ids?.maxItems, 6);
   assert.equal(typeof renderers.get("pi-square.subagent-notification"), "function");
   assert.equal(typeof renderers.get("pi-square.subagent-config-guide"), "function");
   const todoTool = tools.get("todo");
@@ -131,14 +143,6 @@ try {
   assert.deepEqual(todoTool?.parameters?.required, ["action"]);
   assert.equal(todoTool?.parameters?.properties?.action?.enum?.length, 9);
   assert.ok(!childToolNames.includes("todo"));
-  const githubTool = tools.get("github");
-  assert.equal(githubTool?.parameters?.type, "object");
-  assert.equal(githubTool?.parameters?.anyOf, undefined);
-  assert.equal(githubTool?.parameters?.additionalProperties, false);
-  assert.deepEqual(githubTool?.parameters?.required, ["operation"]);
-  assert.deepEqual(githubTool?.parameters?.properties?.operation?.enum, ["search", "read", "tree", "commit"]);
-  assert.ok(childToolNames.includes("github"), "github must be opt-in for child sessions");
-  assert.deepEqual(createChildTools(["github"]).definitions.map((definition) => definition.name), ["github"]);
   assert.equal(createChildTools(["scheme_eval"]).definitions.length, 0);
   assert.deepEqual([...commands.keys()].sort(), ["context", "display", "prompt-manager", "shadow", "subagent"]);
   assert.equal(commands.has("prompt-inspect"), false);
@@ -149,10 +153,6 @@ try {
     "pi-square.subagent-config-guide",
     "pi-square.shadow-config-guide",
   ]);
-  // Prompt-manager keeps sole ownership of system-prompt replacement;
-  // shadow-minds' second handler only freezes the per-task snapshot and
-  // never returns a prompt-modifying result (covered by the shadow e2e).
-  assert.equal(events.get("before_agent_start")?.length, 2, "prompt composition has one replacing owner plus one observing owner");
   assert.deepEqual(
     readdirSync(join(packageRoot, "src", "notifications", "sounds")).sort(),
     ["question_bell.wav", "stop_bell.wav"],
@@ -206,12 +206,11 @@ try {
   assert.equal(searchMemorySourceTool.parameters.properties.terms.type, "array");
 
   for (const name of [
-    "pdf_search", "codegraph", "ssh", "bash",
+    "ssh", "bash",
     "read", "grep", "find", "ls", "edit", "write",
-    "search", "fetch", "parse", "libs", "docs",
-    "github",
+    "web_search", "web_fetch", "library_search", "library_docs",
     "ask", "todo", "compact_to_memory_block", "read_memory_source", "search_memory_source",
-    "delegate", "resume",
+    "delegate_subagent", "resume_subagent", "wait_subagent", "abort_subagent",
   ]) {
     const tool = tools.get(name);
     assert.equal(tool?.renderShell, "self", `${name} parent tool must use the shared display shell`);
@@ -220,30 +219,28 @@ try {
   }
   assert.deepEqual(activeTools, ["read", "bash"]);
 
-  // shadow-minds registers its snapshot observer before prompt-manager's
-  // replacing handler: the observer returns nothing, the replacer owns the
-  // composed prompt.
-  const [observer, promptHandler] = events.get("before_agent_start");
+  // Prompt-manager remains the sole owner of system-prompt replacement;
+  // observer count and registration order are intentionally not contractual.
+  const beforeAgentHandlers = events.get("before_agent_start");
   const nativePrompt = "NATIVE SYSTEM\n\nNATIVE CONTEXT\n";
-  const observed = await observer({
-    type: "before_agent_start",
-    prompt: "hello",
-    systemPrompt: nativePrompt,
-    systemPromptOptions: { cwd: ctx.cwd },
-  }, ctx);
-  assert.equal(observed, undefined, "the shadow observer never modifies prompt composition");
-  const result = await promptHandler({
-    type: "before_agent_start",
-    prompt: "hello",
-    systemPrompt: nativePrompt,
-    systemPromptOptions: {
-      customPrompt: "NATIVE SYSTEM",
-      appendSystemPrompt: "NATIVE APPEND",
-      contextFiles: [{ path: "/project/AGENTS.md", content: "NATIVE CONTEXT" }],
-      cwd: ctx.cwd,
-      skills: [],
-    },
-  }, ctx);
+  const beforeAgentResults = [];
+  for (const handler of beforeAgentHandlers) {
+    const observed = await handler({
+      type: "before_agent_start",
+      prompt: "hello",
+      systemPrompt: nativePrompt,
+      systemPromptOptions: {
+        customPrompt: "NATIVE SYSTEM",
+        appendSystemPrompt: "NATIVE APPEND",
+        contextFiles: [{ path: "/project/AGENTS.md", content: "NATIVE CONTEXT" }],
+        cwd: ctx.cwd,
+        skills: [],
+      },
+    }, ctx);
+    if (observed !== undefined) beforeAgentResults.push(observed);
+  }
+  assert.equal(beforeAgentResults.length, 1, "prompt composition has exactly one replacing owner");
+  const [result] = beforeAgentResults;
   assert.equal(result.systemPrompt.slice(0, nativePrompt.length), nativePrompt);
   assert.match(result.systemPrompt.slice(nativePrompt.length), /Available YAML-defined subagents/);
   console.log("extension contract tests: OK");

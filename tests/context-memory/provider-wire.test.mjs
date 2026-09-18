@@ -63,7 +63,7 @@ const { isEligibleSourceEntry } = await load("../../src/context-memory/derive.ts
  *
  * These runs cover exactly the combinations exercised here. Later context or
  * payload modifiers and other provider flavors remain the accepted
- * compatibility boundary of ADR-0017, not a delivery guarantee. The
+ * compatibility boundary of ADR-0018, not a delivery guarantee. The
  * compact-recording cancellation boundaries (before the write, after the
  * recorded state entry) stay owned by the lifecycle matrix in
  * `tests/context-memory/lifecycle.test.mjs`.
@@ -75,7 +75,11 @@ const CONTEXT_WINDOW = 40_000;
 // Leave room for the resident maintenance guidance after the scripted rebuild
 // so later cancellation/verification work tests the complete carrier, while
 // the earlier ordinary workload still invites both appends and the rebuild.
-const COMPRESSION_THRESHOLD_TOKENS = 11_000;
+// Measured against the extension's own baseline: the system prompt and tool
+// definitions put roughly 8,900 tokens into every request before any workload,
+// so this sits about 2,700 above that floor. Re-measure it whenever the shipped
+// tool set changes size, or the scripted rebuild stops leaving headroom.
+const COMPRESSION_THRESHOLD_TOKENS = 11_650;
 const MEMORY_BUDGET_PERCENT = 1;
 
 const ADVISORY_NEEDLE = "compression is due";

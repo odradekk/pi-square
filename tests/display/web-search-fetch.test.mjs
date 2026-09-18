@@ -66,7 +66,7 @@ function renderResult(decorated, args, details, text, opts = {}) {
   );
 }
 
-// ═══════════════════════ SEARCH ═════════════════════════════════════
+// ═════════════════════ web_search ══════════════════════════════════
 
 // ─── 1. Lifecycle markers through production decoration path ─────────
 
@@ -79,8 +79,8 @@ function renderResult(decorated, args, details, text, opts = {}) {
     unref() {},
   };
   const runtime = new DisplayRuntime(structuredClone(DEFAULT_CONFIG), { environment: { isTTY: true }, clock });
-  const decorated = decorateInternalTool(makeDef("search"), () => runtime);
-  assert.equal(decorated.renderShell, "self", "search uses self render shell");
+  const decorated = decorateInternalTool(makeDef("web_search"), () => runtime);
+  assert.equal(decorated.renderShell, "self", "web_search uses self render shell");
 
   const args = { queries: ["typescript generics"] };
   const state = {};
@@ -104,11 +104,11 @@ function renderResult(decorated, args, details, text, opts = {}) {
   runtime.dispose();
 }
 
-// ─── 2. Search titles retain deduplicated queries as target ─────────
+// ─── 2. Web search titles retain deduplicated queries as target ─────────
 
 {
   const runtime = newRuntime();
-  const decorated = decorateInternalTool(makeDef("search"), () => runtime);
+  const decorated = decorateInternalTool(makeDef("web_search"), () => runtime);
   const args = { queries: ["typescript generics", "rust traits"], limit: 5, sites: ["stackoverflow.com"], language: "en", country: "US", no_cache: true };
   const call = decorated.renderCall(args, plainTheme, makeCtx(args, {}, { argsComplete: true, executionStarted: true, expanded: true }));
   const text = stripVTControlCharacters(call.render(100).join("\n"));
@@ -128,7 +128,7 @@ function renderResult(decorated, args, details, text, opts = {}) {
 
 {
   const runtime = newRuntime();
-  const decorated = decorateInternalTool(makeDef("search"), () => runtime);
+  const decorated = decorateInternalTool(makeDef("web_search"), () => runtime);
   const args = { queries: ["rust traits", "rust traits"] };
   const details = {
     queries: ["rust traits"], failedQueries: [], count: 5, phase: "done",
@@ -154,7 +154,7 @@ function renderResult(decorated, args, details, text, opts = {}) {
 
 {
   const runtime = newRuntime();
-  const decorated = decorateInternalTool(makeDef("search"), () => runtime);
+  const decorated = decorateInternalTool(makeDef("web_search"), () => runtime);
   const args = { queries: ["good query", "bad query"] };
   const details = {
     queries: ["good query", "bad query"],
@@ -165,7 +165,7 @@ function renderResult(decorated, args, details, text, opts = {}) {
   };
   const result = renderResult(decorated, args, details, "[1] Good Result\n    https://example.com/good", { expanded: true });
   const text = stripVTControlCharacters(result.render(100).join("\n"));
-  assert.match(text, /^✓/, "partial-failure search renders completed (some results succeeded)");
+  assert.match(text, /^✓/, "partial-failure web_search renders completed (some results succeeded)");
   assert.match(text, /Good Result/, "partial-failure shows the successful results");
 
   runtime.dispose();
@@ -175,7 +175,7 @@ function renderResult(decorated, args, details, text, opts = {}) {
 
 {
   const runtime = newRuntime();
-  const decorated = decorateInternalTool(makeDef("search"), () => runtime);
+  const decorated = decorateInternalTool(makeDef("web_search"), () => runtime);
   const args = { queries: ["nonexistent topic"] };
   const details = { queries: ["nonexistent topic"], failedQueries: [], count: 5, phase: "done", totalBeforeDedup: 0, totalAfterDedup: 0, results: [] };
   const result = renderResult(decorated, args, details, "No results found.", { expanded: true });
@@ -187,13 +187,13 @@ function renderResult(decorated, args, details, text, opts = {}) {
 }
 
 // ─── 6. Error states: provider error visible without isError ─────
-// Search/fetch tools don't set isError:true for failures — they return
+// web_search and web_fetch don't set isError:true for failures — they return
 // details.error and let the display adapter surface it. The adapter must
 // make the error visible even without isError.
 
 {
   const runtime = newRuntime();
-  const decorated = decorateInternalTool(makeDef("search"), () => runtime);
+  const decorated = decorateInternalTool(makeDef("web_search"), () => runtime);
   const args = { queries: ["fail query"] };
   const details = { queries: ["fail query"], failedQueries: [{ query: "fail query", error: "Connection refused" }], count: 3, phase: "done", error: "fail query: Connection refused" };
   // NOTE: no isError — this is the actual tool behavior
@@ -217,7 +217,7 @@ function renderResult(decorated, args, details, text, opts = {}) {
 
 {
   const runtime = newRuntime();
-  const decorated = decorateInternalTool(makeDef("search"), () => runtime);
+  const decorated = decorateInternalTool(makeDef("web_search"), () => runtime);
   const args = { queries: ["test query"], limit: 3, no_cache: true };
   const result = renderResult(decorated, args, { queries: ["test query"], phase: "done", count: 3 }, "output text", { expanded: true });
   const text = stripVTControlCharacters(result.render(100).join("\n"));
@@ -233,7 +233,7 @@ function renderResult(decorated, args, details, text, opts = {}) {
 
 {
   const runtime = newRuntime();
-  const decorated = decorateInternalTool(makeDef("search"), () => runtime);
+  const decorated = decorateInternalTool(makeDef("web_search"), () => runtime);
   const args = { queries: ["test"], limit: 3 };
   const details = { queries: ["test"], phase: "done", count: 3, totalAfterDedup: 2, results: [{ title: "R", url: "https://ex.com", description: "d", provenance: "[q1#1]" }] };
 
@@ -257,13 +257,13 @@ function renderResult(decorated, args, details, text, opts = {}) {
   runtime.dispose();
 }
 
-// ═══════════════════════ FETCH ═════════════════════════════════════
+// ═════════════════════ web_fetch ════════════════════════════════════
 
-// ─── 9. Fetch titles retain safe normalized URLs as target ──────────
+// ─── 9. Web fetch titles retain safe normalized URLs as target ──────────
 
 {
   const runtime = newRuntime();
-  const decorated = decorateInternalTool(makeDef("fetch"), () => runtime);
+  const decorated = decorateInternalTool(makeDef("web_fetch"), () => runtime);
   const args = { urls: ["https://example.com/page1", "https://example.com/page2"], mode: "readable", max_tokens: 5000, include_links: true, describe_images: true, no_cache: true };
   const call = decorated.renderCall(args, plainTheme, makeCtx(args, {}, { argsComplete: true, executionStarted: true, expanded: true }));
   const text = stripVTControlCharacters(call.render(100).join("\n"));
@@ -280,11 +280,11 @@ function renderResult(decorated, args, details, text, opts = {}) {
   runtime.dispose();
 }
 
-// ─── 10. Expanded fetch results preserve page title, URL, metadata ──
+// ─── 10. Expanded web_fetch results preserve page title, URL, metadata ──
 
 {
   const runtime = newRuntime();
-  const decorated = decorateInternalTool(makeDef("fetch"), () => runtime);
+  const decorated = decorateInternalTool(makeDef("web_fetch"), () => runtime);
   const args = { urls: ["https://example.com/page1", "https://example.com/page2"], mode: "readable" };
   const details = {
     urls: ["https://example.com/page1", "https://example.com/page2"],
@@ -315,7 +315,7 @@ function renderResult(decorated, args, details, text, opts = {}) {
 
 {
   const runtime = newRuntime();
-  const decorated = decorateInternalTool(makeDef("fetch"), () => runtime);
+  const decorated = decorateInternalTool(makeDef("web_fetch"), () => runtime);
   const args = { urls: ["https://good.example.com", "https://bad.example.com"] };
   const details = {
     urls: ["https://good.example.com", "https://bad.example.com"],
@@ -329,7 +329,7 @@ function renderResult(decorated, args, details, text, opts = {}) {
   };
   const result = renderResult(decorated, args, details, "## Good Page\n\nContent\n\n---\n\n## bad.example.com\n\n[Failed: Jina 503]", { expanded: true });
   const text = stripVTControlCharacters(result.render(100).join("\n"));
-  assert.match(text, /^✓/, "partial-URL-failure fetch renders completed (some pages succeeded)");
+  assert.match(text, /^✓/, "partial-URL-failure web_fetch renders completed (some pages succeeded)");
   assert.match(text, /1 of 2 pages fetched/, "summary row states succeeded and total counts");
 
   runtime.dispose();
@@ -339,7 +339,7 @@ function renderResult(decorated, args, details, text, opts = {}) {
 
 {
   const runtime = newRuntime();
-  const decorated = decorateInternalTool(makeDef("fetch"), () => runtime);
+  const decorated = decorateInternalTool(makeDef("web_fetch"), () => runtime);
   const args = { urls: ["not-a-url"] };
   const details = { urls: ["not-a-url"], succeeded: 0, failed: 1, phase: "done",
     results: [], failedUrls: [{ url: "not-a-url", error: "Invalid HTTP(S) URL", retried: false }],
@@ -353,11 +353,11 @@ function renderResult(decorated, args, details, text, opts = {}) {
   runtime.dispose();
 }
 
-// ─── 13. No metadata duplication in fetch header ────────────────────
+// ─── 13. No metadata duplication in web_fetch header ────────────────
 
 {
   const runtime = newRuntime();
-  const decorated = decorateInternalTool(makeDef("fetch"), () => runtime);
+  const decorated = decorateInternalTool(makeDef("web_fetch"), () => runtime);
   const args = { urls: ["https://example.com/page1"], mode: "readable", max_tokens: 5000, no_cache: true };
   const result = renderResult(decorated, args, { urls: ["https://example.com/page1"], succeeded: 1, failed: 0, phase: "done" }, "content", { expanded: true });
   const text = stripVTControlCharacters(result.render(100).join("\n"));
@@ -373,9 +373,9 @@ function renderResult(decorated, args, details, text, opts = {}) {
 
 {
   const runtime = newRuntime();
-  const decorated = decorateInternalTool(makeDef("fetch"), () => runtime);
+  const decorated = decorateInternalTool(makeDef("web_fetch"), () => runtime);
   const args = { urls: ["https://example.com/huge-page"], mode: "readable" };
-  // A fetch result with remote and output truncation indicators set
+  // A web_fetch result with remote and output truncation indicators set
   const details = { urls: ["https://example.com/huge-page"], succeeded: 1, failed: 0, phase: "done",
     results: [{ url: "https://example.com/huge-page", finalUrl: "", lines: 500, retried: false }],
     failedUrls: [],
@@ -392,17 +392,17 @@ function renderResult(decorated, args, details, text, opts = {}) {
 
 {
   const runtime = newRuntime();
-  const decorated = decorateInternalTool(makeDef("search"), () => runtime);
+  const decorated = decorateInternalTool(makeDef("web_search"), () => runtime);
   const args = { queries: ["test query"], limit: 3 };
   const details = { queries: ["test query"], phase: "done", count: 3, totalAfterDedup: 2, results: [{ title: "R", url: "https://ex.com", description: "d", provenance: "[q1#1]" }] };
   const expandedResult = renderResult(decorated, args, details, "[1] R\n    https://ex.com\n    d", { expanded: true });
   for (const width of [39, 40, 63, 64, 80, 99, 100, 120]) {
-    assert.ok(expandedResult.render(width).every((line) => visibleWidth(line) <= width), `search result bounded at ${width}`);
+    assert.ok(expandedResult.render(width).every((line) => visibleWidth(line) <= width), `web_search result bounded at ${width}`);
   }
-  const fetchDecorated = decorateInternalTool(makeDef("fetch"), () => runtime);
-  const fetchResult = renderResult(fetchDecorated, { urls: ["https://example.com/page1"], mode: "readable" }, { urls: ["https://example.com/page1"], succeeded: 1, failed: 0, phase: "done" }, "## Page\n\nContent", { expanded: true });
+  const webFetchDecorated = decorateInternalTool(makeDef("web_fetch"), () => runtime);
+  const webFetchResult = renderResult(webFetchDecorated, { urls: ["https://example.com/page1"], mode: "readable" }, { urls: ["https://example.com/page1"], succeeded: 1, failed: 0, phase: "done" }, "## Page\n\nContent", { expanded: true });
   for (const width of [39, 40, 63, 64, 80, 99, 100, 120]) {
-    assert.ok(fetchResult.render(width).every((line) => visibleWidth(line) <= width), `fetch result bounded at ${width}`);
+    assert.ok(webFetchResult.render(width).every((line) => visibleWidth(line) <= width), `web_fetch result bounded at ${width}`);
   }
 
   runtime.dispose();
@@ -412,7 +412,7 @@ function renderResult(decorated, args, details, text, opts = {}) {
 
 {
   const runtime = newRuntime();
-  for (const name of ["search", "fetch"]) {
+  for (const name of ["web_search", "web_fetch"]) {
     const def = makeDef(name);
     const decorated = decorateInternalTool(def, () => runtime);
     assert.equal(decorated.execute, def.execute, `${name} execute unchanged`);
@@ -421,4 +421,4 @@ function renderResult(decorated, args, details, text, opts = {}) {
   runtime.dispose();
 }
 
-console.log("web search and fetch display tests: OK");
+console.log("web_search and web_fetch display tests: OK");

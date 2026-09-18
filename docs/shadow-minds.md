@@ -118,7 +118,7 @@ priority: 0
 triggers: [tool_turn, completion]
 delivery: steer
 completionGate: false
-tools: [read, grep, find, ls, codegraph, pdf_search]
+tools: [read, grep, find, ls, web_search, web_fetch]
 timeoutSeconds: 120
 maxTurns: 8
 maxToolCalls: 16
@@ -130,25 +130,20 @@ debug: false
 Summarize the project conventions the current answer should respect...
 ```
 
-Fields:
+Definitions start disabled and are enabled one at a time; `hidden: true` keeps
+a definition listed in `/shadow` and manually startable while removing it from
+every automatic candidate set.
 
-| Field | Meaning | Default |
-| --- | --- | --- |
-| `enabled` | Definitions start disabled; you opt in per definition | `false` |
-| `hidden` | Hide from the browse list without deleting | `false` |
-| `priority` | Dispatch tie-break among same-trigger candidates | `0` |
-| `triggers` | Automatic triggers: `tool_turn`, `mutation`, `failure`, `completion` | `[]` |
-| `triggerInstructions` | Per-trigger instruction map; `null` removes a key | `{}` |
-| `delivery` | Result delivery policy: `steer`, `wake`, or `notify` | `steer` |
-| `completionGate` | Answer-after-review window; requires `completion` | `false` |
-| `tools` | Shadow-safe tool list; omitted selects the default local set, `[]` selects none | default set |
-| `requiredTools` | Must be a subset of the final tool set | `[]` |
-| `model` | Explicit `provider/model-id` with configured auth; omit to inherit the parent model | inherit |
-| `parentModels` | Exact `provider/model-id` or `*` filter on the activating parent model | any |
-| `thinking` | `off`…`max`; omit to fall back to configuration default, then the parent's level | inherit |
-| `timeoutSeconds`, `maxTurns`, `maxToolCalls` | Per-run bounds under package caps | config defaults |
-| `debug` | Persist a sanitized child-session JSONL per run (see below) | `false` |
-| `outputSchema` | Bounded JSON object schema for the result payload; replaced atomically, `null` restores the default `{ summary: string }` | default schema |
+The normative field reference is the packaged
+`shadow-minds/schema-reference.md` (see **Layers** below): every field, bound,
+enum, default, and consistency rule, in a contract block generated from the
+bounds entries the parser and validators enforce and compared against them by
+a contract test. This guide no longer restates that table — the restatement
+was the copy that went stale — and describes behavior instead: `triggers`,
+`priority`, and `completionGate` under **Triggers and scheduling**; `tools`,
+`requiredTools`, `model`, `parentModels`, and `thinking` under **Tool and
+model boundaries**; `delivery` and `outputSchema` under **Runs, results, and
+delivery**; `debug` under **Debug data**.
 
 ### Layers
 
@@ -180,7 +175,11 @@ continuations (including delivery of a Shadow result) never trigger:
 - `tool_turn` — runs at most once per reviewed activity generation (a
   generation is marked when a parent tool executes).
 - `mutation` — a successful Pi or pi-square declarative mutation tool
-  (`edit`, `write`, `replace`) was applied.
+  (`edit`, `write`, `replace`, `insert`) was applied. The anchored `replace`
+  and `insert` tools count only through their structured applied outcome, so
+  a refused, unapplied, failed, or cancelled-before-commit call never fires
+  the trigger, while a committed edit whose state publication failed stays an
+  observed mutation.
 - `failure` — a classified quality command (`test`, `build`, `typecheck`,
   `smoke`, `package-check` target) ended non-zero. Arbitrary commands never
   count as failures.
@@ -202,15 +201,20 @@ replaying paused events. Manual trials always stay available.
 
 ## Tool and model boundaries
 
-The Shadow-safe tool catalog is exactly: `read`, `grep`, `find`, `ls`,
-`codegraph`, `pdf_search`, `search`, `fetch`, `libs`, `docs`. Omitted
-`tools` select the default local evidence set (`read`, `grep`, `find`,
-`ls`); `tools: []` is the no-tool trial. Shell, file writes, SSH, Firecrawl
-parse, authenticated GitHub, and delegation are excluded capabilities — a
+The Shadow-safe tool catalog is fixed: the default local evidence built-ins
+plus the optional remote evidence tools, both named in the `toolCatalog`
+section of the contract block in the packaged
+`shadow-minds/schema-reference.md`. Omitted `tools` select the default local
+evidence set; `tools: []` is the no-tool trial. Shell, file writes, SSH, and
+delegation are excluded capabilities — a
 requested-but-excluded tool drops with a run-start warning, while a
-`requiredTools` miss fails before prompting. `pdf_search` is an explicit
-opt-in outside the default local evidence set; a definition lists it in
-`tools` when a task needs local PDF evidence.
+`requiredTools` miss fails before prompting. The warning is kept on the run
+record and shown in the manager run details; it is also notified — every
+manual trial reports it, and an automatic run reports the first time a
+shadow starts with that warning set, so a repeated trigger does not repeat
+the line. The remote evidence tools are
+explicit opt-ins outside the default local evidence set; a definition lists
+them in `tools` when a task needs web or library evidence.
 
 Models: omitting `model` inherits the activating parent model; an explicit
 `provider/model-id` resolves through the registry and requires configured
@@ -224,7 +228,10 @@ levels the model supports.
 Every run is one fresh, one-time child session with the versioned Shadow
 SYSTEM (governance plus the frozen parent core and project rules
 for that task) and a reference-only trajectory view of the parent's visible
-branch. Timeouts, turn limits, and tool-call budgets are enforced at native
+branch. The closed projection exposes only cleaned, bounded allowlisted fields
+for known tools; anchored `replace` and `insert` calls expose only `path`, not
+anchors, direction, line payloads, or result bodies. Timeouts, turn limits,
+and tool-call budgets are enforced at native
 pre-model and pre-validation boundaries; timeouts, cancellations, and model
 failures are observable lifecycle data, never results.
 

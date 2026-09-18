@@ -6,10 +6,13 @@
  * `pi.sendMessage` is fire-and-forget and reports no failure to the caller. A
  * result that is sent once and forgotten can therefore disappear without any
  * trace. The generic mechanics — the bounded pending set, batch selection,
- * safe delivery timing, confirmation, resend, interruption suppression, and
- * send-failure retention — live in `confirmed-delivery.ts`; this module is the
- * Subagent adapter: it supplies the run identity, the V4 notification payload
- * and message construction, and the transcript confirmation parser.
+ * safe delivery timing, confirmation, resend, interruption suppression,
+ * send-failure retention, and the atomic claim/take/release ownership
+ * operations — live in `confirmed-delivery.ts`; this module is the Subagent
+ * delivery policy bound to that core (odradekk/pi-square#372): which finished
+ * runs enter the store, how one batch renders as a V5 notification, how a
+ * transcript message confirms, and how a released result is routed. Callers
+ * hold the policy-parameterized core; nothing here redeclares a core member.
  *
  * Scope is the current parent session. Nothing here persists across sessions.
  */
@@ -18,60 +21,85 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
   clipWithHeadTail,
   createConfirmedDeliveryCore,
-  DEFAULT_MAX_BATCH_RESULTS,
-  DEFAULT_MAX_PENDING_RESULTS,
+  type ConfirmedDeliveryClaim,
+  type ConfirmedDeliveryCore,
+  type DeliveryClaimFailure,
 } from "./confirmed-delivery";
-import type { SubagentNotificationDetails, SubagentRunDetails } from "./types";
+import type { SubagentNotificationDetails, SubagentResultStatus } from "./notification-types";
+import type { SubagentRunDetails } from "./run-types";
 
 export const SUBAGENT_NOTIFICATION_TYPE = "pi-square.subagent-notification";
 
 /** Model-facing budget for one result text. */
 export const MAX_RESULT_CHARS = 24_000;
-/** Results coalesced into a single delivery; the rest follow at the next one. */
-export const MAX_BATCH_RESULTS = DEFAULT_MAX_BATCH_RESULTS;
-/** Hard bound on the pending set so an unattended session stays bounded. */
-export const MAX_PENDING_RESULTS = DEFAULT_MAX_PENDING_RESULTS;
+/** Public IDs one wait_subagent call may select. */
+export const MAX_WAIT_IDS = 6;
 const MAX_TASK_CHARS = 300;
 
-export type DeliverableStatus = "done" | "error";
+/** Statuses that flow through automatic delivery to the parent. */
+export type DeliverableStatus = "completed" | "failed";
 
-/** One finished run as the delivery core carries it. */
-interface SubagentDeliveryValue {
-  status: DeliverableStatus;
-  details: SubagentRunDetails;
-}
-
-/** One run rendered into a delivery message. */
+/** One finished run as the delivery core carries and stores it. */
 export interface SubagentDeliveryEntry {
   id: string;
-  status: DeliverableStatus;
+  status: SubagentResultStatus;
   details: SubagentRunDetails;
 }
 
-export interface DeliveryController {
-  /** Registers a finished run and delivers it when the parent is idle. */
-  enqueue(input: { id: string; status: DeliverableStatus; details: SubagentRunDetails }): void;
-  /** Drops a result, for example when its history is deleted. */
-  remove(id: string): void;
-  /** Confirms delivery from an injected parent message. */
-  observeMessage(message: unknown): void;
-  /** Turn boundary of a running parent; an aborted terminal message suppresses delivery. */
-  handleTurnEnd(message?: unknown): void;
-  /** A new parent run started, so an earlier interruption no longer holds. */
-  handleAgentStart(): void;
-  /** Records whether the finished run ended through a user interruption. */
-  handleAgentEnd(messages: unknown): void;
-  /** Parent is idle: unconfirmed results are lost and are delivered again. */
-  handleAgentSettled(): void;
-  /** True while the result of this run is not confirmed in the parent. */
-  isPending(id: string): boolean;
-  /** Count of results that the parent has not confirmed. */
-  pendingCount(): number;
-  /** IDs of results that the parent has not confirmed. */
-  pendingIds(): string[];
-  /** Clears all state on session start and shutdown. */
-  reset(): void;
+/** One fully validated result entry of a delivered V5 notification. */
+export interface ValidatedNotificationEntry {
+  id: string;
+  status: DeliverableStatus;
+  result: SubagentRunDetails;
 }
+
+/** Shape guard for a current V4 run record carried inside a payload. */
+export function isV4RunDetails(value: unknown): value is SubagentRunDetails {
+  const details = value as Partial<SubagentRunDetails> | undefined;
+  return details?.version === 4
+    && typeof details.id === "string"
+    && (details.operation === "delegate" || details.operation === "resume")
+    && (details.phase === "queued"
+      || details.phase === "running"
+      || details.phase === "cancelling"
+      || details.phase === "completed"
+      || details.phase === "failed"
+      || details.phase === "aborted");
+}
+
+function validatedEntry(value: unknown): ValidatedNotificationEntry | undefined {
+  const entry = value as { id?: unknown; status?: unknown; result?: unknown };
+  if (!entry || typeof entry !== "object") return undefined;
+  const id = typeof entry.id === "string" ? entry.id : "";
+  if (!id) return undefined;
+  if (entry.status !== "completed" && entry.status !== "failed") return undefined;
+  if (!isV4RunDetails(entry.result) || entry.result.id !== id) return undefined;
+  return { id, status: entry.status, result: entry.result };
+}
+
+/**
+ * Parses the current V5 notification payload into its fully validated result
+ * entries. A payload that is not V5, or whose results are not a list, yields
+ * undefined. An entry contributes only when it is complete — a current
+ * terminal status, a valid V4 run record, and an entry id that names that
+ * record — so a malformed entry can neither confirm nor render as a run.
+ */
+export function parseV5NotificationDetails(details: unknown): ValidatedNotificationEntry[] | undefined {
+  const payload = details as { version?: unknown; results?: unknown } | undefined;
+  if (payload?.version !== 5 || !Array.isArray(payload.results)) return undefined;
+  return payload.results
+    .map((entry) => validatedEntry(entry))
+    .filter((entry): entry is ValidatedNotificationEntry => entry !== undefined);
+}
+
+/** The Subagent claim over the delivery core's ownership handle. */
+export type SubagentDeliveryClaim = ConfirmedDeliveryClaim<SubagentDeliveryEntry>;
+
+/** Why one explicit wait claim was rejected, with the offending public ID. */
+export type SubagentClaimFailure = DeliveryClaimFailure;
+
+/** The Subagent delivery core: the generic core carrying finished runs. */
+export type SubagentDeliveryCore = ConfirmedDeliveryCore<SubagentDeliveryEntry>;
 
 function normalize(text: unknown): string {
   return String(text ?? "").trim();
@@ -98,12 +126,17 @@ function agentLabel(result: SubagentDeliveryEntry): string {
 }
 
 function resultText(result: SubagentDeliveryEntry): string {
-  return result.status === "done"
-    ? budgetResultText(result.details.finalText || "(no output)")
-    : budgetResultText(result.details.error || "Subagent failed.");
+  if (result.status === "completed") return budgetResultText(result.details.finalText || "(no output)");
+  return budgetResultText(result.details.error || (result.status === "aborted" ? "Subagent run aborted." : "Subagent failed."));
 }
 
-/** Builds the model-facing content of one delivery. */
+function outcomeLabel(status: SubagentResultStatus): string {
+  if (status === "completed") return "Result:";
+  if (status === "aborted") return "Aborted:";
+  return "Error:";
+}
+
+/** Builds the model-facing content of one delivery or explicit wait result. */
 export function buildDeliveryContent(results: SubagentDeliveryEntry[], resent: boolean): string {
   const suffix = resent ? " (resent)" : "";
   if (results.length === 1) {
@@ -114,7 +147,7 @@ export function buildDeliveryContent(results: SubagentDeliveryEntry[], resent: b
       `agent: ${agentLabel(only)}`,
       `task: ${clipTask(only.details.task)}`,
       "",
-      only.status === "done" ? "Result:" : "Error:",
+      outcomeLabel(only.status),
       resultText(only),
     ].join("\n");
   }
@@ -126,51 +159,64 @@ export function buildDeliveryContent(results: SubagentDeliveryEntry[], resent: b
       `--- ${index + 1}/${results.length} ${result.status} · id: ${result.id} · agent: ${agentLabel(result)}`,
       `task: ${clipTask(result.details.task)}`,
       "",
-      result.status === "done" ? "Result:" : "Error:",
+      outcomeLabel(result.status),
       resultText(result),
     );
   });
   return lines.join("\n");
 }
 
-/** Reads the run IDs carried by a delivered notification, V4 or legacy V3. */
+/** Reads the run IDs carried by a delivered V5 notification. Only fully valid
+ * entries confirm, so a malformed payload never clears pending results. */
 export function notificationResultIds(message: unknown): string[] {
   const candidate = message as { customType?: unknown; details?: unknown } | undefined;
   if (candidate?.customType !== SUBAGENT_NOTIFICATION_TYPE) return [];
-  const details = candidate.details as
-    | { results?: { id?: unknown }[]; id?: unknown }
-    | undefined;
-  if (Array.isArray(details?.results)) {
-    return details.results
-      .map((entry) => (typeof entry?.id === "string" ? entry.id : ""))
-      .filter((id): id is string => id.length > 0);
-  }
-  return typeof details?.id === "string" ? [details.id] : [];
+  return parseV5NotificationDetails(candidate.details)?.map((entry) => entry.id) ?? [];
 }
 
-export function createDeliveryController(options: {
+/**
+ * Admission policy: an ordinary aborted run notifies nobody, so it enters the
+ * store only while an explicit waiter already owns its claim — the waiter
+ * receives its aborted outcome, and a release drops it again. Completed and
+ * failed runs always enter.
+ */
+function admitsFinishedRun(input: { id: string; value: SubagentDeliveryEntry }, isClaimed: (id: string) => boolean): boolean {
+  return input.value.status !== "aborted" || isClaimed(input.id);
+}
+
+/**
+ * Release routing for a wait that gives up its claims: completed and failed
+ * results stay in the store as unsent automatic-delivery candidates, while an
+ * aborted result leaves delivery storage entirely, because an aborted run that
+ * no waiter owns never notifies the parent.
+ */
+export function keepReleasedResult(entry: SubagentDeliveryEntry): boolean {
+  return entry.status !== "aborted";
+}
+
+export function createSubagentDeliveryCore(options: {
   pi: Pick<ExtensionAPI, "sendMessage">;
   /** Reads the parent run state; a missing reader assumes an idle parent. */
   isIdle?: () => boolean;
   /** Refreshes pi-square status surfaces after a pending-set change. */
   notify?: () => void;
-}): DeliveryController {
+}): SubagentDeliveryCore {
   let sequence = 0;
-  const core = createConfirmedDeliveryCore<SubagentDeliveryValue>({
+  return createConfirmedDeliveryCore<SubagentDeliveryEntry>({
     send(batch, resent) {
       sequence += 1;
-      const entries: SubagentDeliveryEntry[] = batch.map((entry) => ({
-        id: entry.id,
-        status: entry.value.status,
-        details: entry.value.details,
-      }));
+      const entries: SubagentDeliveryEntry[] = batch.map((entry) => entry.value);
       const details: SubagentNotificationDetails = {
-        version: 4,
+        version: 5,
         deliveryId: `delivery-${sequence}`,
         resent,
+        // Only completed and failed results ever sit unclaimed in the pending
+        // set (an aborted result enters only while claimed, and claimed
+        // entries are excluded from flush), so the automatic delivery path
+        // always carries the deliverable statuses.
         results: entries.map((entry) => ({
           id: entry.id,
-          status: entry.status,
+          status: entry.status as DeliverableStatus,
           result: entry.details,
         })),
       };
@@ -188,23 +234,12 @@ export function createDeliveryController(options: {
       );
     },
     confirmIds: notificationResultIds,
+    accepts: admitsFinishedRun,
+    // The aborted-result release rule binds to the core, so a wait that
+    // releases without a predicate still routes completed and failed
+    // results back and drops aborted ones (ADR-0016).
+    releaseKeep: keepReleasedResult,
     isIdle: options.isIdle,
     onPendingChange: options.notify,
   });
-
-  return {
-    enqueue(input) {
-      core.enqueue({ id: input.id, value: { status: input.status, details: input.details } });
-    },
-    remove: (id) => core.remove(id),
-    observeMessage: (message) => core.observeMessage(message),
-    handleTurnEnd: (message) => core.handleTurnEnd(message),
-    handleAgentStart: () => core.handleAgentStart(),
-    handleAgentEnd: (messages) => core.handleAgentEnd(messages),
-    handleAgentSettled: () => core.handleAgentSettled(),
-    isPending: (id) => core.isPending(id),
-    pendingCount: () => core.pendingCount(),
-    pendingIds: () => core.pendingIds(),
-    reset: () => core.reset(),
-  };
 }

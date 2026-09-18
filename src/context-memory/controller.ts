@@ -61,7 +61,7 @@ import {
  * #217, #319, #320, #321).
  *
  * #319 replaces the settle-driven submission protocol with in-task recording
- * and request projection, per ADR-0017 and #317. The controller keeps one
+ * and request projection, per ADR-0018 and #317. The controller keeps one
  * owner for every boundary: the resident `compact_to_memory_block` tool, due
  * detection, source selection and tool-batch pairing, the versioned state
  * entry recorded through Pi's public `appendEntry` seam, the request
@@ -237,7 +237,7 @@ const MINIMAL_BLOCK_BODY = "x";
  * leaf and the entry ids whose native messages aligned at this point. Earlier
  * transforms that replace or remove entries cannot authorize those entries.
  * This is not final delivery evidence: later context/payload handlers and
- * provider conversion remain outside this observation boundary (ADR-0017).
+ * provider conversion remain outside this observation boundary (ADR-0018).
  */
 interface ObservedContextBoundary {
   readonly leafId: string | null;
@@ -1542,7 +1542,7 @@ export class ContextMemoryController {
     // Acceptance is scoped to the latest input observed by our context
     // handler, not the final provider request. Earlier filtering invalidates
     // a source here; later transformations cannot be observed with Pi's
-    // public API and remain a documented compatibility limit (ADR-0017).
+    // public API and remain a documented compatibility limit (ADR-0018).
     const observed = this.observedContext;
     if (observed === undefined
       || observed.leafId === null
@@ -1657,7 +1657,7 @@ export class ContextMemoryController {
       fail("BOUND_EXCEEDED", "the Memory state entry exceeds the persisted format bounds");
     }
     // Acceptance stays scoped to the latest input observed by our context
-    // handler, exactly like an append (ADR-0017). The gate keeps covering
+    // handler, exactly like an append (ADR-0018). The gate keeps covering
     // every eligible entry the pinned range names beyond the latest
     // instruction; only the savings measurement narrows below.
     const observable = evictableEntries(branch, prefixEndPosition, source);
@@ -1770,7 +1770,7 @@ export class ContextMemoryController {
     }
     // Every evictable entry inside a pinned range must have been served in
     // its native form in this very request: an upstream transform that
-    // filtered a source leaves no request to bind (#320, ADR-0017).
+    // filtered a source leaves no request to bind (#320, ADR-0018).
     const observed = this.observedContext;
     if (observed === undefined || observed.leafId !== leafId) return clear();
     if (current.kind !== "valid"

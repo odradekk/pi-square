@@ -2,7 +2,7 @@
 "@odradekk/pi-square": major
 ---
 
-Context Memory: replace the settle-driven submission protocol with in-task recording and request projection (odradekk/pi-square#319, ADR-0017)
+Context Memory: replace the settle-driven submission protocol with in-task recording and request projection (odradekk/pi-square#319, ADR-0018)
 
 - **Breaking tool-contract change:** the model tool `submit_memory` is retired with no active alias, and `compact_to_memory_block` replaces it. The compression tool is now resident — active in every parent session while the feature is enabled and the host is supported — instead of appearing only during due runs. Historical `submit_memory` calls in existing sessions remain recognized as protocol history and keep filtering out of provider-bound requests; they are never re-executed or treated as original Memory sources.
 - **Breaking persistence change:** accepted Memory is no longer carried by extension-takeover compaction entries. Each accepted block is recorded as a versioned Pi custom state entry (`pi-square.context-memory/memory`, format `pi-square.context-memory/2`) through the public `appendEntry` seam during the tool call; Pi's SessionManager stays the only session-file writer and the feature creates no sidecar, store, or lock. The next ordinary model request — including tool continuations — applies the Memory through the public `context` transform: covered original entries leave, one complete carrier message enters exactly once, and the run continues without settle, abort, restart, or any native `compact()` call. Valid compaction-carried v1 Memory from earlier sessions keeps deriving as a read-only baseline.

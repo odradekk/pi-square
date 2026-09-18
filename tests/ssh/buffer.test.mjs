@@ -6,7 +6,7 @@ const { SshOutputBuffer } = await load("../../src/ssh/buffer.ts");
 
 const buffer = new SshOutputBuffer(8, 4);
 buffer.append("abc");
-buffer.append(Buffer.from("def"));
+buffer.append("def");
 let page = buffer.read(0);
 assert.equal(page.text, "abcd");
 assert.equal(page.nextCursor, 4);

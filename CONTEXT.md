@@ -51,7 +51,7 @@ The resting presentation of a tool entry in the operational interface: exactly o
 _Avoid_: folded card, multi-row summary
 
 **Mutation family**:
-The three tools whose collapsed entries keep a bounded evidence body below the header row: edit, replace, and write. Replace has the narrowest shape: its successful evidence body is the authoritative diff only; every non-mutation tool keeps its evidence body visible only when expanded.
+The four tools whose collapsed entries keep a bounded evidence body below the header row: edit, insert, replace, and write. The anchored mutations have the narrowest shape: their successful evidence body is the authoritative diff only; every non-mutation tool keeps its evidence body visible only when expanded.
 _Avoid_: payload tools, edit tools
 
 **Content column**:
@@ -67,6 +67,10 @@ _Avoid_: custom tool, plugin, native tool
 **Child tool catalog**:
 The fixed set of extension tools that a subagent definition may request by name.
 _Avoid_: tool list, allowlist
+
+**Bundled subagent definition**:
+A subagent role definition shipped in pi-square's package layer. Agent and project overlays may independently define roles with the same or different names, so removing a bundled definition does not reserve or invalidate its name.
+_Avoid_: built-in agent, reserved role
 
 **Platform package**:
 A native executable that an npm optional dependency delivers per platform, resolved through the installed package rather than PATH.

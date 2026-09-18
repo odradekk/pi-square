@@ -47,13 +47,15 @@ export function asRecord(value: unknown): UnknownRecord {
 
 /**
  * Mutation family: the only tools whose collapsed entries keep a bounded
- * evidence body below the single row — edit, replace, and write. Anchored
- * replace keeps the strictest shape: its body is the authoritative diff only.
+ * evidence body below the single row — edit, insert, replace, and write. The
+ * anchored mutations keep the strictest shape: their body is the
+ * authoritative diff only.
  * Every other tool's collapsed entry is exactly one row; its evidence is
  * visible only when expanded.
  */
 export const MUTATION_FAMILY_TOOLS: ReadonlySet<string> = new Set([
   "edit",
+  "insert",
   "replace",
   "write",
 ]);
@@ -88,15 +90,6 @@ export function formatBytes(bytes: number): string {
   return `${scaled >= 100 ? Math.round(scaled) : scaled.toFixed(1)} ${units[unitIndex]}`;
 }
 
-/** C4 count nouns for the tools whose paging details compose a sentence. */
-const SUMMARY_NOUNS: Readonly<Record<string, string>> = Object.freeze({
-  github: "results",
-});
-
-function summaryNoun(name: string): string {
-  return SUMMARY_NOUNS[name] ?? "results";
-}
-
 /**
  * C4 collapsed summary sentence for the extension tools, composed from the
  * structured details every tool already returns. Returns undefined when no
@@ -105,33 +98,33 @@ function summaryNoun(name: string): string {
 export function composeInternalSummary(
   name: string,
   detailsValue: unknown,
-  argsValue: unknown,
   text: string,
 ): string | undefined {
   const details = asRecord(detailsValue);
-  const args = asRecord(argsValue);
   const counts = asRecord(details.counts);
   const page = asRecord(details.page);
 
-  if (name === "replace") {
+  if (name === "replace" || name === "insert") {
     const status = stringOf(details.status)?.toLowerCase();
     if (status === "warning") {
       const code = stringOf(details.errorCode);
       if (code === "E_RANGE_STALE") return "Nothing was modified · stale range";
-      return "Nothing was modified · replace refused";
+      return `Nothing was modified · ${name} refused`;
     }
     const metrics = asRecord(details.metrics);
     const classification = stringOf(metrics.classification);
     if (classification === "noop") return "No changes";
     const attempted = numberOf(metrics.edits_attempted);
     if (attempted !== undefined) {
-      const ranges = `${attempted} ${attempted === 1 ? "range" : "ranges"} replaced`;
+      const action = name === "insert"
+        ? `${numberOf(metrics.added_lines) ?? attempted} ${numberOf(metrics.added_lines) === 1 ? "line" : "lines"} inserted`
+        : `${attempted} ${attempted === 1 ? "range" : "ranges"} replaced`;
       const added = numberOf(metrics.added_lines);
       const removed = numberOf(metrics.removed_lines);
       const changes = added !== undefined || removed !== undefined
         ? ` · +${added ?? 0}/-${removed ?? 0} lines`
         : "";
-      return `${ranges}${changes}`;
+      return `${action}${changes}`;
     }
   }
 
@@ -143,23 +136,12 @@ export function composeInternalSummary(
     return parts.join(" · ");
   }
 
-  if (name === "pdf_search") {
-    const file = stringOf(args.path)?.split(/[\\/]/).pop();
-    const matches = numberOf(details.totalMatches) ?? numberOf(details.returned);
-    if (matches === undefined) return undefined;
-    if (matches === 0) return file ? `No matches in ${file}` : "No matches";
-    const pages = numberOf(details.returned);
-    const pageCount = numberOf(details.pageCount);
-    const head = `${matches} matches on ${pages ?? 0}${pageCount !== undefined ? ` of ${pageCount}` : ""} pages`;
-    return file ? `${head} in ${file}` : head;
-  }
-
   if (name === "pwsh") {
     const outputLines = text ? text.split("\n").length : 0;
     return outputLines === 0 ? "No output" : `${outputLines} lines`;
   }
 
-  if (name === "fetch") {
+  if (name === "web_fetch") {
     const succeeded = numberOf(details.succeeded);
     if (succeeded !== undefined) {
       const head = `${succeeded} ${succeeded === 1 ? "page" : "pages"} fetched`;
@@ -168,22 +150,10 @@ export function composeInternalSummary(
     }
   }
 
-  // Read-like tools (github read) report returned lines instead of a page.
-  const returnedLines = numberOf(details.returnedLines);
-  if (returnedLines !== undefined) {
-    if (returnedLines === 0) return "Empty file";
-    const head = `${returnedLines} lines`;
-    if (details.hasMore === true) {
-      const next = (numberOf(args.line) ?? 1) + returnedLines;
-      return `${head} · continue at line ${next}`;
-    }
-    return head;
-  }
-
   const returned = numberOf(page.returned) ?? numberOf(details.returned);
   const total = numberOf(page.total) ?? numberOf(details.total) ?? numberOf(details.totalMatches);
   if (returned !== undefined) {
-    const noun = summaryNoun(name);
+    const noun = "results";
     if (returned === 0) return `No ${noun}`;
     const head = total !== undefined && total > returned
       ? `${returned} of ${total} ${noun}`

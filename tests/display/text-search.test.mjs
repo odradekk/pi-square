@@ -289,45 +289,6 @@ function makeSearchDef(name) {
 }
 
 
-// ═══ 20. Blast-radius regression: shared search-adapters.ts fixes ═══
-// pdf_search and codegraph share the metadata-dedup, empty-message, and
-// error-suppression logic fixed for rg/grep. These are out of #22's scope
-// but must not regress from the shared-file changes.
-
-{
-  const runtime = newRuntime();
-
-  // pdf_search: genuine empty (top-level details.returned) shows explicit message
-  {
-    const decorated = decorateInternalTool(makeSearchDef("pdf_search"), () => runtime);
-    const call = decorated.renderCall({ query: "retention", path: "manual.pdf" }, plainTheme, makeCtx({ query: "retention", path: "manual.pdf" }, {}, { argsComplete: true, executionStarted: true }));
-    const empty = decorated.renderResult(
-      { content: [{ type: "text", text: "pdf_search returned=0" }], details: { returned: 0 } },
-      { expanded: true, isPartial: false },
-      plainTheme,
-      makeCtx({ query: "retention", path: "manual.pdf" }, {}, { argsComplete: true, executionStarted: true, lastComponent: call, isError: false, expanded: true }),
-    );
-    const emptyText = stripVTControlCharacters(empty.render(80).join("\n"));
-    assert.match(emptyText, /No matches/, "pdf_search genuine empty shows explicit message");
-  }
-
-  // codegraph: unaffected by structuredDomain suppression (explicitly excluded)
-  {
-    const decorated = decorateInternalTool(makeSearchDef("codegraph"), () => runtime);
-    const call = decorated.renderCall({ operation: "explore", query: "runtime" }, plainTheme, makeCtx({ operation: "explore", query: "runtime" }, {}, { argsComplete: true, executionStarted: true }));
-    const result = decorated.renderResult(
-      { content: [{ type: "text", text: "codegraph explore output" }], details: { status: "success" } },
-      { expanded: true, isPartial: false },
-      plainTheme,
-      makeCtx({ operation: "explore", query: "runtime" }, {}, { argsComplete: true, executionStarted: true, lastComponent: call, isError: false, expanded: true }),
-    );
-    const text = stripVTControlCharacters(result.render(80).join("\n"));
-    assert.match(text, /codegraph explore output/, "codegraph raw text still renders through its own domain/preview path");
-  }
-
-  runtime.dispose();
-}
-
 // Cleanup
 try { rmSync(TMP, { recursive: true, force: true }); } catch {}
 

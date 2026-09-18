@@ -6,9 +6,9 @@ How a `ready-for-agent` ticket becomes a merged pull request. The work splits ac
 
 1. Confirm the ticket is startable: it carries acceptance criteria and its stated blockers are closed. A parent spec issue is context, not a blocker.
 2. Confirm the main checkout is clean and at the current `origin/main`. The worktree branches from `origin/main`, so uncommitted work here never reaches the agent.
-3. Create an independent worktree and launch the agent in it. The `orca-cli` skill holds the full-handoff command; the worktree is independent (`--no-parent`) and the agent owns the first terminal (`--agent`).
+3. Create the worktree workspace and launch the agent in it. See the `paseo` skill for the tool surface: `create_workspace` with `isolation: "worktree"`, `mode: "branch-off"`, `baseBranch: "origin/main"`, and a short branch name derived from the ticket; then `create_agent` with that `workspaceId`, a provider taken from `list_profiles`, and the briefing as `initialPrompt`. The agent stays in your subagent track — detaching it is a user gesture in the Paseo UI, not an agent action, and it changes nothing about how the work proceeds.
 4. Brief the agent in the launch prompt. See Briefing.
-5. Stop monitoring. The handoff is complete, and the agent reports back once its pull request is open.
+5. Stop monitoring. Leave `notifyOnFinish` at its default so Paseo tells you when the agent finishes, errors, or needs permission, and never poll `list_agents` or `get_agent_status` to check on it. The handoff is complete, and the agent reports back once its pull request is open.
 
 ## Briefing
 
@@ -39,7 +39,7 @@ A failing suite becomes evidence against the change only once it also fails on `
 
 Two classes of failure appear only under dispatch:
 
-- **Path length.** Tests that render the real checkout path into width-bounded output fail in an Orca worktree, whose path runs far longer than the usual checkout. Long paths shift truncation and line-wrap points, so an assertion on rendered text breaks while the renderer behaves correctly. See #232.
+- **Path length.** Tests that render the real checkout path into width-bounded output fail in a dispatched worktree: Paseo creates it under `~/.paseo/worktrees/`, whose path runs far longer than the usual checkout. Long paths shift truncation and line-wrap points, so an assertion on rendered text breaks while the renderer behaves correctly. See #232.
 - **Host-global discovery.** Pi auto-discovers `~/.agents/skills` and other host-global resources, so a suite asserting an empty set passes only on a machine that has none.
 
 Two harness details each cost a review round:
@@ -51,5 +51,5 @@ Two harness details each cost a review round:
 
 1. Merge once the criteria are met, the gates pass, and every accepted failure is baselined. Green CI authorizes nothing on its own, and the merge decision belongs to the maintainer: when it has not been given, report and wait.
 2. Landing several pull requests together, run the gates once against the accumulated merge before merging any of them. A clean `git merge` proves only that the texts combine; each branch's own green CI says nothing about the combination. Two branches that each typechecked alone have already landed a `main` that did not, because one deleted a union member the other still compared against.
-3. Confirm the worktree is clean, fully pushed, and holds no stashes before removing it.
-4. Remove the worktree through `orca-cli`. The remote branch and the merged pull request survive it.
+3. Confirm the worktree is clean, fully pushed, and holds no stashes before archiving it.
+4. Archive the workspace — `archive_workspace`, or `paseo workspace archive <workspace-id>`. It takes the workspace's agents and terminals with it and removes the Paseo-owned worktree once the last active reference to it is archived. The remote branch and the merged pull request survive it.

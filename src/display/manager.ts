@@ -23,6 +23,7 @@ import {
   type DisplayConfigWriteScope,
 } from "../core/config-write";
 import { emitDiagnostics } from "../core/diagnostics";
+import { withOwnedInputSurface } from "../core/input-surface";
 import type { DisplayController } from "./index";
 import type { DisplayMigrationChange } from "./migration";
 import { DISPLAY_CATALOG, type DisplayToolCatalogEntry } from "./catalog";
@@ -793,7 +794,7 @@ async function openDisplayManager(
     ...(ctx.ui.getTheme("pi-square-theme-dark") ? [{ name: "dark", theme: ctx.ui.getTheme("pi-square-theme-dark")! }] : []),
     ...(ctx.ui.getTheme("pi-square-theme-light") ? [{ name: "light", theme: ctx.ui.getTheme("pi-square-theme-light")! }] : []),
   ];
-  await ctx.ui.custom<void>((tui, theme, keybindings, done) => new DisplayManager(
+  await withOwnedInputSurface(() => ctx.ui.custom<void>((tui, theme, keybindings, done) => new DisplayManager(
     controller.config,
     snapshots,
     tui,
@@ -802,7 +803,7 @@ async function openDisplayManager(
     done,
     productionServices(controller, ctx),
     previewThemes,
-  ), { overlay: false });
+  ), { overlay: false }));
 }
 
 export function registerDisplayManager(pi: ExtensionAPI, controller: DisplayController): void {

@@ -2,6 +2,7 @@ import { splitLines } from "../utils";
 import {
   type HashStoreHandle,
 } from "../hash-store";
+import type { ConsumedLineRange } from "../served";
 import { xxh32, contentChecksum, initHasher } from "./hasher";
 import { HASH_LEN, ALPH, ALPH_RE, HASH_CLASS } from "./alphabet";
 export { initHasher, HASH_LEN, ALPH_RE, HASH_CLASS };
@@ -81,6 +82,37 @@ function assignHash(used: Uint32Array, baseIdx: number, hint: { value: number })
   setBit(used, nextIdx);
   hint.value = nextIdx + HASH_PROBE_STRIDE;
   return hashAt(nextIdx);
+}
+
+/**
+ * Position-stable hashes for one pure insertion (#285): every surviving line
+ * keeps its exact hash (an insertion never reorders, rewrites, or removes
+ * lines), and each inserted line receives a fresh hash unique against the
+ * whole result. Unlike the content-matched stable mapping — which may move an
+ * old hash onto a newly inserted line with identical text — this assignment
+ * is positional, so the anchor row the caller observed always keeps its hash.
+ */
+export function _insertLineHashesPure(
+	originalHashes: readonly string[],
+	insertedLines: readonly string[],
+	insertAt: number,
+): string[] {
+	const used = new Uint32Array(BITSET_WORDS);
+	const hint = { value: 0 };
+	for (const hash of originalHashes) {
+		const idx = hashToIndex(hash);
+		if (idx >= 0) setBit(used, idx);
+	}
+	const fresh = new Array<string>(insertedLines.length);
+	for (let i = 0; i < insertedLines.length; i++) {
+		const baseIdx = (xxh32(canon(insertedLines[i]!)) >>> 14) % HASH_SPACE;
+		fresh[i] = assignHash(used, baseIdx, hint);
+	}
+	return [
+		...originalHashes.slice(0, insertAt),
+		...fresh,
+		...originalHashes.slice(insertAt),
+	];
 }
 
 export function _lineHashesPure(content: string): string[] {
@@ -287,4 +319,23 @@ function mapStableHashes(
   }
 
   return newHashes;
+}
+
+/**
+ * Replays a replace hash transition for another path view of the same
+ * physical file. Each alias keeps its own surviving hash identities while
+ * replacement rows receive fresh unique hashes.
+ */
+export function _replaceLineHashesPure(
+  oldContent: string,
+  oldHashes: string[],
+  newContent: string,
+  consumedRange: ConsumedLineRange,
+): string[] {
+  return mapStableHashes(
+    oldContent,
+    oldHashes,
+    newContent,
+    new Set(oldHashes.slice(consumedRange.first - 1, consumedRange.last)),
+  );
 }

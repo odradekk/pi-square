@@ -23,14 +23,14 @@ const loadSession = jiti(import.meta.url, {
   },
 });
 const { __testables } = await loadSession(join(packageRoot, "src", "subagents", "session.ts"));
-const { deriveTerminalPhase, buildReturnContent, collectLastMessages } = __testables;
+const { deriveTerminalPhase, collectLastMessages } = __testables;
 
 function baseDetails(overrides = {}) {
   const id = "subagent_00000000-0000-4000-8000-000000000051";
   return {
-    version: 3,
+    version: 4,
     id,
-    mode: "fg",
+    operation: "delegate",
     artifactsDir: `/tmp/subagents/${id}`,
     sessionFile: `/tmp/subagents/${id}/session.jsonl`,
     sessionId: "native-session",
@@ -54,29 +54,26 @@ function assistantMessage(text) {
   return { role: "assistant", content: [{ type: "text", text }] };
 }
 
-test("scenario 0: streaming completed with finalText is done and returns the public ID", () => {
+test("scenario 0: streaming completed with finalText is done", () => {
   const details = baseDetails({ streamingCompleted: true, finalText: "hello world" });
   deriveTerminalPhase(details, []);
-  assert.equal(details.phase, "done");
-  assert.ok(buildReturnContent(details).startsWith(`ID: ${details.id}\n\nhello world`));
+  assert.equal(details.phase, "completed");
+  assert.equal(details.finalText, "hello world");
 });
 
 test("scenario 1: incomplete stream salvages assistant text from history", () => {
   const details = baseDetails({ streamingCompleted: false, finalText: "" });
   deriveTerminalPhase(details, [{ role: "user", content: [{ type: "text", text: "prompt" }] }, assistantMessage("from-history")]);
-  assert.equal(details.phase, "error");
+  assert.equal(details.phase, "failed");
   assert.equal(details.finalText, "from-history");
   assert.equal(details.salvagedFinalText, "from-history");
   assert.match(details.error, /salvaged/);
-  const content = buildReturnContent(details);
-  assert.match(content, /Salvaged final text from message history:/);
-  assert.match(content, /from-history/);
 });
 
 test("scenario 1: completed stream with empty finalText still salvages as error", () => {
   const details = baseDetails({ streamingCompleted: true, finalText: "" });
   deriveTerminalPhase(details, [assistantMessage("from-history")]);
-  assert.equal(details.phase, "error");
+  assert.equal(details.phase, "failed");
   assert.equal(details.finalText, "from-history");
   assert.equal(details.salvagedFinalText, "from-history");
 });
@@ -90,45 +87,41 @@ test("scenario 2: no assistant text returns last 3 messages", () => {
   ];
   const details = baseDetails({ streamingCompleted: true, finalText: "" });
   deriveTerminalPhase(details, messages);
-  assert.equal(details.phase, "error");
+  assert.equal(details.phase, "failed");
   assert.match(details.rawSessionOutput, /two/);
   assert.match(details.rawSessionOutput, /three/);
   assert.match(details.rawSessionOutput, /four/);
   assert.doesNotMatch(details.rawSessionOutput, /one/);
-  assert.match(buildReturnContent(details), /Last messages from session/);
 });
 
 test("scenario 2: fewer than 3 messages returns only available messages", () => {
   const details = baseDetails();
   deriveTerminalPhase(details, [{ role: "user", content: [{ type: "text", text: "only" }] }]);
-  assert.equal(details.phase, "error");
+  assert.equal(details.phase, "failed");
   assert.match(details.rawSessionOutput, /only/);
 });
 
 test("scenario 3: empty messages returns explicit no messages error", () => {
   const details = baseDetails();
   deriveTerminalPhase(details, []);
-  assert.equal(details.phase, "error");
+  assert.equal(details.phase, "failed");
   assert.equal(details.error, "subagent produced no messages at all");
-  const content = buildReturnContent(details);
-  assert.doesNotMatch(content, /Salvaged final text/);
-  assert.doesNotMatch(content, /Last messages from session/);
+  assert.equal(details.rawSessionOutput, undefined);
 });
 
 test("existing details.error is not overwritten", () => {
   const details = baseDetails({ error: "preexisting failure" });
   deriveTerminalPhase(details, [assistantMessage("ignored")]);
-  assert.equal(details.phase, "error");
+  assert.equal(details.phase, "failed");
   assert.equal(details.error, "preexisting failure");
   assert.equal(details.finalText, "");
 });
 
-test("error return content includes tool errors", () => {
+test("terminal error records keep the collected tool errors for delivery", () => {
   const details = baseDetails({ toolErrors: [{ tool: "grep", message: "failed" }] });
   deriveTerminalPhase(details, []);
-  const content = buildReturnContent(details);
-  assert.match(content, /Last tool errors:/);
-  assert.match(content, /grep: failed/);
+  assert.equal(details.phase, "failed");
+  assert.deepEqual(details.toolErrors, [{ tool: "grep", message: "failed" }]);
 });
 
 test("collectLastMessages returns empty string for empty arrays", () => {

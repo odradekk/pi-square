@@ -30,7 +30,17 @@ import {
   SUBMIT_SHADOW_RESULT_TOOL,
 } from "./result";
 
-/** Package-defined canonical order of the local evidence built-ins. */
+/**
+ * Package-defined canonical order of the local evidence built-ins.
+ *
+ * These are today the same four names as the parser's `SHADOW_DEFAULT_TOOLS`,
+ * and the two stay separate on purpose (#345): this constant says which
+ * built-ins the catalog holds and in which order an envelope lists them, while
+ * the parser constant says which of them an omitted `tools` field selects.
+ * Merging them would make adding a built-in to the catalog silently widen the
+ * tool set of every definition that omits `tools`, and would give the parser —
+ * text handling only — a dependency on this module's Pi tool factories.
+ */
 export const SHADOW_BUILTIN_BASE_ORDER = ["read", "grep", "find", "ls"] as const;
 
 /** Extension catalog order for Shadow-safe evidence tools. */

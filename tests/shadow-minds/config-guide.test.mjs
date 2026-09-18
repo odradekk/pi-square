@@ -4,6 +4,8 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { stripVTControlCharacters } from "node:util";
 import jiti from "jiti";
+
+import { addComposedEventHandler } from "../subagents/lib/test-helpers.mjs";
 import { initTheme } from "@earendil-works/pi-coding-agent";
 import { KeybindingsManager, setKeybindings, TUI_KEYBINDINGS } from "@earendil-works/pi-tui";
 
@@ -23,6 +25,8 @@ let __testables;
 const { discoverShadowDefinitions, shadowDefinitionContextFingerprint } = await load(join(packageRoot, "src", "shadow-minds", "definitions.ts"));
 const { ShadowManager } = await load(join(packageRoot, "src", "shadow-minds", "manager.ts"));
 const { DEFAULT_CONFIG, DEFAULT_SHADOW_MINDS } = await load(join(packageRoot, "src", "core", "config.ts"));
+const { SHADOW_DEFAULT_TOOLS, SHADOW_SAFE_TOOLS } = await load(join(packageRoot, "src", "shadow-minds", "tools.ts"));
+const { createRegisteredState, makeServices } = await load(join(packageRoot, "src", "shadow-minds", "state.ts"));
 
 // File-scope agent base with the six fixture definitions (#188): the former
 // package templates live on as test data so discovery is fully controlled by
@@ -91,7 +95,11 @@ async function waitFor(predicate, message, timeoutMs = 2_000) {
   assert.match(guide.content, /maxToolCalls/, "budgets are documented");
   assert.doesNotMatch(guide.content, /never write definition files directly/, "the manager-only write instruction is gone");
   assert.doesNotMatch(guide.content, /review and confirmation/, "no Shadow-specific confirmation remains");
-  assert.ok(guide.content.includes("read, grep, find, ls, codegraph, pdf_search, search, fetch, libs, docs"), "the read-only catalog is documented");
+  assert.ok(guide.content.includes(SHADOW_SAFE_TOOLS.join(", ")), "the guide lists the whole Shadow-safe catalog in catalog order");
+  assert.ok(
+    guide.content.includes(`default local read-only set (${SHADOW_DEFAULT_TOOLS.join(", ")})`),
+    "the guide names the default local evidence set from the constant",
+  );
   assert.ok(JSON.stringify(guide.content).length < 60_000, "the guide stays bounded");
   assert.equal(guide.details.version, 1);
   assert.equal(guide.details.definitionCount, registry.definitions.length);
@@ -220,7 +228,10 @@ function fakePi() {
       sendMessage(message, options) { events.push(["guide", message, options]); },
       sendUserMessage(message, options) { events.push(["user", message, options]); },
       appendEntry(type, data) { entries.push({ type, data }); },
-      on(event, handler) { handlers.set(event, handler); },
+      // Pi invokes every handler registered for one event, so a second
+      // subscriber (the delivery lifecycle subscription) never displaces
+      // the first.
+      on(event, handler) { addComposedEventHandler(handlers, event, handler); },
     },
   };
 }
@@ -473,8 +484,8 @@ function fakePi() {
     // warning-role and project-grounding ran first; their tool envelopes
     // carry the canonical evidence names with the submit tool last.
     assert.deepEqual(created[0].tools, ["read", "submit_shadow_result"]);
-    assert.deepEqual(created[1].tools, ["read", "grep", "find", "ls", "codegraph", "pdf_search", "submit_shadow_result"]);
-    assert.deepEqual(created[1].customTools.map((tool) => tool.name), ["codegraph", "pdf_search", "submit_shadow_result"]);
+    assert.deepEqual(created[1].tools, ["read", "grep", "find", "ls", "web_search", "web_fetch", "submit_shadow_result"]);
+    assert.deepEqual(created[1].customTools.map((tool) => tool.name), ["web_search", "web_fetch", "submit_shadow_result"]);
     assert.ok(created[2].system.includes(SHADOW_GOVERNANCE.slice(0, 40)), "the versioned governance leads the child SYSTEM");
     assert.equal(created[2].thinkingLevel, undefined, "without a definition or config default the parent omission remains unset");
     assert.ok(created[2].system.includes("Live core policy."), "the parent core is captured at run start");
@@ -528,15 +539,19 @@ function fakePi() {
 
 {
   // A manager review may outlive its guarded command context. Activation must
-  // fail closed instead of throwing from Pi's stale-context getters.
-  const harness = fakePi();
-  const state = registerShadowMinds(harness.pi, () => ({
-    ...DEFAULT_CONFIG,
-    shadowMinds: { enabled: true, defaults: { ...DEFAULT_CONFIG.shadowMinds.defaults } },
-  }), {
-    now: () => 1,
-    async createSession() { throw new Error("must not create"); },
-    async runSession() { throw new Error("must not run"); },
+  // fail closed instead of throwing from Pi's stale-context getters. The
+  // registered state comes from the state factory (#373): manager-service
+  // tests do not need the registration root.
+  const state = createRegisteredState({
+    config: () => ({
+      ...DEFAULT_CONFIG,
+      shadowMinds: { enabled: true, defaults: { ...DEFAULT_CONFIG.shadowMinds.defaults } },
+    }),
+    runtimeDeps: {
+      now: () => 1,
+      async createSession() { throw new Error("must not create"); },
+      async runSession() { throw new Error("must not run"); },
+    },
   });
   const staleCtx = {
     cwd: packageRoot,
@@ -546,7 +561,7 @@ function fakePi() {
     // surface manual activation still reads.
     get model() { throw new Error("stale extension context"); },
   };
-  const service = __testables.makeServices(state, staleCtx);
+  const service = makeServices(state, staleCtx);
   const refused = service.runtime.runManual({ shadowId: "session-synthesizer" });
   assert.equal(refused.ok, false);
   assert.match(refused.message, /no longer active/);
@@ -555,13 +570,17 @@ function fakePi() {
 
 {
   // Manager-reviewed definitions and limits cannot drift before activation.
+  // The registered state comes from the state factory (#373): manager-service
+  // tests do not need the registration root.
   let liveConfig = { ...DEFAULT_CONFIG, shadowMinds: { enabled: true, defaults: { ...DEFAULT_CONFIG.shadowMinds.defaults } } };
   let created = 0;
-  const harness = fakePi();
-  const state = registerShadowMinds(harness.pi, () => liveConfig, {
-    now: () => 1,
-    async createSession() { created += 1; return { session: {} }; },
-    async runSession() { throw new Error("must not run"); },
+  const state = createRegisteredState({
+    config: () => liveConfig,
+    runtimeDeps: {
+      now: () => 1,
+      async createSession() { created += 1; return { session: {} }; },
+      async runSession() { throw new Error("must not run"); },
+    },
   });
   const ctx = {
     cwd: packageRoot,
@@ -575,7 +594,7 @@ function fakePi() {
   };
   state.refresh(fixtureProject);
   const definition = state.registry.definitions.find((entry) => entry.id === "session-synthesizer");
-  const service = __testables.makeServices(state, ctx);
+  const service = makeServices(state, ctx);
   liveConfig = {
     ...liveConfig,
     shadowMinds: {
@@ -1481,12 +1500,12 @@ const previousCodingAgentDir159 = process.env.PI_CODING_AGENT_DIR;
     assert.equal(shadowDeliveries(harness).length, 1, "no second delivery happens after recovery");
     // A runtime notification after reopen (for example a read marker) must
     // not re-enqueue the restored result into the delivery machine.
-    state.runtime.markResultRead(resultId);
+    const services = __testables.makeServices(state, eventCtx);
+    services.runtime.markResultRead(resultId);
     await harness.handlers.get("agent_settled")({ type: "agent_settled" }, eventCtx);
     assert.equal(shadowDeliveries(harness).length, 1, "a restored result never auto-delivers after reopen");
     assert.equal(state.runtime.snapshot().results[0].delivery, "notified");
     // But an explicit send from the reopened inbox still works.
-    const services = __testables.makeServices(state, eventCtx);
     assert.equal(services.delivery?.sendResultToAgent(resultId)?.ok, true);
     assert.equal(shadowDeliveries(harness).length, 2, "an explicit send still delivers after reopen");
     await harness.handlers.get("message_start")({ type: "message_start", message: shadowDeliveries(harness).at(-1)[1] }, eventCtx);
@@ -1992,7 +2011,7 @@ const previousCodingAgentDir160 = process.env.PI_CODING_AGENT_DIR;
     };
     reentryTrigger = () => {
       const result = state.runtime.snapshot().results[0];
-      if (result) state.runtime.markResultRead(result.id);
+      if (result) services.runtime.markResultRead(result.id);
     };
     let started = services.runtime.runManual({ shadowId: "session-synthesizer" });
     assert.equal(started.ok, true, started.message);
@@ -2026,7 +2045,7 @@ const previousCodingAgentDir160 = process.env.PI_CODING_AGENT_DIR;
     assert.notEqual(secondId, firstId, "distinct results are never coalesced");
     assert.equal(referenceCount(secondId), 0, "the failed append leaves no transcript reference");
     assert.ok(state.runtime.snapshot().results.some((result) => result.id === secondId), "the result stays safely available in the inbox");
-    state.runtime.markResultRead(secondId);
+    services.runtime.markResultRead(secondId);
     assert.equal(referenceCount(secondId), 1, "a later runtime update retries the append exactly once");
     assert.equal(state.runtime.snapshot().results.find((result) => result.id === secondId).referenced, true, "the retried append marks the result referenced");
 

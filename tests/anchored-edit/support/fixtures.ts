@@ -10,6 +10,7 @@ import { loadAnchoredHashStore, PARENT_OWNER } from "../../../src/anchored-edit/
 import { withAnchoredReadTransform } from "../../../src/anchored-edit/read-tool";
 import { transformAnchoredReadContent, guardAnchoredRead } from "../../../src/anchored-edit/read-transform";
 import { createAnchoredReplaceToolDefinition } from "../../../src/anchored-edit/workspace-replace";
+import { createAnchoredInsertToolDefinition } from "../../../src/anchored-edit/workspace-insert";
 import { createParentAnchoredWrite, registerAnchoredAutoRead } from "../../../src/anchored-edit/auto-read";
 import type { PiSquareConfig } from "../../../src/core/config";
 import { loadHashStoreAt, shutdownHashStore, type HashStoreHandle } from "../../../src/anchored-edit/hash-store";
@@ -264,8 +265,9 @@ export function setupIntegrationTest(cwd: string) {
   const { pi, getTool } = makeFakePiRegistry();
   pi.registerTool(anchoredReadDefinition(cwd));
   pi.registerTool(createAnchoredReplaceToolDefinition(cwd, () => true, PARENT_OWNER, false));
+  pi.registerTool(createAnchoredInsertToolDefinition(cwd, () => true, PARENT_OWNER));
   const ctx = makeTestCtx(cwd);
-  return { pi, getTool, ctx, readTool: getTool("read"), editTool: getTool("replace") };
+  return { pi, getTool, ctx, readTool: getTool("read"), editTool: getTool("replace"), insertTool: getTool("insert") };
 }
 
 export function setupReadTest(cwd: string) {

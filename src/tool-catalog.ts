@@ -1,22 +1,16 @@
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
-import { createCodeGraphDefinition } from "./codegraph";
-import { createGitHubToolDefinition } from "./github/tools";
-import { createPdfSearchToolDefinition } from "./pdf-search";
 import { isWindowsPlatform } from "./shell/platform";
 import { createPwshToolDefinition } from "./shell/tools/pwsh";
-import { createDocsToolDefinition } from "./web/tools/docs";
-import { createFetchToolDefinition } from "./web/tools/fetch";
-import { createLibsToolDefinition } from "./web/tools/libs";
-import { createSearchToolDefinition } from "./web/tools/search";
+import { createLibraryDocsToolDefinition } from "./web/tools/library-docs";
+import { createLibrarySearchToolDefinition } from "./web/tools/library-search";
+import { createWebFetchToolDefinition } from "./web/tools/web-fetch";
+import { createWebSearchToolDefinition } from "./web/tools/web-search";
 
 const BASE_EXTENSION_TOOLS = [
-  "codegraph",
-  "pdf_search",
-  "search",
-  "fetch",
-  "libs",
-  "docs",
-  "github",
+  "web_search",
+  "web_fetch",
+  "library_search",
+  "library_docs",
 ] as const;
 
 type SupportedExtensionTool = typeof BASE_EXTENSION_TOOLS[number] | "pwsh";
@@ -29,13 +23,10 @@ function createDefinitions(platform: NodeJS.Platform, _cwd?: string): Map<Suppor
   // _cwd is reserved for composing a child read factory for the child's working
   // directory (the anchored-read follow-up); no shipped child tool consumes it yet.
   const definitions = new Map<SupportedExtensionTool, ToolDefinition>([
-    ["codegraph", createCodeGraphDefinition(false) as ToolDefinition],
-    ["pdf_search", createPdfSearchToolDefinition() as ToolDefinition],
-    ["search", createSearchToolDefinition() as ToolDefinition],
-    ["fetch", createFetchToolDefinition() as ToolDefinition],
-    ["libs", createLibsToolDefinition() as ToolDefinition],
-    ["docs", createDocsToolDefinition() as ToolDefinition],
-    ["github", createGitHubToolDefinition() as ToolDefinition],
+    ["web_search", createWebSearchToolDefinition() as ToolDefinition],
+    ["web_fetch", createWebFetchToolDefinition() as ToolDefinition],
+    ["library_search", createLibrarySearchToolDefinition() as ToolDefinition],
+    ["library_docs", createLibraryDocsToolDefinition() as ToolDefinition],
   ]);
   if (isWindowsPlatform(platform)) definitions.set("pwsh", createPwshToolDefinition() as ToolDefinition);
   return definitions;
@@ -66,18 +57,16 @@ export function createChildTools(
 
 /**
  * Shadow-safe extension tool subset (odradekk/pi-square#156): the strictly
- * read-only evidence tools a Shadow child session may receive. Authenticated
- * GitHub, platform shells, and every side-effect capability stay delegated-
- * and-Shadow-excluded; Shadow policy additionally enforces this list before
- * names ever reach `createChildTools`.
+ * read-only evidence tools a Shadow child session may receive. Platform
+ * shells and every side-effect capability stay delegated-and-Shadow-excluded;
+ * Shadow policy additionally enforces this list before names ever reach
+ * `createChildTools`.
  */
 export const SHADOW_SAFE_EXTENSION_TOOLS = [
-  "codegraph",
-  "pdf_search",
-  "search",
-  "fetch",
-  "libs",
-  "docs",
+  "web_search",
+  "web_fetch",
+  "library_search",
+  "library_docs",
 ] as const;
 
 /** Resolves Shadow-safe extension tools from the child-safe factories only. */

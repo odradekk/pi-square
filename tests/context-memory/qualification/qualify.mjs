@@ -11,7 +11,7 @@ import { safeProcessDiagnostic } from "./diagnostics.mjs";
  *
  * One reproducible, zero-tolerance sweep of the implemented protocol. The
  * mechanical acceptance corpus for the in-task recording and request-projection
- * architecture (#319–#324, ADR-0017) lives in the deterministic native suites
+ * architecture (#319–#324, ADR-0018) lives in the deterministic native suites
  * under `tests/context-memory/` — controller-seam units plus the real
  * `AgentSession` request-exit evidence — and this command runs every one of
  * them as one gated sweep, emitting a bounded report tied to the

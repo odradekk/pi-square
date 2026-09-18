@@ -7,41 +7,15 @@ import jiti from "jiti";
 const packageRoot = resolve(import.meta.dirname, "..", "..");
 const load = jiti(import.meta.url, { moduleCache: false });
 const {
-  DEFAULT_OUTPUT_SCHEMA,
-  SHADOW_BODY_MAX_CHARS,
-  SHADOW_DEFAULT_TOOLS,
-  SHADOW_DELIVERIES,
-  SHADOW_FILE_MAX_BYTES,
-  SHADOW_ID_MAX_CHARS,
-  SHADOW_ID_PATTERN,
-  SHADOW_MODEL_REFERENCE,
-  SHADOW_NAME_MAX_CHARS,
-  SHADOW_PAYLOAD_MAX_CHARS,
-  SHADOW_PAYLOAD_VALIDATION_ERRORS_MAX,
-  SHADOW_PRIORITY_MAX,
-  SHADOW_PRIORITY_MIN,
-  SHADOW_SCHEMA_MAX_DEPTH,
-  SHADOW_SCHEMA_MAX_ITEMS,
-  SHADOW_SCHEMA_MAX_PROPERTIES_PER_OBJECT,
-  SHADOW_SCHEMA_MAX_TOTAL_PROPERTIES,
-  SHADOW_SCHEMA_STRING_MAX_LENGTH,
-  SHADOW_THINKING_LEVELS,
-  SHADOW_TOOL_PATTERN,
-  SHADOW_TOOLS_MAX,
-  SHADOW_TRIGGER_INSTRUCTION_MAX_CHARS,
-  SHADOW_TRIGGERS,
-  SHADOW_TRIGGERS_MAX,
-  SHADOW_PARENT_MODELS_MAX,
+  SHADOW_DEFINITION_FIELDS,
   parseShadowDefinitionFile,
 } = await load(join(packageRoot, "src", "shadow-minds", "parser.ts"));
-const {
-  SHADOW_MINDS_MODEL_TURNS_HARD_MAX,
-  SHADOW_MINDS_RUN_TIMEOUT_HARD_MAX_SECONDS,
-  SHADOW_MINDS_TOOL_CALLS_HARD_MAX,
-} = await load(join(packageRoot, "src", "core", "config.ts"));
+const { SHADOW_DEFINITION_BOUNDS } = await load(join(packageRoot, "src", "shadow-minds", "definition-bounds.ts"));
 const { discoverShadowDefinitions } = await load(join(packageRoot, "src", "shadow-minds", "definitions.ts"));
 const { serializeShadowDefinition } = await load(join(packageRoot, "src", "shadow-minds", "serialize.ts"));
 const { buildShadowConfigGuide } = await load(join(packageRoot, "src", "shadow-minds", "config-guide.ts"));
+const { buildShadowDefinitionContract } = await load(join(packageRoot, "src", "shadow-minds", "contract.ts"));
+const { SHADOW_DEFAULT_TOOLS, SHADOW_SAFE_TOOLS } = await load(join(packageRoot, "src", "shadow-minds", "tools.ts"));
 
 const assetsDir = join(packageRoot, "shadow-minds");
 
@@ -66,7 +40,7 @@ const assetsDir = join(packageRoot, "shadow-minds");
   assert.deepEqual(fields.tools, ["read", "grep", "ls"]);
   assert.deepEqual(fields.requiredTools, ["read"]);
   assert.equal(fields.outputSchema.properties.verdict.enum.join(","), "sound,gap,wrong");
-  assert.ok(fields.body.length > 0 && fields.body.length <= SHADOW_BODY_MAX_CHARS);
+  assert.ok(fields.body.length > 0 && fields.body.length <= SHADOW_DEFINITION_BOUNDS.body.maxChars);
 
   // Serializer round-trip: the example stays canonically rewritable.
   const serialized = serializeShadowDefinition(fields);
@@ -75,8 +49,7 @@ const assetsDir = join(packageRoot, "shadow-minds");
   assert.deepEqual(reparsed.definition.fields, fields, "serialize → parse round-trips the example exactly");
 }
 
-// ── The schema reference's structured contract matches production ────
-
+/** Every fenced block in the schema reference carrying the given info string. */
 function extractBlocks(markdown, info) {
   const pattern = new RegExp("```" + info + "\\s*\\n([\\s\\S]*?)\\n```", "g");
   const blocks = [];
@@ -84,87 +57,10 @@ function extractBlocks(markdown, info) {
   return blocks;
 }
 
-{
-  const markdown = readFileSync(join(assetsDir, "schema-reference.md"), "utf8");
-  const contracts = extractBlocks(markdown, "json shadow-contract");
-  assert.equal(contracts.length, 1, "exactly one structured contract block exists");
-  const contract = JSON.parse(contracts[0]);
-  assert.equal(contract.promptVersion, 1);
-  assert.equal(contract.file.maxBytes, SHADOW_FILE_MAX_BYTES);
-  assert.equal(contract.file.commentPolicy, "whole-line-only");
-
-  const fields = contract.fields;
-  assert.deepEqual(
-    Object.keys(fields).sort(),
-    [
-      "body", "completionGate", "debug", "delivery", "enabled", "hidden", "id", "maxToolCalls",
-      "maxTurns", "model", "name", "outputSchema", "parentModels", "priority", "requiredTools",
-      "thinking", "timeoutSeconds", "tools", "triggerInstructions", "triggers",
-    ].sort(),
-    "the normative contract covers every production definition field",
-  );
-  assert.equal(fields.id.required, true);
-  assert.equal(fields.id.maxLength, SHADOW_ID_MAX_CHARS);
-  assert.equal(fields.id.pattern, SHADOW_ID_PATTERN.source);
-  assert.equal(fields.id.equalsFilenameStem, true);
-  assert.equal(fields.name.maxLength, SHADOW_NAME_MAX_CHARS);
-  assert.equal(fields.name.effectiveRequired, true);
-  assert.equal(fields.enabled.default, false);
-  assert.equal(fields.hidden.default, false);
-  assert.equal(fields.priority.min, SHADOW_PRIORITY_MIN);
-  assert.equal(fields.priority.max, SHADOW_PRIORITY_MAX);
-  assert.equal(fields.priority.default, 0);
-  assert.deepEqual(fields.triggers.enum, [...SHADOW_TRIGGERS]);
-  assert.equal(fields.triggers.maxEntries, SHADOW_TRIGGERS_MAX);
-  assert.equal(fields.triggers.unique, true);
-  assert.deepEqual(fields.triggers.default, []);
-  assert.equal(fields.triggerInstructions.keysFromTriggers, true);
-  assert.equal(fields.triggerInstructions.valueMaxLength, SHADOW_TRIGGER_INSTRUCTION_MAX_CHARS);
-  assert.equal(fields.triggerInstructions.nullClearsKey, true);
-  assert.equal(fields.triggerInstructions.merge, "per-key across layers");
-  assert.deepEqual(fields.delivery.enum, [...SHADOW_DELIVERIES]);
-  assert.equal(fields.delivery.default, "steer");
-  assert.equal(fields.completionGate.default, false);
-  assert.equal(fields.completionGate.requiresCompletionTrigger, true);
-  assert.equal(fields.parentModels.maxEntries, SHADOW_PARENT_MODELS_MAX);
-  assert.equal(fields.parentModels.unique, true);
-  assert.equal(fields.parentModels.entryPattern, "exact provider/model-id or *");
-  assert.equal(fields.model.pattern, SHADOW_MODEL_REFERENCE.source);
-  assert.deepEqual(fields.thinking.enum, [...SHADOW_THINKING_LEVELS]);
-  assert.deepEqual(fields.timeoutSeconds, { min: 1, max: SHADOW_MINDS_RUN_TIMEOUT_HARD_MAX_SECONDS });
-  assert.deepEqual(fields.maxTurns, { min: 1, max: SHADOW_MINDS_MODEL_TURNS_HARD_MAX });
-  assert.deepEqual(fields.maxToolCalls, { min: 1, max: SHADOW_MINDS_TOOL_CALLS_HARD_MAX });
-  assert.equal(fields.tools.maxEntries, SHADOW_TOOLS_MAX);
-  assert.equal(fields.tools.unique, true);
-  assert.equal(fields.tools.entryPattern, SHADOW_TOOL_PATTERN.source);
-  assert.deepEqual(fields.tools.default, [...SHADOW_DEFAULT_TOOLS]);
-  assert.equal(fields.tools.emptyListMeans, "no tools");
-  assert.equal(fields.tools.catalogIsFixed, true);
-  assert.equal(fields.requiredTools.maxEntries, SHADOW_TOOLS_MAX);
-  assert.equal(fields.requiredTools.unique, true);
-  assert.equal(fields.requiredTools.entryPattern, SHADOW_TOOL_PATTERN.source);
-  assert.equal(fields.requiredTools.subsetOfFinalTools, true);
-  assert.equal(fields.debug.default, false);
-  assert.equal(fields.outputSchema.maxDepth, SHADOW_SCHEMA_MAX_DEPTH);
-  assert.equal(fields.outputSchema.maxTotalProperties, SHADOW_SCHEMA_MAX_TOTAL_PROPERTIES);
-  assert.equal(fields.outputSchema.maxPropertiesPerObject, SHADOW_SCHEMA_MAX_PROPERTIES_PER_OBJECT);
-  assert.equal(fields.outputSchema.maxItems, SHADOW_SCHEMA_MAX_ITEMS);
-  assert.equal(fields.outputSchema.stringMaxLength, SHADOW_SCHEMA_STRING_MAX_LENGTH);
-  assert.equal(fields.outputSchema.atomicReplace, true);
-  assert.equal(fields.outputSchema.nullRestoresDefault, true);
-  assert.equal(fields.outputSchema.rootMustBeObject, true);
-  assert.equal(fields.outputSchema.additionalPropertiesFalseRequired, true);
-  assert.deepEqual(fields.outputSchema.default, DEFAULT_OUTPUT_SCHEMA);
-  assert.equal(fields.body.maxChars, SHADOW_BODY_MAX_CHARS);
-  assert.equal(fields.body.omittedOrEmptyInherits, true);
-  assert.equal(fields.body.nonEmptyReplaces, true);
-  assert.equal(fields.body.effectiveRequired, true);
-  assert.equal(contract.payload.maxEncodedChars, SHADOW_PAYLOAD_MAX_CHARS);
-  assert.equal(contract.payload.maxFieldErrors, SHADOW_PAYLOAD_VALIDATION_ERRORS_MAX);
-}
-
 // ── Embedded examples run through the production pipeline ────────────
 
+/** The minimal example's effective definition; the contract's default source. */
+let minimalDefinition;
 {
   const markdown = readFileSync(join(assetsDir, "schema-reference.md"), "utf8");
   const valid = extractBlocks(markdown, "yaml shadow-valid");
@@ -212,6 +108,8 @@ function extractBlocks(markdown, info) {
     // Reference assets never surface as definitions even with a live agent
     // base: discovery reads only the two user-owned scopes.
     assert.ok(!active.has("example"), "the packaged example is never discovered");
+
+    minimalDefinition = registry.definitions.find((definition) => definition.id === "minimal-valid");
   } finally {
     if (previousAgentDir === undefined) delete process.env.PI_AGENT_DIR;
     else process.env.PI_AGENT_DIR = previousAgentDir;
@@ -219,6 +117,47 @@ function extractBlocks(markdown, info) {
     else process.env.PI_CODING_AGENT_DIR = previousCodingAgentDir;
     rmSync(dir, { recursive: true, force: true });
   }
+}
+
+// ── The schema reference's structured contract matches production ────
+
+{
+  const markdown = readFileSync(join(assetsDir, "schema-reference.md"), "utf8");
+  const contracts = extractBlocks(markdown, "json shadow-contract");
+  assert.equal(contracts.length, 1, "exactly one structured contract block exists");
+  const documented = JSON.parse(contracts[0]);
+
+  // The minimal embedded example declares no optional field, so the defaults
+  // the contract publishes are the ones discovery resolved for it.
+  assert.ok(minimalDefinition, "the minimal embedded example is effective through production discovery");
+
+  assert.deepEqual(
+    Object.keys(documented.fields).sort(),
+    [...SHADOW_DEFINITION_FIELDS].sort(),
+    "the contract block documents exactly the parser's definition fields",
+  );
+  // The published catalog is the resolver's own catalog, in catalog order:
+  // the generator reads the same constants, so this holds the document
+  // against the source of truth rather than against the generator (#345).
+  assert.deepEqual(
+    [...documented.toolCatalog.builtIns, ...documented.toolCatalog.remoteEvidence],
+    [...SHADOW_SAFE_TOOLS],
+    "the contract block publishes the whole Shadow-safe catalog in catalog order",
+  );
+  assert.deepEqual(
+    documented.toolCatalog.defaultSelection,
+    [...SHADOW_DEFAULT_TOOLS],
+    "the contract block publishes the set an omitted tools field selects",
+  );
+
+  // One whole-object comparison: every bound, enum, pattern, and default in
+  // the block comes from production code, so drift prints as one full diff
+  // instead of stopping at the first mismatched key.
+  assert.deepEqual(
+    documented,
+    buildShadowDefinitionContract(minimalDefinition),
+    "the published contract block matches the contract generated from production",
+  );
 }
 
 // ── The Config Guide points at the reference assets ──────────────────

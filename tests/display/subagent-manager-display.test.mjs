@@ -27,6 +27,7 @@ function makeData(overrides = {}) {
     running: [],
     session: [],
     definitions: [],
+    invalid: [],
     errors: [],
     cwd: "/tmp",
     parentSessionId: "parent-1234",
@@ -80,17 +81,17 @@ function render(manager, width) {
       createdAt: 1,
       updatedAt: 2,
       details: {
-        version: 3,
+        version: 4,
         id: "subagent_aabbccdd-1122-4333-8444-556677889900",
         agent: { name: "explorer", effort: "high" },
-        mode: "bg",
+        operation: "delegate",
         phase: "running",
         model: "test/model",
         durationMs: 5000,
         retries: 0,
         task: "Find all adapters",
         usage: { input: 100, output: 50, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 2 },
-        timeline: [{ kind: "tool", phase: "start", text: 'rg {"pattern":"adapter","path":"src"}' }],
+        timeline: [{ kind: "tool", phase: "start", tool: "rg", args: { pattern: "adapter", path: "src" }, text: "rg /adapter/ in src" }],
         liveText: "Searching...",
         finalText: "",
         startedAt: Date.now() - 3000,
@@ -145,10 +146,10 @@ function render(manager, width) {
       createdAt: 1,
       updatedAt: 2,
       details: {
-        version: 3,
+        version: 4,
         id: "subagent_aabbccdd",
         agent: { name: "explorer", effort: "high" },
-        mode: "bg",
+        operation: "delegate",
         phase: "running",
         model: "test/model",
         durationMs: 5000,
@@ -180,7 +181,7 @@ function render(manager, width) {
   assert.match(text, /No active background subagents/, "running empty state");
   manager["switchTab"](1); // session
   const sessionText = render(manager, 80);
-  assert.match(sessionText, /No V3 subagents/, "session empty state");
+  assert.match(sessionText, /No V4 subagents/, "session empty state");
   manager["switchTab"](1); // definitions
   const defText = render(manager, 80);
   assert.match(defText, /No valid V2 definitions/, "definitions empty state");
@@ -197,10 +198,10 @@ function render(manager, width) {
       createdAt: 1,
       updatedAt: 2,
       details: {
-        version: 3,
+        version: 4,
         id: "subagent_aabbccdd",
         agent: { name: "explorer", effort: "high" },
-        mode: "bg",
+        operation: "delegate",
         phase: "running",
         model: "test/model",
         durationMs: 5000,
@@ -240,17 +241,17 @@ function render(manager, width) {
       createdAt: 1,
       updatedAt: 2,
       details: {
-        version: 3,
+        version: 4,
         id: "subagent_aabbccdd",
         agent: { name: "explorer", effort: "high" },
-        mode: "bg",
+        operation: "delegate",
         phase: "running",
         model: "test/model",
         durationMs: 5000,
         retries: 0,
         task: "Task",
         usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
-        timeline: [{ kind: "tool", phase: "start", text: 'unknown_tool {"secret":"data"}' }],
+        timeline: [{ kind: "tool", phase: "start", tool: "unknown_tool", args: { secret: "data" }, text: "unknown_tool called" }],
         liveText: "",
         finalText: "",
         startedAt: Date.now(),
@@ -268,10 +269,10 @@ function render(manager, width) {
 
 {
   const baseDetails = {
-    version: 3,
+    version: 4,
     id: "subagent_aabbccdd",
     agent: { name: "worker", effort: "high" },
-    mode: "bg",
+    operation: "delegate",
     phase: "running",
     model: "test/model",
     durationMs: 5000,
@@ -299,9 +300,9 @@ function render(manager, width) {
 
 {
   const baseDetails = {
-    version: 3,
+    version: 4,
     agent: { name: "worker", effort: "high" },
-    mode: "bg",
+    operation: "delegate",
     model: "test/model",
     durationMs: 5000,
     retries: 0,
@@ -313,15 +314,15 @@ function render(manager, width) {
     startedAt: Date.now(),
     promptSnapshot: { version: 2, manifest: { definitionHash: "abc", effectiveSystemHash: "def" } },
   };
-  const done = { ...baseDetails, id: "subagent_done00000", phase: "done", finalText: "ok" };
-  const errored = { ...baseDetails, id: "subagent_error000", phase: "error", error: "failed" };
+  const done = { ...baseDetails, id: "subagent_done00000", phase: "completed", finalText: "ok" };
+  const errored = { ...baseDetails, id: "subagent_error000", phase: "failed", error: "failed" };
   const aborted = { ...baseDetails, id: "subagent_abort000", phase: "aborted" };
   const data = makeData({ running: [], session: [done, errored, aborted], activeSessionIds: [] });
   const manager = new SubagentManager(data, tui(), theme(), keybindings(), () => {});
   manager["switchTab"](1); // session
   const text = render(manager, 120);
-  assert.match(text, /\u2713 done/, "done phase shows ✓ marker");
-  assert.match(text, /\u2717 error/, "error phase shows × marker");
+  assert.match(text, /\u2713 completed/, "done phase shows ✓ marker");
+  assert.match(text, /\u2717 failed/, "error phase shows × marker");
   assert.match(text, /\u00d7 aborted/, "aborted phase shows · marker");
   manager.dispose();
 }

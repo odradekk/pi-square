@@ -14,6 +14,7 @@ import {
   truncateToWidth,
   wrapTextWithAnsi,
 } from "@earendil-works/pi-tui";
+import { withOwnedInputSurface } from "../core/input-surface";
 import type { DisplayRuntimeProvider } from "../display/tool-renderer";
 import {
   createSubagentId,
@@ -37,6 +38,7 @@ import {
 import {
   deleteDefinitionOverlay,
   previewDefinitionPatch,
+  type InvalidSubagentDefinition,
   type SubagentDefinition,
   type SubagentDefinitionField,
   type SubagentDefinitionPatch,
@@ -45,9 +47,9 @@ import {
 import { sanitizeSubagentDisplay } from "./display";
 import { isRunLeaseActive } from "./lease";
 import { compileFreshPrompt, promptDefinitionHash } from "./prompt";
-import { latestToolCallSummary } from "./tool-display";
+import { latestManagerToolCallSummary } from "./manager-tool-display";
 import { anchoredAutoReadEnabled, anchoredEditingEnabled, type SubagentRuntimeState } from "./tool";
-import type { BackgroundJobSnapshot, SubagentRunDetails } from "./types";
+import type { BackgroundJobSnapshot, SubagentRunDetails } from "./run-types";
 
 type ManagerTab = "running" | "session" | "definitions";
 type WritableScope = "agent" | "project";
@@ -58,11 +60,20 @@ interface ManagerSnapshot {
   activeSessionIds?: string[];
   /** Finished runs whose result the parent has not received yet. */
   undeliveredIds?: string[];
+  /** Runs whose result an explicit wait_subagent call currently owns. */
+  claimedIds?: string[];
   definitions: SubagentDefinition[];
+  /** Rejected definition files, listed beside valid definitions with their errors. */
+  invalid: InvalidSubagentDefinition[];
   errors: string[];
 }
 
 type DefinitionPreview = ReturnType<typeof previewDefinitionPatch>;
+
+/** One definitions-tab row: a working definition or a rejected definition file. */
+type DefinitionEntry =
+  | { kind: "valid"; definition: SubagentDefinition }
+  | { kind: "invalid"; invalid: InvalidSubagentDefinition };
 
 interface OperationResult {
   ok: boolean;
@@ -166,13 +177,14 @@ function jobStatusPresentation(status: string, theme: any): string {
  */
 function sessionPhasePresentation(active: boolean, phase: string, theme: any): string {
   if (active) return theme.fg("warning", "→ active");
-  const suffix = phase === "running" || phase === "cancelling" ? " (inactive)" : "";
+  const suffix = phase === "queued" || phase === "running" || phase === "cancelling" ? " (inactive)" : "";
   switch (phase) {
-    case "done": return theme.fg("success", `✓ done`);
-    case "error": return theme.fg("error", `✗ error`);
+    case "completed": return theme.fg("success", `✓ completed`);
+    case "failed": return theme.fg("error", `✗ failed`);
     case "aborted": return theme.fg("muted", `× aborted`);
     case "cancelling": return theme.fg("muted", `× cancelling${suffix}`);
     case "running": return theme.fg("muted", `→ running${suffix}`);
+    case "queued": return theme.fg("muted", `– queued${suffix}`);
     default: return theme.fg("muted", phase);
   }
 }
@@ -203,20 +215,30 @@ function displayValue(value: unknown): string {
   return String(value);
 }
 
-function activeJobs(state: SubagentRuntimeState): BackgroundJobSnapshot[] {
+/**
+ * Active background jobs of the current parent session only. Background jobs
+ * survive a session replacement in-process, so without this filter the
+ * manager would list — and offer Cancel for — runs owned by an earlier parent
+ * session, exactly the runs `wait_subagent` and `abort_subagent` treat as
+ * foreign.
+ */
+function activeJobs(state: SubagentRuntimeState, parentSessionId: string): BackgroundJobSnapshot[] {
   return listBackgroundJobs(state.background).filter((job) => (
-    job.status === "queued" || job.status === "running" || job.status === "cancelling"
+    (job.status === "queued" || job.status === "running" || job.status === "cancelling")
+    && job.details.lastParentSessionId === parentSessionId
   ));
 }
 
 function snapshot(state: SubagentRuntimeState, parentSessionId: string): ManagerSnapshot {
   const session = listParentSessionRuns(parentSessionId);
   return {
-    running: activeJobs(state),
+    running: activeJobs(state, parentSessionId),
     session,
     activeSessionIds: session.filter((run) => isRunLeaseActive(run.id)).map((run) => run.id),
-    undeliveredIds: state.background.delivery?.pendingIds() ?? [],
+    undeliveredIds: state.background.delivery.pendingIds(),
+    claimedIds: state.background.delivery.pendingIds().filter((id) => state.background.delivery.isClaimed(id)),
     definitions: [...state.registry.definitions].sort((a, b) => a.name.localeCompare(b.name)),
+    invalid: [...state.registry.invalid].sort((a, b) => a.id.localeCompare(b.id)),
     errors: [...state.registry.errors],
   };
 }
@@ -279,8 +301,16 @@ function createProductionServices(
       },
     } : {}),
     cancel(id) {
+      // Ownership is re-read from the live job record at action time, never
+      // from the snapshot the UI rendered: a job carried from an earlier
+      // parent session must not be cancellable from this session's manager.
       const job = state.background.jobs.get(id);
-      if (!job) return { ok: false, message: `Background subagent '${id}' is no longer active.` };
+      if (!job || job.details.lastParentSessionId !== parentSessionId) {
+        return { ok: false, message: `Background subagent '${id}' is no longer active in this session.` };
+      }
+      if (job.status !== "queued" && job.status !== "running" && job.status !== "cancelling") {
+        return { ok: false, message: `Background subagent ${shortId(id)} already finished as ${job.status}.` };
+      }
       cancelBackgroundJobs({ state: state.background, id, reason: "Canceled from /subagent manager." });
       return { ok: true, message: `Cancellation requested for ${job.details.agent?.name ?? "generic"} ${shortId(id)}.` };
     },
@@ -290,9 +320,23 @@ function createProductionServices(
       if (isRunLeaseActive(id)) {
         return { ok: false, message: `Subagent '${id}' is active and cannot be resumed concurrently.` };
       }
+      // An unconsumed prior result or an explicit wait claim blocks resume for
+      // the same reason the model tool rejects it: a new run under the same
+      // public ID would overwrite output the parent has not seen.
+      if (state.background.delivery.isClaimed(id)) {
+        return {
+          ok: false,
+          message: `Subagent '${shortId(id)}' is claimed by an active wait_subagent call; wait for it to consume the result before resuming.`,
+        };
+      }
+      if (state.background.delivery.isPending(id)) {
+        return {
+          ok: false,
+          message: `Subagent '${shortId(id)}' has an undelivered result; wait for the background completion delivery or consume it with wait_subagent before resuming.`,
+        };
+      }
       const job = createQueuedResumeJob({ state: state.background, details, task, parentSessionId });
       startBackgroundResumeJob({
-        pi,
         state: state.background,
         job,
         ctx,
@@ -329,7 +373,6 @@ function createProductionServices(
         definition,
       });
       startBackgroundJob({
-        pi,
         state: state.background,
         job,
         ctx,
@@ -352,7 +395,7 @@ function createProductionServices(
         deleteParentSessionRun(parentSessionId, id, ctx.sessionManager?.getSessionDir?.() ?? "");
         // Deleting the history states that this result is no longer wanted, so
         // it also leaves the pending delivery set.
-        state.background.delivery?.remove(id);
+        state.background.delivery.remove(id);
         return { ok: true, message: `Deleted subagent history ${shortId(id)}.` };
       } catch (error) {
         return { ok: false, message: error instanceof Error ? error.message : String(error) };
@@ -441,7 +484,7 @@ export class SubagentManager implements Component, Focusable {
   private count(tab = this.tab()): number {
     if (tab === "running") return this.data.running.length;
     if (tab === "session") return this.data.session.length;
-    return this.data.definitions.length;
+    return this.definitionEntries().length;
   }
 
   private selectedIndex(): number {
@@ -459,8 +502,22 @@ export class SubagentManager implements Component, Focusable {
     return Boolean(run && this.data.activeSessionIds?.includes(run.id));
   }
 
+  /** Valid definitions first, then rejected files — both selectable rows. */
+  private definitionEntries(): DefinitionEntry[] {
+    return [
+      ...this.data.definitions.map((definition) => ({ kind: "valid" as const, definition })),
+      ...this.data.invalid.map((invalid) => ({ kind: "invalid" as const, invalid })),
+    ];
+  }
+
   private selectedDefinition(): SubagentDefinition | undefined {
-    return this.data.definitions[this.selectedIndex()];
+    const entry = this.definitionEntries()[this.selectedIndex()];
+    return entry?.kind === "valid" ? entry.definition : undefined;
+  }
+
+  private selectedInvalid(): InvalidSubagentDefinition | undefined {
+    const entry = this.definitionEntries()[this.selectedIndex()];
+    return entry?.kind === "invalid" ? entry.invalid : undefined;
   }
 
   private move(delta: number): void {
@@ -602,7 +659,7 @@ export class SubagentManager implements Component, Focusable {
           lines: [
             `Agent: ${run.agent?.name ?? "generic"}`,
             `Source ID: ${run.id}`,
-            `Prompt: ${kind === "resume" ? "frozen V2 snapshot" : "current effective definition"}`,
+            `Prompt: ${kind === "resume" ? "frozen V3 snapshot" : "current effective definition"}`,
             "",
             "TASK",
             ...task.split("\n"),
@@ -886,7 +943,23 @@ export class SubagentManager implements Component, Focusable {
         this.tui.requestRender();
         return;
       }
+      if (this.data.claimedIds?.includes(run.id)) {
+        this.flash = { kind: "error", text: `Subagent ${shortId(run.id)} is claimed by an active wait_subagent call; let the wait consume the result first.` };
+        this.tui.requestRender();
+        return;
+      }
+      if (this.data.undeliveredIds?.includes(run.id)) {
+        this.flash = { kind: "error", text: `Subagent ${shortId(run.id)} has an undelivered result; consume it with wait_subagent or let it deliver.` };
+        this.tui.requestRender();
+        return;
+      }
       this.openTask("resume", run);
+      return;
+    }
+    const invalid = this.selectedInvalid();
+    if (invalid) {
+      this.flash = { kind: "error", text: `Definition '${invalid.id}' is invalid — repair the source file to delegate to it.` };
+      this.tui.requestRender();
       return;
     }
     const definition = this.selectedDefinition();
@@ -904,7 +977,7 @@ export class SubagentManager implements Component, Focusable {
       });
     }
     if (this.tab() === "session") {
-      if (this.data.session.length === 0) return [this.theme.fg("dim", "No V3 subagents in this session")];
+      if (this.data.session.length === 0) return [this.theme.fg("dim", "No V4 subagents in this session")];
       return this.data.session.map((run, index) => {
         const marker = index === selected ? this.theme.fg("accent", "›") : " ";
         const name = run.agent?.name ?? "generic";
@@ -915,11 +988,21 @@ export class SubagentManager implements Component, Focusable {
         return `${marker} ${this.theme.fg("text", this.theme.bold(name))} ${this.theme.fg("dim", shortId(run.id))}  ${sessionPhasePresentation(active, run.phase, this.theme)}${undelivered}`;
       });
     }
-    if (this.data.definitions.length === 0) return [this.theme.fg("dim", "No valid V2 definitions")];
-    return this.data.definitions.map((definition, index) => {
+    const entries = this.definitionEntries();
+    if (entries.length === 0) return [this.theme.fg("dim", "No valid V2 definitions")];
+    return entries.map((entry, index) => {
       const marker = index === selected ? this.theme.fg("accent", "›") : " ";
+      if (entry.kind === "invalid") {
+        // The error-hue marker follows the Shadow Minds invalid-entry grammar.
+        const badge = this.theme.fg("error", "!");
+        return `${marker} ${badge} ${this.theme.fg("error", entry.invalid.id)}  ${this.theme.fg("dim", "invalid")}`;
+      }
+      const definition = entry.definition;
+      // Visibility is not operational state or identity, so it never takes
+      // hue: hidden rows carry a neutral dim marker only.
+      const badge = definition.visible ? "●" : this.theme.fg("dim", "◦");
       const visibility = definition.visible ? "visible" : "hidden";
-      return `${marker} ${this.theme.fg("text", this.theme.bold(definition.name))}  ${this.theme.fg("dim", `${definition.source} · ${visibility}`)}`;
+      return `${marker} ${badge} ${this.theme.fg("text", this.theme.bold(definition.name))}  ${this.theme.fg("dim", `${definition.source} · ${visibility}`)}`;
     });
   }
 
@@ -931,7 +1014,7 @@ export class SubagentManager implements Component, Focusable {
       const rows = [
         `ID: ${job.id}`,
         `Task: ${sanitizeSubagentDisplay(job.details.task)}`,
-        `Activity: ${latestToolCallSummary(job.details.timeline)}`,
+        `Activity: ${latestManagerToolCallSummary(job.details.timeline)}`,
       ];
       if (refusals > 0) rows.push(`Refusals: ${refusals}`);
       rows.push(`Usage: ${job.details.usage.turns} turns · ${formatDuration(Date.now() - job.details.startedAt)}`);
@@ -939,7 +1022,7 @@ export class SubagentManager implements Component, Focusable {
     }
     if (this.tab() === "session") {
       const run = this.selectedRun();
-      if (!run) return ["Completed and resumable V3 children are scoped to this parent session."];
+      if (!run) return ["Completed and resumable V4 children are scoped to this parent session."];
       const current = run.agent?.name ? this.data.definitions.find((item) => item.name === run.agent?.name) : undefined;
       const currentHash = current ? promptDefinitionHash(current) : undefined;
       const originalHash = run.promptSnapshot.manifest.definitionHash;
@@ -951,6 +1034,18 @@ export class SubagentManager implements Component, Focusable {
         `Prompt: V${run.promptSnapshot.version} · ${drift}`,
         `Hash: ${(originalHash ?? run.promptSnapshot.manifest.effectiveSystemHash).slice(0, 16)}`,
       ];
+    }
+    const invalid = this.selectedInvalid();
+    if (invalid) {
+      const rows = [
+        `State: invalid — excluded from delegation`,
+        "Sources:",
+      ];
+      for (const source of invalid.sources) rows.push(`  ${source}`);
+      rows.push("Errors:");
+      for (const error of invalid.errors) rows.push(`  ${error}`);
+      rows.push("Repair: fix the file directly or /subagent <request>");
+      return rows;
     }
     const definition = this.selectedDefinition();
     if (!definition) return this.data.errors.slice(0, 4).concat("Create a project or agent definition with N.");
@@ -1187,9 +1282,9 @@ async function openManager(
   }
   state.refresh?.(ctx.cwd);
   const services = createProductionServices(pi, ctx, state, parentSessionId, runtime);
-  await ctx.ui.custom<void>((tui, theme, keybindings, done) => (
+  await withOwnedInputSurface(() => ctx.ui.custom<void>((tui, theme, keybindings, done) => (
     new SubagentManager(snapshot(state, parentSessionId), tui, theme, keybindings, done, services)
-  ));
+  )));
 }
 
 export function registerSubagentManager(
@@ -1222,6 +1317,7 @@ export function registerSubagentManager(
 
 export const __testables = {
   SubagentManager,
+  createProductionServices,
   displayValue,
   managerPanelWidth,
   managerRowBudget,

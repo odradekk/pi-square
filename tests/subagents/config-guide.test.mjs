@@ -46,7 +46,7 @@ const plainTheme = {
 // Rewrite the real root to a fixed synthetic one short enough that the current
 // assertions hold with margin, and keep a deliberately long one for wrap cases.
 const syntheticGuideRoot = "/opt/pi-square";
-const longGuideRoot = "/home/example/orca/workspaces/pi-square/232-path-independence-wrap-coverage";
+const longGuideRoot = "/home/example/.paseo/worktrees/pi-square/232-path-independence-wrap-coverage";
 
 function withPackageRoot(registry, root) {
   const rewrite = (filePath) => (
@@ -76,12 +76,69 @@ test("guide builder is bounded, source-aware, and excludes prompt bodies and the
   assert.ok(guide.details.includedDefinitionCount <= 50);
   assert.deepEqual(guide.details.scopes, ["package"]);
   assert.match(guide.content, /Subagent Config Guide/);
-  assert.match(guide.content, /subagents\/explorer\.yaml/);
+  assert.match(guide.content, /subagents\/example_profile\.yaml/);
   assert.match(guide.content, /next user message is the only authorized configuration request/i);
   assert.match(guide.content, /tools: \[none\] disables every built-in tool/);
   assert.match(guide.content, /resume keeps the original frozen values/);
-  assert.doesNotMatch(guide.content, /Locate and explain the local code evidence|hide generalist in this project/);
+  assert.doesNotMatch(guide.content, /Verify relevant evidence before concluding/);
   assert.ok(guide.content.length < 32_000);
+});
+
+test("the guide's field table and value lists are generated from the code constants", async () => {
+  const { DEFINITION_FIELDS } = await load(join(packageRoot, "src", "subagents", "definitions.ts"));
+  const { BUILT_IN_TOOL_NAMES } = await load(join(packageRoot, "src", "subagents", "tool-policy.ts"));
+  const { ALLOWED_EFFORTS } = await load(join(packageRoot, "src", "subagents", "efforts.ts"));
+  const { subagentFieldTableRows } = await load(join(packageRoot, "src", "subagents", "config-guide.ts"));
+  const guide = buildSubagentConfigGuide(discoverSubagents(cleanCwd), cleanCwd);
+
+  const rows = subagentFieldTableRows();
+  assert.deepEqual(rows.map((row) => row.field), [...DEFINITION_FIELDS]);
+  for (const row of rows) {
+    assert.ok(row.type.length > 0 && row.default.length > 0, `${row.field} carries type and default`);
+    assert.match(guide.content, new RegExp(`\\| ${row.field} \\| ${row.type} \\|`));
+  }
+  assert.match(guide.content, /description \| string \| after merge \|/);
+
+  assert.ok(guide.content.includes(BUILT_IN_TOOL_NAMES.join(", ")), "the guide lists every built-in tool name in constant order");
+  assert.ok(guide.content.includes(ALLOWED_EFFORTS.join(", ")), "the guide lists every effort value in constant order");
+  assert.match(guide.content, /no static list to copy/);
+  assert.ok(guide.content.includes(join("subagents", "schema-reference.md")), "the guide names the packaged schema reference path");
+});
+
+test("every field-table type matches the shape the reader actually accepts", async () => {
+  const { readYamlFields, SUBAGENT_FIELD_KINDS, SUBAGENT_YAML_KEY_PATTERN, subagentFieldValueType } = await load(
+    join(packageRoot, "src", "subagents", "definitions.ts"),
+  );
+  const { subagentFieldTableRows } = await load(join(packageRoot, "src", "subagents", "config-guide.ts"));
+
+  // A row's type is a claim about what the reader takes. Feed each field a
+  // value of the wrong shape and require the reader's own rejection for that
+  // type, so the table cannot outlive a change to the field's value type.
+  const wrongShape = {
+    "string": { value: "[a, b]", error: "must be a string or null" },
+    "string list": { value: "plain", error: "must be an array or null" },
+    "boolean": { value: "[a]", error: "must be true, false, or null" },
+  };
+
+  for (const row of subagentFieldTableRows()) {
+    assert.equal(row.type, subagentFieldValueType(row.field), `${row.field} renders the parser's own value type`);
+    const probe = wrongShape[row.type];
+    assert.ok(probe, `${row.field}: unhandled table type '${row.type}'`);
+    // Declaring the field once keeps a duplicate-field error from masking the
+    // type error when the field under test is description itself.
+    const lines = ["promptVersion: 2", "name: t"];
+    if (row.field !== "description") lines.push("description: d");
+    lines.push(`${row.field}: ${probe.value}`);
+    const parsed = readYamlFields(`${lines.join("\n")}\n`, {
+      source: "/agent/subagents/t.yaml",
+      fields: SUBAGENT_FIELD_KINDS,
+      keyPattern: SUBAGENT_YAML_KEY_PATTERN,
+    });
+    assert.ok(
+      parsed.errors.some((item) => item.includes(`field '${row.field}'`) && item.includes(probe.error)),
+      `${row.field} is typed '${row.type}' but the reader did not reject a mismatched value: ${parsed.errors.join(" | ")}`,
+    );
+  }
 });
 
 test("collapsed guide is one native-style summary and expanded guide reveals bounded metadata", () => {
@@ -89,15 +146,15 @@ test("collapsed guide is one native-style summary and expanded guide reveals bou
   const guide = buildSubagentConfigGuide(registry, syntheticGuideRoot);
   const collapsed = plain(renderSubagentConfigGuide(guide, { expanded: false }, plainTheme));
   assert.match(collapsed, /✓ ● Config guide/);
-  assert.match(collapsed, /6 definitions/);
+  assert.match(collapsed, /1 definition/);
   assert.match(collapsed, /package/);
   assert.match(collapsed, /expand/);
-  assert.doesNotMatch(collapsed, /promptVersion|explorer\.yaml/);
+  assert.doesNotMatch(collapsed, /promptVersion|example_profile\.yaml/);
 
   const expanded = plain(renderSubagentConfigGuide(guide, { expanded: true }, plainTheme));
   assert.match(expanded, /Configuration contract/);
   assert.match(expanded, /promptVersion: 2/);
-  assert.match(expanded, /explorer\.yaml/);
+  assert.match(expanded, /example_profile\.yaml/);
   assert.match(expanded, /collapse/);
 });
 

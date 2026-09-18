@@ -3,14 +3,13 @@ import {
   asArray,
   asRecord,
   baseDescription,
-  formatBytes,
   formatRelativeAge,
   plural,
   stringOf,
   textOf,
   type UnknownRecord,
 } from "./adapter-utils";
-import type { DisplayPathItem, DisplayRecordItem, DisplaySection, DisplayTone } from "./types";
+import type { DisplayRecordItem, DisplaySection, DisplayTone } from "./types";
 
 /**
  * The SSH tool serializes its result as a JSON body where `body.output`
@@ -28,9 +27,7 @@ function sshOutputText(text: string): string {
 
 // ── Web tool helpers ──────────────────────────────────────────────
 
-const WEB_TOOLS = new Set(["search", "fetch", "libs", "docs", "parse"]);
-
-const GITHUB_TOOLS = new Set(["github"]);
+const WEB_TOOLS = new Set(["web_search", "web_fetch", "library_search", "library_docs"]);
 
 /**
  * Strip the scheme (`https://`, `http://`) from a URL and elide the middle
@@ -73,7 +70,7 @@ function urlHost(url: string): string {
  * Strip the Jina reader header block (`URL:`, `Usage:`) and convert
  * Markdown link syntax `[text](url)` to `text` for display.
  */
-function sanitizeFetchContent(text: string): string {
+function sanitizeWebFetchContent(text: string): string {
   return text
     .replace(/^(URL:|Usage:).*$/gm, "")
     .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
@@ -81,28 +78,9 @@ function sanitizeFetchContent(text: string): string {
     .trim();
 }
 
-/**
- * Strip the model-facing header block that the parse tool inserts:
- * `# Parsed PDF`, `Path:`, `Pages:`, `Selected pages:`, `Mode:`,
- * `Firecrawl parsed pages:`, `Firecrawl warning:`, and the horizontal rule.
- */
-function stripParseHeader(text: string): string {
-  return text
-    .replace(/^# Parsed PDF\s*\n?/, "")
-    .replace(/^Path:.*\n?/gm, "")
-    .replace(/^Pages:.*\n?/gm, "")
-    .replace(/^Selected pages:.*\n?/gm, "")
-    .replace(/^Mode:.*\n?/gm, "")
-    .replace(/^Firecrawl parsed pages:.*\n?/gm, "")
-    .replace(/^Firecrawl warning:.*\n?/gm, "")
-    .replace(/^\u2500{10,}\s*\n?/gm, "")
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
-}
-
 /** Build web-tool records in the two-row format (title with rank, body with secondary). */
 function webRecordItems(name: string, details: UnknownRecord, expanded: boolean): DisplayRecordItem[] {
-  if (name === "search") {
+  if (name === "web_search") {
     const multiQuery = asArray(details.queries).length > 1 || (typeof details.queryCount === "number" && details.queryCount > 1);
     return asArray(details.results).map((value, index) => {
       const item = asRecord(value);
@@ -115,7 +93,7 @@ function webRecordItems(name: string, details: UnknownRecord, expanded: boolean)
       };
     });
   }
-  if (name === "fetch") {
+  if (name === "web_fetch") {
     return asArray(details.pages).map((value, index) => {
       const page = asRecord(value);
       const url = stringOf(page.url) ?? "";
@@ -133,7 +111,7 @@ function webRecordItems(name: string, details: UnknownRecord, expanded: boolean)
       };
     });
   }
-  if (name === "libs") {
+  if (name === "library_search") {
     return asArray(details.candidates).map((value, index) => {
       const c = asRecord(value);
       const title = stringOf(c.title) ?? "Untitled";
@@ -156,7 +134,7 @@ function webRecordItems(name: string, details: UnknownRecord, expanded: boolean)
       };
     });
   }
-  if (name === "docs") {
+  if (name === "library_docs") {
     const snippets: UnknownRecord[] = [
       ...asArray(details.codeSnippets).map((v) => asRecord(v)),
       ...asArray(details.infoSnippets).map((v) => asRecord(v)),
@@ -175,23 +153,6 @@ function webRecordItems(name: string, details: UnknownRecord, expanded: boolean)
       };
     });
   }
-  if (name === "parse") {
-    // Parse shows one row per page with the page text.
-    const pages = asArray(details.parsedPages);
-    if (pages.length > 0) {
-      return pages.map((value, index) => {
-        const page = asRecord(value);
-        const pageNum = typeof page.pageNumber === "number" ? page.pageNumber : index + 1;
-        const text = stringOf(page.text) ?? stringOf(page.content) ?? "";
-        return {
-          title: `page ${pageNum}  ${text.split("\n")[0] ?? ""}`,
-        } satisfies DisplayRecordItem;
-      });
-    }
-    // Fall back to splitting the cleaned text on double-newlines as a
-    // best-effort page split when structured page data is not available.
-    return [];
-  }
   return [];
 }
 
@@ -200,7 +161,7 @@ function webRecordItems(name: string, details: UnknownRecord, expanded: boolean)
   }
  */
 function webSummary(name: string, details: UnknownRecord, args: UnknownRecord): string | undefined {
-  if (name === "search") {
+  if (name === "web_search") {
     const results = asArray(details.results).length;
     const queries = asArray(details.queries).length
       || (typeof details.queryCount === "number" ? details.queryCount : 1);
@@ -215,7 +176,7 @@ function webSummary(name: string, details: UnknownRecord, args: UnknownRecord): 
     if (failed > 0) row += ` \u00b7 ${failed} ${plural(failed, "query", "queries")} failed`;
     return row;
   }
-  if (name === "fetch") {
+  if (name === "web_fetch") {
     const pages = asArray(details.pages);
     const succeeded = pages.filter((p) => !stringOf(asRecord(p).error)).length;
     const total = pages.length;
@@ -223,7 +184,7 @@ function webSummary(name: string, details: UnknownRecord, args: UnknownRecord): 
     if (succeeded < total) return `${succeeded} of ${total} pages fetched`;
     return total === 1 ? "1 page fetched" : `${total} pages fetched`;
   }
-  if (name === "libs") {
+  if (name === "library_search") {
     const candidates = asArray(details.candidates);
     const total = typeof details.total === "number" ? details.total : candidates.length;
     const omitted = total > candidates.length ? total - candidates.length : 0;
@@ -235,7 +196,7 @@ function webSummary(name: string, details: UnknownRecord, args: UnknownRecord): 
     if (omitted > 0) row += ` \u00b7 ${omitted} omitted`;
     return row;
   }
-  if (name === "docs") {
+  if (name === "library_docs") {
     const codeArr = asArray(details.codeSnippets);
     const infoArr = asArray(details.infoSnippets);
     const counts = asRecord(details.codeCounts);
@@ -258,43 +219,27 @@ function webSummary(name: string, details: UnknownRecord, args: UnknownRecord): 
     if (omitted > 0) row += ` \u00b7 ${omitted} omitted`;
     return row;
   }
-  if (name === "parse") {
-    const pageCount = typeof details.pageCount === "number" ? details.pageCount : 0;
-    const totalPages = typeof details.totalPages === "number" ? details.totalPages : undefined;
-    const uploaded = typeof details.uploadBytes === "number" ? formatBytes(details.uploadBytes) : undefined;
-    const tokens = typeof details.estimatedTokens === "number" ? details.estimatedTokens
-      : typeof details.tokens === "number" ? details.tokens : undefined;
-    const pageText = totalPages !== undefined && pageCount !== totalPages
-      ? `${pageCount} of ${totalPages} pages`
-      : plural(pageCount, "page");
-    const parts = [pageText];
-    if (uploaded) parts.push(`${uploaded} uploaded`);
-    if (tokens !== undefined) parts.push(`${tokens} tokens`);
-    let row = parts.join(" \u00b7 ");
-    if (details.outputTruncated === true) row += " \u00b7 output truncated";
-    return row;
-  }
   return undefined;
 }
 
 /** Build expanded-only option row for web tools. */
 function webOptionRow(name: string, args: UnknownRecord): string | undefined {
   const parts: string[] = [];
-  if (name === "search") {
+  if (name === "web_search") {
     if (typeof args.limit === "number") parts.push(`limit ${args.limit}`);
     const sites = asArray(args.sites);
     if (sites.length > 0) parts.push(`sites: ${sites.join(", ")}`);
     if (typeof args.language === "string") parts.push(`lang ${args.language}`);
     if (typeof args.country === "string") parts.push(`country ${args.country}`);
     if (args.no_cache === true) parts.push("cache bypassed");
-  } else if (name === "fetch") {
+  } else if (name === "web_fetch") {
     if (typeof args.mode === "string" && args.mode !== "readable") parts.push(`mode ${args.mode}`);
     if (typeof args.max_tokens === "number") parts.push(`max ${args.max_tokens} tokens`);
     if (args.no_cache === true) parts.push("cache bypassed");
-  } else if (name === "libs") {
+  } else if (name === "library_search") {
     if (typeof args.mode === "string" && args.mode !== "quality") parts.push(`mode ${args.mode}`);
     if (typeof args.limit === "number") parts.push(`limit ${args.limit}`);
-  } else if (name === "docs") {
+  } else if (name === "library_docs") {
     if (typeof args.kind === "string" && args.kind !== "all") parts.push(`kind ${args.kind}`);
     if (typeof args.mode === "string" && args.mode !== "quality") parts.push(`mode ${args.mode}`);
     if (typeof args.max_tokens === "number") parts.push(`max ${args.max_tokens} tokens`);
@@ -307,39 +252,21 @@ function webOptionRow(name: string, args: UnknownRecord): string | undefined {
 function webErrorSentence(name: string, text: string, details: UnknownRecord): string {
   const errorCode = stringOf(details.errorCode);
   const error = stringOf(details.error);
-  const missingKey = name === "search" || name === "fetch"
+  const jina = name === "web_search" || name === "web_fetch";
+  const missingKey = jina
     ? /no.*jina.*key|key.*not.*configured|missing.*key/i.test(text)
-    : name === "libs" || name === "docs"
-      ? /no.*context7.*key|key.*not.*configured|missing.*key/i.test(text)
-      : /no.*firecrawl.*key|key.*not.*configured|missing.*key/i.test(text);
+    : /no.*context7.*key|key.*not.*configured|missing.*key/i.test(text);
   if (missingKey) {
-    if (name === "search" || name === "fetch") return "No Jina key is configured";
-    if (name === "libs" || name === "docs") return "No Context7 key is configured";
-    return "No Firecrawl key is configured";
+    return jina ? "No Jina key is configured" : "No Context7 key is configured";
   }
   if (/401/.test(errorCode ?? text)) {
-    if (name === "search" || name === "fetch") return "Search provider returned 401";
-    if (name === "libs" || name === "docs") return "Context7 returned 401";
-    return "Firecrawl returned 401";
+    return jina ? "Search provider returned 401" : "Context7 returned 401";
   }
   if (/429|rate.?limit/i.test(errorCode ?? text)) {
-    if (name === "search" || name === "fetch") return "Search provider rate limit reached";
-    if (name === "libs" || name === "docs") return "Context7 rate limit reached";
-    return "Firecrawl rate limit reached";
+    return jina ? "Search provider rate limit reached" : "Context7 rate limit reached";
   }
   if (/timeout|timed.?out/i.test(error ?? text)) {
-    if (name === "search" || name === "fetch") return "Search did not answer in time";
-    if (name === "libs" || name === "docs") return "Context7 did not answer in time";
-    return "Firecrawl did not answer in time";
-  }
-  // Parse-specific errors
-  if (name === "parse") {
-    if (/ENOENT|no such file|not found/i.test(text)) return "PDF does not exist";
-    if (/outside.*workspace|beyond.*workspace/i.test(text)) return "PDF is outside the workspace";
-    if (/encrypt/i.test(text)) return "PDF is encrypted";
-    if (/too large|50.*MB/i.test(text)) return "PDF is larger than 50 MB";
-    if (/too many pages|50.*pages/i.test(text)) return "More than 50 pages were selected";
-    if (/402|payment/i.test(errorCode ?? text)) return "Firecrawl returned 402";
+    return jina ? "Search did not answer in time" : "Context7 did not answer in time";
   }
   if (error) return error;
   return text.split("\n", 1)[0]?.trim() || "Request failed";
@@ -362,25 +289,7 @@ function webDescribeResult(
 ): ReturnType<InternalToolDisplayAdapter<any, unknown, unknown>["describeResult"]> {
   const expanded = options.expanded;
 
-  // ── Declined parse ─────────────────────────────────────────────
-  if (name === "parse" && stringOf(details.status)?.toLowerCase() === "declined") {
-    return baseDescription(description, {
-      metadata: [],
-      sections: [],
-      preview: undefined,
-      rows: [],
-      lifecycle: "aborted",
-      summary: "Upload declined",
-      error: undefined,
-      errorRaw: undefined,
-      truncated: undefined,
-    });
-  }
-
-  // ── Parse: needs-input badge while confirmation is open ────────
   const status = stringOf(details.status)?.toLowerCase();
-  const phase = stringOf(details.phase)?.toLowerCase();
-  const needsInput = name === "parse" && (phase === "confirming" || status === "confirming");
 
   // ── Error ──────────────────────────────────────────────────────
   if (isError) {
@@ -394,7 +303,6 @@ function webDescribeResult(
       error: sentence,
       ...(errorRaw ? { errorRaw } : {}),
       summary: undefined,
-      ...(needsInput ? { qualifiers: ["needs-input"] } : {}),
       truncated: undefined,
     });
   }
@@ -411,14 +319,11 @@ function webDescribeResult(
       rows: [],
       error: sentence,
       summary: sentence,
-      ...(needsInput ? { qualifiers: ["needs-input"] } : {}),
       truncated: undefined,
     });
   }
 
-  // ── Warning qualifier (e.g. parse provider warning) ────────────
-  const hasWarning = stringOf(details.warning) !== undefined
-    || (name === "search" && typeof details.failed === "number" && details.failed > 0);
+  const hasWarning = name === "web_search" && typeof details.failed === "number" && details.failed > 0;
 
   // ── Truncation ─────────────────────────────────────────────────
   const isTruncated = details.truncated === true
@@ -427,13 +332,10 @@ function webDescribeResult(
 
   // ── Records ────────────────────────────────────────────────────
   const records = webRecordItems(name, details, expanded);
-  const recordsTitle = name === "docs" ? "Snippets" : "Results";
+  const recordsTitle = name === "library_docs" ? "Snippets" : "Results";
   const resultsSection: DisplaySection | undefined = records.length > 0
     ? { title: recordsTitle, blocks: [{ kind: "records", items: records }], compact: true }
     : undefined;
-
-  // ── Parse: use cleaned text as preview (not records) ──────────
-  const parseCleanText = name === "parse" ? stripParseHeader(text) : undefined;
 
   // ── Expanded-only sections ─────────────────────────────────────
   const expandedExtras: DisplaySection[] = [];
@@ -443,8 +345,8 @@ function webDescribeResult(
     if (optRow) {
       expandedExtras.push({ title: "Options", blocks: [{ kind: "text", text: optRow, tone: "muted" }] });
     }
-    // Search: add snippet per result
-    if (name === "search") {
+    // Web search: add snippet per result
+    if (name === "web_search") {
       const snippets = asArray(details.results).map((value) => {
         const item = asRecord(value);
         return {
@@ -457,8 +359,8 @@ function webDescribeResult(
         expandedExtras.push({ title: "Snippets", blocks: [{ kind: "records", items: snippets }] });
       }
     }
-    // Libs: add description per candidate
-    if (name === "libs") {
+    // Library search: add description per candidate
+    if (name === "library_search") {
       const descriptions = asArray(details.candidates).map((value) => {
         const c = asRecord(value);
         return {
@@ -471,21 +373,21 @@ function webDescribeResult(
         expandedExtras.push({ title: "Descriptions", blocks: [{ kind: "records", items: descriptions }] });
       }
     }
-    // Fetch: sanitized content per page
-    if (name === "fetch") {
+    // Web fetch: sanitized content per page
+    if (name === "web_fetch") {
       const pages: DisplayRecordItem[] = [];
       for (const value of asArray(details.pages)) {
         const p = asRecord(value);
         const url = stringOf(p.url) ?? "";
-        const content = sanitizeFetchContent(stringOf(p.content) ?? stringOf(p.text) ?? "");
+        const content = sanitizeWebFetchContent(stringOf(p.content) ?? stringOf(p.text) ?? "");
         if (content) pages.push({ title: urlHost(url), body: content });
       }
       if (pages.length > 0) {
         expandedExtras.push({ title: "Content", blocks: [{ kind: "records", items: pages }] });
       }
     }
-    // Docs: source location per snippet
-    if (name === "docs") {
+    // Library docs: source location per snippet
+    if (name === "library_docs") {
       const sources: DisplayRecordItem[] = [];
       for (const s of [...asArray(details.codeSnippets).map((v) => asRecord(v)), ...asArray(details.infoSnippets).map((v) => asRecord(v))]) {
         const sourceUrl = stringOf(s.source) ?? "";
@@ -496,27 +398,6 @@ function webDescribeResult(
       }
       if (sources.length > 0) {
         expandedExtras.push({ title: "Sources", blocks: [{ kind: "records", items: sources }] });
-      }
-    }
-    // Parse: full page text + diagnostics
-    if (name === "parse") {
-      const cleanText = stripParseHeader(text);
-      if (cleanText) {
-        expandedExtras.push({ title: "Pages", blocks: [{ kind: "code", text: cleanText, language: "markdown" }] });
-      }
-      const warning = stringOf(details.warning);
-      if (warning) {
-        expandedExtras.push({ title: "Diagnostics", blocks: [{ kind: "text", text: warning, tone: "warning" }] });
-      }
-      // Workspace-relative path, mode, destination host
-      const path = stringOf(args.path);
-      const mode = stringOf(args.mode);
-      if (path || mode) {
-        const metaParts: string[] = [];
-        if (path) metaParts.push(path);
-        if (mode) metaParts.push(`mode ${mode}`);
-        metaParts.push("\u2192 api.firecrawl.dev");
-        expandedExtras.push({ title: "Upload", blocks: [{ kind: "text", text: metaParts.join(" \u00b7 "), tone: "muted" }] });
       }
     }
   }
@@ -530,16 +411,13 @@ function webDescribeResult(
 
   // ── Qualifiers ─────────────────────────────────────────────────
   const qualifiers: import("./types").OperationalQualifier[] = [];
-  if (needsInput) qualifiers.push("needs-input");
   if (hasWarning) qualifiers.push("warning");
   if (isTruncated) qualifiers.push("truncated");
 
   return baseDescription(description, {
     metadata: [],
     sections: allSections,
-    // Parse uses the cleaned text as a preview fallback when no
-    // structured page records are available.
-    preview: !expanded && name === "parse" && parseCleanText && records.length === 0 ? { text: parseCleanText } : undefined,
+    preview: undefined,
     rows: [],
     ...(summary ? { summary } : {}),
     ...(qualifiers.length > 0 ? { qualifiers } : {}),
@@ -547,453 +425,6 @@ function webDescribeResult(
     error: undefined,
     errorRaw: undefined,
   });
-}
-
-// ── GitHub tool helpers ───────────────────────────────────────────
-
-/** Rate limit summary: `rate 29 of 30 left`. */
-function githubRateSummary(rate: UnknownRecord): string | undefined {
-  const remaining = typeof rate.remaining === "number" && Number.isFinite(rate.remaining) ? rate.remaining : undefined;
-  if (remaining === undefined) return undefined;
-  const limit = typeof rate.limit === "number" && Number.isFinite(rate.limit) ? rate.limit : "?";
-  return `rate ${remaining} of ${limit} left`;
-}
-
-/** Relative future time for rate reset: `12m`, `3h`, `45s`. */
-function githubResetIn(reset: unknown, now: number = Date.now()): string | undefined {
-  const epoch = typeof reset === "number" && Number.isFinite(reset) ? reset : undefined;
-  if (epoch === undefined) return undefined;
-  const seconds = Math.round((epoch * 1000 - now) / 1000);
-  if (seconds <= 0) return undefined;
-  if (seconds < 60) return `${seconds}s`;
-  const minutes = Math.round(seconds / 60);
-  if (minutes < 60) return `${minutes}m`;
-  const hours = Math.round(minutes / 60);
-  if (hours < 24) return `${hours}h`;
-  return `${Math.round(hours / 24)}d`;
-}
-
-/** Short SHA: first 7 characters. */
-function githubShortSha(sha: unknown): string | undefined {
-  const s = stringOf(sha);
-  return s ? s.slice(0, 7) : undefined;
-}
-
-/** Status letter: A=added, M=modified, R=renamed, D=removed. */
-function githubStatusLetter(status: string): string {
-  switch (status) {
-    case "added": return "A";
-    case "modified": return "M";
-    case "renamed": return "R";
-    case "removed":
-    case "deleted": return "D";
-    default: return "M";
-  }
-}
-
-/** Error sentence for GitHub tools. */
-function githubErrorSentence(text: string, details: UnknownRecord): string {
-  const code = stringOf(details.errorCode) ?? "";
-  const error = stringOf(details.error) ?? text;
-  if (code === "MISSING_GITHUB_TOKEN") return "No GitHub token is configured";
-  if (/401/.test(code) || /401|unauthor/i.test(error)) return "GitHub rejected the token";
-  if (/429|rate.?limit/i.test(code) || /429|rate.?limit/i.test(error)) {
-    const rate = asRecord(details.rate);
-    const reset = githubResetIn(rate.reset);
-    return reset ? `GitHub rate limit reached \u00b7 resets in ${reset}` : "GitHub rate limit reached";
-  }
-  if (/timeout|timed.?out/i.test(error)) return "GitHub did not answer in time";
-  return "GitHub rejected the query";
-}
-
-/** Parse `N: text` lines from github read model text. */
-function parseReadLines(text: string): Array<{ text: string; line: number }> {
-  const result: Array<{ text: string; line: number }> = [];
-  for (const rawLine of text.split("\n")) {
-    const match = rawLine.match(/^(\d+): (.*)$/);
-    if (match) result.push({ text: match[2], line: parseInt(match[1], 10) });
-  }
-  return result;
-}
-
-/**
- * GitHub tool result description: no metadata, no REQUEST or SUMMARY
- * sections, two-row records for search, code section for read, paths
- * for tree, and file records for commit.
- */
-function githubDescribeResult(
-  name: string,
-  description: ReturnType<InternalToolDisplayAdapter<any, unknown, unknown>["describeResult"]>,
-  _result: unknown,
-  options: { expanded: boolean; isPartial: boolean },
-  _context: { args: unknown; cwd: string },
-  args: UnknownRecord,
-  details: UnknownRecord,
-  text: string,
-  isError: boolean,
-): ReturnType<InternalToolDisplayAdapter<any, unknown, unknown>["describeResult"]> {
-  const expanded = options.expanded;
-  const rate = asRecord(details.rate);
-  const operation = stringOf(details.tool) ?? stringOf(args.operation);
-
-  // ── Target ─────────────────────────────────────────────────────
-  let target: string | undefined;
-  if (name === "github" && operation === "search") {
-    target = stringOf(args.query);
-  } else if (name === "github" && operation === "read") {
-    const repo = stringOf(args.repo) ?? stringOf(details.repo) ?? "?";
-    const resolvedPath = stringOf(details.resolvedPath) ?? stringOf(args.path) ?? "README";
-    target = `${repo}:${resolvedPath}`;
-  } else if (name === "github" && operation === "tree") {
-    const repo = stringOf(args.repo) ?? stringOf(details.repo) ?? "?";
-    const path = stringOf(details.path) ?? stringOf(args.path);
-    target = path ? `${repo}:${path}` : repo;
-  } else if (name === "github" && operation === "commit") {
-    const repo = stringOf(args.repo) ?? stringOf(details.repo) ?? "?";
-    const sha = githubShortSha(details.sha) ?? stringOf(args.ref) ?? "?";
-    target = `${repo}@${sha}`;
-  }
-
-  // ── Error (isError) ────────────────────────────────────────────
-  if (isError) {
-    const sentence = githubErrorSentence(text, details);
-    const errorRaw = text && text !== sentence ? text : undefined;
-    return baseDescription(description, {
-      metadata: [], sections: [], preview: undefined, rows: [],
-      error: sentence,
-      ...(errorRaw ? { errorRaw } : {}),
-      ...(target ? { target } : {}),
-      summary: undefined, truncated: undefined,
-    });
-  }
-
-  // ── Non-isError errors (binary, unsupported content) ───────────
-  const errorText = stringOf(details.error);
-  if (errorText) {
-    const sentence = githubErrorSentence(errorText, details);
-    const errorRaw = errorText !== sentence ? errorText : undefined;
-    return baseDescription(description, {
-      metadata: [], sections: [], preview: undefined, rows: [],
-      error: sentence,
-      ...(errorRaw ? { errorRaw } : {}),
-      ...(target ? { target } : {}),
-      summary: sentence, truncated: undefined,
-    });
-  }
-
-  // ── Rate text helpers ──────────────────────────────────────────
-  const rateSummary = githubRateSummary(rate);
-  const resetIn = githubResetIn(rate.reset);
-
-  // ══ github search ═══════════════════════════════════════════════
-  if (name === "github" && operation === "search") {
-    const kind = stringOf(details.kind) ?? "repositories";
-    const items = asArray(details.items);
-    const returned = typeof details.returned === "number" ? details.returned : items.length;
-    const total = typeof details.total === "number" ? details.total : 0;
-    const hasMore = details.hasMore === true;
-    const page = typeof details.page === "number" ? details.page : 1;
-
-    // Records
-    const records: DisplayRecordItem[] = items.map((value, index) => {
-      const item = asRecord(value);
-      const rank = index + 1;
-      const repo = stringOf(item.repo) ?? "?";
-      if (kind === "code") {
-        const path = stringOf(item.path) ?? stringOf(item.name) ?? "";
-        const title = path ? `${rank}  ${repo} \u00b7 ${path}` : `${rank}  ${repo}`;
-        const fragments = asArray(item.fragments).map(String).filter(Boolean);
-        const body = fragments.length > 0 ? fragments[0] : undefined;
-        return { title, ...(body ? { body, bodyTone: "muted" as DisplayTone } : {}) };
-      }
-      // Repository search
-      const parts: string[] = [];
-      const language = stringOf(item.language);
-      const stars = shortCount(item.stars);
-      if (language) parts.push(language);
-      if (stars) parts.push(`${stars} stars`);
-      const body = parts.join(" \u00b7 ");
-      return { title: `${rank}  ${repo}`, ...(body ? { body, bodyTone: "muted" as DisplayTone } : {}) };
-    });
-
-    const resultsSection: DisplaySection | undefined = records.length > 0
-      ? { title: "Results", blocks: [{ kind: "records", items: records }], compact: true }
-      : undefined;
-
-    // Summary
-    const summaryParts: string[] = [];
-    if (returned === 0) {
-      summaryParts.push("No results");
-    } else if (kind === "code") {
-      const repos = new Set(items.map((v) => stringOf(asRecord(v).repo)).filter(Boolean));
-      if (hasMore && total > 0) {
-        summaryParts.push(`${returned} of ${total} files in ${plural(repos.size, "repository", "repositories")}`);
-        summaryParts.push(`continue at page ${page + 1}`);
-      } else {
-        summaryParts.push(`${plural(returned, "file")} in ${plural(repos.size, "repository", "repositories")}`);
-      }
-    } else {
-      if (hasMore && total > 0) {
-        summaryParts.push(`${returned} of ${total} repositories`);
-        summaryParts.push(`continue at page ${page + 1}`);
-      } else {
-        summaryParts.push(plural(returned, "repository", "repositories"));
-      }
-    }
-    if (rateSummary) summaryParts.push(rateSummary);
-    const summary = summaryParts.join(" \u00b7 ");
-
-    // Expanded extras: rate reset
-    const expandedExtras: DisplaySection[] = [];
-    if (expanded && resetIn) {
-      expandedExtras.push({ title: "Rate", blocks: [{ kind: "text", text: `resets in ${resetIn}`, tone: "muted" }] });
-    }
-
-    // Qualifiers
-    const qualifiers: import("./types").OperationalQualifier[] = [];
-    if (details.incomplete === true) qualifiers.push("warning");
-    if (hasMore) qualifiers.push("truncated");
-
-    return baseDescription(description, {
-      metadata: [],
-      sections: [...expandedExtras, ...(resultsSection ? [resultsSection] : [])],
-      preview: undefined, rows: [],
-      ...(target ? { target } : {}),
-      summary,
-      ...(qualifiers.length > 0 ? { qualifiers } : {}),
-      ...(hasMore ? { truncated: true } : {}),
-      error: undefined, errorRaw: undefined,
-    });
-  }
-
-  // ══ github read ════════════════════════════════════════════════
-  if (name === "github" && operation === "read") {
-    // Binary file
-    if (details.binary === true) {
-      const size = typeof details.size === "number" ? formatBytes(details.size) : undefined;
-      return baseDescription(description, {
-        metadata: [], sections: [], preview: undefined, rows: [],
-        ...(target ? { target } : {}),
-        summary: size ? `Binary file \u00b7 ${size}` : "Binary file",
-        truncated: undefined,
-      });
-    }
-
-    const parsed = parseReadLines(text);
-    const startLine = parsed.length > 0 ? parsed[0].line : (typeof args.line === "number" ? args.line : typeof details.line === "number" ? details.line : 1);
-    const content = parsed.map((p) => p.text).join("\n");
-    const codeSec = content ? { title: "Content", blocks: [{ kind: "code" as const, text: content, language: "text", lineNumbers: true, startLine }], compact: false } : undefined;
-
-    // Summary
-    const returnedLines = typeof details.returnedLines === "number" ? details.returnedLines : parsed.length;
-    const totalLines = typeof details.totalLines === "number" ? details.totalLines : undefined;
-    const hasMore = details.hasMore === true;
-    const resolvedPath = stringOf(details.resolvedPath) ?? stringOf(args.path) ?? "README";
-    let summary: string;
-    if (returnedLines === 0) {
-      summary = "Empty file";
-    } else if (hasMore && totalLines !== undefined) {
-      const endLine = startLine + returnedLines - 1;
-      summary = `lines ${startLine}-${endLine} of ${totalLines} \u00b7 continue at line ${startLine + returnedLines}`;
-    } else if (totalLines !== undefined) {
-      summary = `${totalLines} lines \u00b7 ${resolvedPath}`;
-    } else {
-      summary = `${returnedLines} lines \u00b7 ${resolvedPath}`;
-    }
-
-    // Expanded extras: ref and short SHA
-    const expandedExtras: DisplaySection[] = [];
-    if (expanded) {
-      const ref = stringOf(args.ref) ?? "default";
-      const sha = githubShortSha(details.sha);
-      const metaParts: string[] = [ref];
-      if (sha) metaParts.push(sha);
-      expandedExtras.push({ title: "Commit", blocks: [{ kind: "text", text: metaParts.join(" \u00b7 "), tone: "muted" }] });
-      if (resetIn) {
-        expandedExtras.push({ title: "Rate", blocks: [{ kind: "text", text: `resets in ${resetIn}`, tone: "muted" }] });
-      }
-    }
-
-    const qualifiers: import("./types").OperationalQualifier[] = [];
-    if (hasMore) qualifiers.push("truncated");
-
-    return baseDescription(description, {
-      metadata: [],
-      sections: [...expandedExtras, ...(codeSec ? [codeSec] : [])],
-      preview: undefined, rows: [],
-      ...(target ? { target } : {}),
-      summary,
-      ...(qualifiers.length > 0 ? { qualifiers } : {}),
-      ...(hasMore ? { truncated: true } : {}),
-      error: undefined, errorRaw: undefined,
-    });
-  }
-
-  // ══ github tree ════════════════════════════════════════════════
-  if (name === "github" && operation === "tree") {
-    const entries = asArray(details.entries).map((v) => asRecord(v));
-    const browsePath = stringOf(details.path) ?? "";
-    const returned = typeof details.returned === "number" ? details.returned : entries.length;
-    const total = typeof details.total === "number" ? details.total : undefined;
-    const hasMore = details.hasMore === true;
-    const offset = typeof details.offset === "number" ? details.offset : 0;
-    const remoteTruncated = details.remoteTruncated === true;
-    const budgetExhausted = details.requestBudgetExhausted === true;
-
-    // Sort: directories first
-    const sorted = [...entries].sort((a, b) => {
-      const aDir = stringOf(a.type) === "directory";
-      const bDir = stringOf(b.type) === "directory";
-      if (aDir !== bDir) return aDir ? -1 : 1;
-      return (stringOf(a.path) ?? "").localeCompare(stringOf(b.path) ?? "");
-    });
-
-    // Paths following ls rules
-    const pathItems: DisplayPathItem[] = sorted.map((entry) => {
-      const type = stringOf(entry.type) ?? "file";
-      const rawPath = stringOf(entry.path) ?? "?";
-      const relPath = browsePath && rawPath.startsWith(browsePath + "/")
-        ? rawPath.slice(browsePath.length + 1)
-        : rawPath;
-      if (type === "directory") {
-        return { path: `${relPath}/`, kind: "directory" as const };
-      }
-      if (type === "symlink") {
-        return { path: relPath, kind: "symlink" as const };
-      }
-      if (type === "submodule") {
-        return { path: relPath, kind: "special" as const };
-      }
-      const size = typeof entry.size === "number" ? formatBytes(entry.size) : undefined;
-      return { path: relPath, kind: "file" as const, ...(size ? { meta: size, tone: "muted" as DisplayTone } : {}) };
-    });
-
-    const entriesSection: DisplaySection | undefined = pathItems.length > 0
-      ? { title: "Entries", blocks: [{ kind: "paths", items: pathItems }], compact: true }
-      : undefined;
-
-    // Summary
-    const dirs = entries.filter((e) => stringOf(e.type) === "directory").length;
-    const files = entries.length - dirs;
-    const summaryParts: string[] = [];
-    if (entries.length === 0) {
-      summaryParts.push(total !== undefined && total > 0 ? `(no entries at offset ${offset})` : "Empty directory");
-    } else if (hasMore && total !== undefined && total > returned) {
-      summaryParts.push(`${returned} of ${total} entries`);
-      summaryParts.push(`continue at offset ${offset + returned}`);
-    } else {
-      if (dirs > 0) summaryParts.push(plural(dirs, "directory"));
-      if (files > 0) summaryParts.push(plural(files, "file"));
-      if (summaryParts.length === 0) summaryParts.push(plural(entries.length, "entry"));
-    }
-    if (remoteTruncated) summaryParts.push("GitHub truncated this tree");
-    if (rateSummary) summaryParts.push(rateSummary);
-    const summary = summaryParts.join(" \u00b7 ");
-
-    // Expanded extras
-    const expandedExtras: DisplaySection[] = [];
-    if (expanded) {
-      if (resetIn) {
-        expandedExtras.push({ title: "Rate", blocks: [{ kind: "text", text: `resets in ${resetIn}`, tone: "muted" }] });
-      }
-    }
-
-    const qualifiers: import("./types").OperationalQualifier[] = [];
-    if (remoteTruncated || budgetExhausted || hasMore) qualifiers.push("truncated");
-
-    return baseDescription(description, {
-      metadata: [],
-      sections: [...expandedExtras, ...(entriesSection ? [entriesSection] : [])],
-      preview: undefined, rows: [],
-      ...(target ? { target } : {}),
-      summary,
-      ...(qualifiers.length > 0 ? { qualifiers } : {}),
-      ...(qualifiers.includes("truncated") ? { truncated: true } : {}),
-      error: undefined, errorRaw: undefined,
-    });
-  }
-
-  // ══ github commit ═══════════════════════════════════════════════
-  if (name === "github" && operation === "commit") {
-    const subject = stringOf(details.message) ?? "(no commit message)";
-    const author = stringOf(details.author) ?? "unknown";
-    const authoredAt = formatRelativeAge(details.authoredAt);
-    const verified = details.verified === true ? "verified" : details.verified === false ? "unverified" : undefined;
-    const metaParts = [author, authoredAt !== "unknown" ? authoredAt : undefined, verified].filter(Boolean);
-    const additions = typeof details.additions === "number" ? details.additions : 0;
-    const deletions = typeof details.deletions === "number" ? details.deletions : 0;
-    const returned = typeof details.returned === "number" ? details.returned : 0;
-    const hasMore = details.hasMore === true;
-    const page = typeof details.page === "number" ? details.page : 1;
-    const omittedPatches = typeof details.omittedPatches === "number" ? details.omittedPatches : 0;
-
-    // File records
-    const fileRecords: DisplayRecordItem[] = asArray(details.files).map((value) => {
-      const file = asRecord(value);
-      const status = stringOf(file.status) ?? "modified";
-      const letter = githubStatusLetter(status);
-      const filename = stringOf(file.filename) ?? "?";
-      const fileAdd = typeof file.additions === "number" ? file.additions : 0;
-      const fileDel = typeof file.deletions === "number" ? file.deletions : 0;
-      return {
-        title: `${letter}  ${filename}`,
-        body: `+${fileAdd} \u2212${fileDel}`,
-        bodyTone: "muted" as DisplayTone,
-      } satisfies DisplayRecordItem;
-    });
-
-    const fileSection: DisplaySection | undefined = fileRecords.length > 0
-      ? { title: "Files", blocks: [{ kind: "records", items: fileRecords }], compact: true }
-      : undefined;
-
-    // Subject and author as a section (rows don't render in terminal state)
-    const metaSection: DisplaySection = {
-      title: "Commit",
-      blocks: [
-        { kind: "text", text: subject },
-        ...(metaParts.length > 0 ? [{ kind: "text" as const, text: metaParts.join(" \u00b7 "), tone: "muted" as DisplayTone }] : []),
-      ],
-      compact: true,
-    };
-
-    // Summary
-    const summaryParts: string[] = [plural(returned, "file"), `+${additions} \u2212${deletions}`];
-    if (hasMore) summaryParts.push(`continue at page ${page + 1}`);
-    if (rateSummary) summaryParts.push(rateSummary);
-    const summary = summaryParts.join(" \u00b7 ");
-
-    // Expanded extras: ref and short SHA
-    const expandedExtras: DisplaySection[] = [];
-    if (expanded) {
-      const ref = stringOf(args.ref) ?? "default";
-      const sha = githubShortSha(details.sha);
-      const metaParts2: string[] = [ref];
-      if (sha) metaParts2.push(sha);
-      expandedExtras.push({ title: "Commit", blocks: [{ kind: "text", text: metaParts2.join(" \u00b7 "), tone: "muted" }] });
-      if (omittedPatches > 0) {
-        expandedExtras.push({ title: "Diagnostics", blocks: [{ kind: "text", text: `${omittedPatches} ${plural(omittedPatches, "patch")} omitted`, tone: "warning" }] });
-      }
-      if (resetIn) {
-        expandedExtras.push({ title: "Rate", blocks: [{ kind: "text", text: `resets in ${resetIn}`, tone: "muted" }] });
-      }
-    }
-
-    const qualifiers: import("./types").OperationalQualifier[] = [];
-    if (hasMore || omittedPatches > 0) qualifiers.push("truncated");
-
-    return baseDescription(description, {
-      metadata: [],
-      sections: [...expandedExtras, metaSection, ...(fileSection ? [fileSection] : [])],
-      preview: undefined, rows: [],
-      ...(target ? { target } : {}),
-      summary,
-      ...(qualifiers.length > 0 ? { qualifiers } : {}),
-      ...(qualifiers.includes("truncated") ? { truncated: true } : {}),
-      error: undefined, errorRaw: undefined,
-    });
-  }
-
-  return baseDescription(description, { metadata: [], sections: [], ...(target ? { target } : {}) });
 }
 
 // ── SSH tool helpers ──────────────────────────────────────────────
@@ -1259,11 +690,10 @@ export function createRemoteAdapter(
       const description = base.describeCall(args, context);
       const source = asRecord(args);
       const needsInput = name === "ssh" && source.operation === "secret_input";
-      const parseConfirming = name === "parse" && stringOf(source.phase)?.toLowerCase() === "confirming";
-      const inputQualifier = (needsInput || parseConfirming) ? { qualifiers: ["needs-input"] as const } : {};
+      const inputQualifier = needsInput ? { qualifiers: ["needs-input"] as const } : {};
 
-      // Web and GitHub tools carry no key=value metadata.
-      if (WEB_TOOLS.has(name) || GITHUB_TOOLS.has(name)) {
+      // Web tools carry no key=value metadata.
+      if (WEB_TOOLS.has(name)) {
         return baseDescription(description, {
           metadata: [],
           sections: [],
@@ -1297,11 +727,6 @@ export function createRemoteAdapter(
       // ── Web tools: two-row record layout ──────────────────────
       if (WEB_TOOLS.has(name)) {
         return webDescribeResult(name, description, result, options, context, args, details, text, isError);
-      }
-
-      // ── GitHub tools: two-row records, code, paths ────────────
-      if (GITHUB_TOOLS.has(name)) {
-        return githubDescribeResult(name, description, result, options, context, args, details, text, isError);
       }
 
       // ── SSH tool: JSON-parsed terminal output ─────────────────

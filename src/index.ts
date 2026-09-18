@@ -2,8 +2,8 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import registerAskUser from "./ask-user";
 import registerAnchoredAutoRead, { createParentAnchoredWrite } from "./anchored-edit/auto-read";
 import registerAnchoredReplace from "./anchored-edit/workspace-replace";
+import registerAnchoredInsert from "./anchored-edit/workspace-insert";
 import registerBanner from "./banner";
-import registerCodeGraph from "./codegraph";
 import registerContextMemory, { CONTEXT_MEMORY_OWNED_TOOL_NAMES } from "./context-memory";
 import { DEFAULT_CONFIG, loadConfig } from "./core/config";
 import { ConfirmationCoordinator } from "./core/confirmation";
@@ -11,9 +11,7 @@ import { emitDiagnostics } from "./core/diagnostics";
 import registerDisplay, { DisplayController } from "./display";
 import registerDisplayBuiltins from "./display/builtins";
 import registerFooter from "./footer";
-import registerGitHub from "./github";
 import registerNotifications from "./notifications";
-import registerPdfSearch from "./pdf-search";
 import registerPromptManager from "./prompt-manager";
 import registerShellTools from "./shell";
 import registerShadowMinds from "./shadow-minds";
@@ -66,6 +64,12 @@ export default function piSquare(pi: ExtensionAPI): void {
     () => display.runtime,
     () => anchoredReadAvailable,
   );
+  registerAnchoredInsert(
+    pi,
+    () => display.config,
+    () => display.runtime,
+    () => anchoredReadAvailable,
+  );
   registerAnchoredAutoRead(
     pi,
     () => display.config,
@@ -76,10 +80,7 @@ export default function piSquare(pi: ExtensionAPI): void {
   const notifications = registerNotifications(pi);
   registerAskUser(pi, notifications, () => display.runtime);
   registerTodo(pi, () => display.runtime);
-  registerPdfSearch(pi, () => display.runtime);
-  registerCodeGraph(pi, confirmations, () => display.runtime);
-  registerWebTools(pi, confirmations, () => display.runtime);
-  registerGitHub(pi, () => display.runtime);
+  registerWebTools(pi, () => display.runtime);
   const subagents = registerSubagents(pi, () => display.runtime, () => display.config);
   registerShadowMinds(pi, () => display.config);
   registerFooter(pi);

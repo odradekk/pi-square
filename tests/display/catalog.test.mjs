@@ -70,26 +70,25 @@ for (const family of DISPLAY_FAMILIES) {
 
 const expectedTools = [
   // Pi built-in
-  "read", "ls", "edit", "replace", "write", "find", "grep",
+  "read", "ls", "edit", "replace", "insert", "write", "find", "grep",
   // Platform shell
   "bash", "pwsh",
-  // pi-square search
-  "codegraph", "pdf_search",
   // pi-square remote
-  "search", "fetch", "libs", "docs", "parse",
-  "github",
+  "web_search", "web_fetch", "library_search", "library_docs",
   "ssh",
   // pi-square workflow
   "todo", "ask",
   // pi-square workflow: Context Memory (#215, #216, #339), parent-only
   "compact_to_memory_block", "read_memory_source", "search_memory_source",
   // pi-square agent
-  "delegate", "resume",
+  "delegate_subagent", "resume_subagent", "wait_subagent", "abort_subagent",
 ];
 for (const name of expectedTools) {
   assert.ok(getCatalogEntry(name), `expected tool '${name}' must be in catalog`);
 }
 assert.equal(allNames.length, expectedTools.length, `catalog has ${allNames.length} tools, expected ${expectedTools.length}`);
+assert.equal(getCatalogEntry("pwsh").title, "PowerShell", "catalog owns the canonical operational title");
+assert.ok(DISPLAY_CATALOG.every((entry) => entry.title.trim().length > 0), "every catalog entry has a title");
 
 // ── Parent/child availability ────────────────────────────────────────
 
@@ -97,17 +96,19 @@ const parentOnly = allNames.filter((n) => {
   const e = getCatalogEntry(n);
   return e.parent && !e.child;
 });
-// parse, replace, ssh, todo, ask, delegate, resume are parent-only
+// replace, insert, ssh, todo, ask, delegate_subagent, resume_subagent, wait_subagent, abort_subagent are parent-only
 assert.ok(parentOnly.includes("replace"), "replace must be parent-only");
-assert.ok(parentOnly.includes("parse"), "parse must be parent-only");
+assert.ok(parentOnly.includes("insert"), "insert must be parent-only");
 assert.ok(parentOnly.includes("ssh"), "ssh must be parent-only");
 assert.ok(parentOnly.includes("todo"), "todo must be parent-only");
 assert.ok(parentOnly.includes("ask"), "ask must be parent-only");
-assert.ok(parentOnly.includes("delegate"), "delegate must be parent-only");
-assert.ok(parentOnly.includes("resume"), "resume must be parent-only");
+assert.ok(parentOnly.includes("delegate_subagent"), "delegate_subagent must be parent-only");
+assert.ok(parentOnly.includes("resume_subagent"), "resume_subagent must be parent-only");
+assert.ok(parentOnly.includes("wait_subagent"), "wait_subagent must be parent-only");
+assert.ok(parentOnly.includes("abort_subagent"), "abort_subagent must be parent-only");
 assert.ok(parentOnly.includes("compact_to_memory_block"), "compact_to_memory_block must be parent-only");
 assert.ok(parentOnly.includes("read_memory_source"), "read_memory_source must be parent-only");
-assert.equal(parentOnly.length, 10, `expected 10 parent-only tools, got ${parentOnly.length}`);
+assert.equal(parentOnly.length, 12, `expected 12 parent-only tools, got ${parentOnly.length}`);
 
 // ── Platform shell ownership ─────────────────────────────────────────
 
@@ -227,7 +228,7 @@ assert.deepEqual([...DISPLAY_FAMILIES], ["filesystem", "search", "execution", "r
 
 // ── catalogFamilyFor helper ──────────────────────────────────────────
 
-assert.equal(catalogFamilyFor("pdf_search"), "search");
+assert.equal(catalogFamilyFor("grep"), "search");
 assert.equal(catalogFamilyFor("bash"), "execution");
 assert.equal(catalogFamilyFor("nonexistent"), undefined);
 

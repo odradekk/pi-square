@@ -1,5 +1,6 @@
 import {
   existsSync,
+  lstatSync,
   mkdirSync,
   readFileSync,
   readdirSync,
@@ -14,7 +15,8 @@ import { createHash, randomUUID } from "node:crypto";
 import { dropChildPartition } from "../anchored-edit/partitions";
 import { subagentsStateRoot } from "./agent-paths";
 import { createSubagentError, normalizeSubagentError, SubagentError } from "./errors";
-import type { SubagentRunDetails } from "./types";
+import { openChildSessionFile, sameFileIdentity, type SessionFileIo, type SessionFilePathStat } from "./session-file";
+import type { SubagentRunDetails } from "./run-types";
 
 const PUBLIC_ID_PATTERN = /^subagent_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const TRANSIENT_FS_CODES = new Set(["EAGAIN", "EBUSY", "EMFILE", "ENFILE", "ETIMEDOUT"]);
@@ -68,7 +70,7 @@ export function assertValidSubagentId(id: string, operation = "resume"): void {
     message: `Unknown subagent ID '${id}'.`,
     operation,
     retryable: false,
-    suggestedAction: "Use an ID returned by delegate or resume in the current version.",
+    suggestedAction: "Use an ID returned by delegate_subagent or resume_subagent in the current version.",
   });
 }
 
@@ -95,17 +97,17 @@ export function ensureArtifactsDir(id: string): string {
 
 function validateRunStateShape(value: unknown, expectedId?: string): SubagentRunDetails {
   const details = value as SubagentRunDetails;
-  if (!details || typeof details !== "object" || details.version !== 3) {
+  if (!details || typeof details !== "object" || details.version !== 4) {
     throw new Error("run.json has an unsupported format version");
   }
   if (!isValidSubagentId(details.id) || (expectedId && details.id !== expectedId)) {
     throw new Error("run.json subagent ID does not match its artifacts directory");
   }
-  if (!["running", "cancelling", "done", "error", "aborted"].includes(details.phase)) {
+  if (!["queued", "running", "cancelling", "completed", "failed", "aborted"].includes(details.phase)) {
     throw new Error("run.json has an invalid phase");
   }
-  if (!["fg", "bg", "resume"].includes(details.mode)) {
-    throw new Error("run.json has an invalid mode");
+  if (details.operation !== "delegate" && details.operation !== "resume") {
+    throw new Error("run.json has an invalid operation");
   }
   if (typeof details.sessionFile !== "string" || typeof details.sessionId !== "string") {
     throw new Error("run.json does not identify a native session");
@@ -113,10 +115,10 @@ function validateRunStateShape(value: unknown, expectedId?: string): SubagentRun
   if (typeof details.originParentSessionId !== "string" || typeof details.lastParentSessionId !== "string") {
     throw new Error("run.json does not identify its parent session");
   }
-  if (details.promptSnapshot?.version !== 2 || typeof details.promptSnapshot.system !== "string") {
-    throw new Error("run.json has no V2 prompt snapshot");
+  if (details.promptSnapshot?.version !== 3 || typeof details.promptSnapshot.system !== "string") {
+    throw new Error("run.json has no V3 prompt snapshot");
   }
-  if (details.promptSnapshot.manifest?.contractVersion !== 2 || typeof details.promptSnapshot.manifest.effectiveSystemHash !== "string") {
+  if (details.promptSnapshot.manifest?.contractVersion !== 3 || typeof details.promptSnapshot.manifest.effectiveSystemHash !== "string") {
     throw new Error("run.json has an invalid prompt manifest");
   }
   if (typeof details.artifactsDir !== "string" || typeof details.task !== "string" || typeof details.cwd !== "string") {
@@ -365,8 +367,58 @@ export interface ValidatedRunArtifacts {
   sessionEntries: any[];
 }
 
-export function validateRunArtifacts(id: string): ValidatedRunArtifacts {
-  assertValidSubagentId(id, "resume");
+/**
+ * Identity checks shared by every child-artifact reader: the artifacts
+ * directory stays inside the subagent state root, its run.json describes the
+ * same directory, and the referenced native session file stays inside it.
+ * Readers that tolerate a running child's mid-append file reuse this and then
+ * apply their own parsing rules.
+ */
+export interface ResolvedChildSessionFile {
+  artifactsDir: string;
+  details: SubagentRunDetails;
+  sessionFile: string;
+}
+
+interface SessionPathIo {
+  lstat(path: string): SessionFilePathStat;
+  realpath(path: string): string;
+}
+
+const SESSION_PATH_IO: SessionPathIo = {
+  lstat: lstatSync,
+  realpath: realpathSync,
+};
+
+function resolveDirectRegularSessionFile(
+  recordedPath: string,
+  artifactsDir: string,
+  io: SessionPathIo = SESSION_PATH_IO,
+): string {
+  const sessionFile = resolvePath(recordedPath);
+  if (dirname(sessionFile) !== artifactsDir) {
+    throw new Error("native session path is not directly inside the subagent artifacts directory");
+  }
+  const before = io.lstat(sessionFile);
+  if (!before.isFile()) throw new Error("native session path is not a regular file");
+
+  const realSessionFile = io.realpath(sessionFile);
+  if (dirname(realSessionFile) !== artifactsDir) {
+    throw new Error("native session file escapes the subagent artifacts directory");
+  }
+
+  // Re-observe the recorded path after canonicalization. A replacement with
+  // a symlink must not be hidden by realpath and handed to a later reader as
+  // the canonical target.
+  const after = io.lstat(sessionFile);
+  if (!after.isFile() || !sameFileIdentity(before, after)) {
+    throw new Error("native session path changed while resolving");
+  }
+  return sessionFile;
+}
+
+export function resolveChildSessionFile(id: string, operation = "resume"): ResolvedChildSessionFile {
+  assertValidSubagentId(id, operation);
   const artifactsDir = artifactsDirFor(id);
   try {
     const root = subagentsStateRoot();
@@ -379,18 +431,34 @@ export function validateRunArtifacts(id: string): ValidatedRunArtifacts {
       throw new Error("run.json artifactsDir does not match its directory");
     }
 
-    const realSessionFile = realpathSync(details.sessionFile);
-    if (dirname(realSessionFile) !== realArtifactsDir) {
-      throw new Error("native session file escapes the subagent artifacts directory");
-    }
-    const rawSession = withTransientFsRetries(() => readFileSync(realSessionFile, "utf8"));
+    const sessionFile = resolveDirectRegularSessionFile(details.sessionFile, realArtifactsDir);
+
+    return { artifactsDir: realArtifactsDir, details, sessionFile };
+  } catch (error) {
+    if (error instanceof SubagentError) throw error;
+    throw createSubagentError({
+      code: "SESSION_HISTORY_UNAVAILABLE",
+      message: `Subagent history for '${id}' is missing or invalid.`,
+      operation,
+      id,
+      retryable: false,
+      cause: error,
+      suggestedAction: "Verify that run.json and the native JSONL session file still exist and are unmodified.",
+    });
+  }
+}
+
+export function validateRunArtifacts(id: string, io?: SessionFileIo): ValidatedRunArtifacts {
+  try {
+    const { artifactsDir, details, handle } = openChildSessionFile(id, "resume", io);
+    const rawSession = withTransientFsRetries(() => handle.readText());
     const sessionEntries = parseSessionFileStrict(rawSession);
     if (sessionEntries[0].id !== details.sessionId) {
       throw new Error("native session ID does not match run.json");
     }
-
-    return { artifactsDir: realArtifactsDir, details, sessionEntries };
+    return { artifactsDir, details, sessionEntries };
   } catch (error) {
+    if (error instanceof SubagentError) throw error;
     throw createSubagentError({
       code: "SESSION_HISTORY_UNAVAILABLE",
       message: `Subagent history for '${id}' is missing or invalid.`,
@@ -442,4 +510,5 @@ export const __testables = {
   validateRunStateShape,
   withTransientFsRetries,
   fsRetryCount,
+  resolveDirectRegularSessionFile,
 };

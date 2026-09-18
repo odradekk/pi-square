@@ -40,53 +40,16 @@ function loadYaml(name) {
 const tests = [];
 function test(name, fn) { tests.push({ name, fn }); }
 
-const matrix = {
-  "explorer.yaml": {
-    tools: ["read", "ls", "grep", "find"],
-    extensionTools: ["codegraph"],
-    skills: ["none"],
-  },
-  "oracle.yaml": {
-    tools: ["read", "ls", "shell", "grep", "find"],
-    extensionTools: ["codegraph", "search", "fetch", "libs", "docs"],
-    skills: ["none"],
-  },
-  "crawler.yaml": {
-    tools: ["read"],
-    extensionTools: ["search", "fetch", "libs", "docs"],
-    skills: ["none"],
-  },
-  "librarian.yaml": {
-    tools: ["none"],
-    extensionTools: ["github"],
-    skills: ["none"],
-  },
-  "generalist.yaml": {
-    tools: ["read", "write", "edit", "shell", "ls", "grep", "find"],
-    extensionTools: ["codegraph", "search", "fetch", "libs", "docs"],
-    skills: [],
-  },
-};
-
-test("bundled role tool and skill capabilities match the least-privilege matrix", () => {
-  for (const [file, expected] of Object.entries(matrix)) {
-    const yaml = loadYaml(file);
-    assert.deepEqual(parseList(yaml, "tools"), expected.tools, `${file} built-in tools`);
-    assert.deepEqual(parseList(yaml, "extensionTools"), expected.extensionTools, `${file} extension tools`);
-    assert.deepEqual(parseList(yaml, "skills"), expected.skills, `${file} skills`);
-  }
-});
-
 test("none disables every built-in while preserving explicit extension tools", () => {
   const resolved = resolveSubagentTools({
     tools: ["none"],
-    extensionTools: ["github"],
+    extensionTools: ["library_docs"],
   }, "linux");
   assert.deepEqual(resolved.errors, []);
   assert.deepEqual(resolved.builtInTools, []);
-  assert.deepEqual(resolved.extensionTools, ["github"]);
+  assert.deepEqual(resolved.extensionTools, ["library_docs"]);
   assert.deepEqual(resolved.persistedTools, ["none"]);
-  assert.deepEqual(resolved.persistedExtensionTools, ["github"]);
+  assert.deepEqual(resolved.persistedExtensionTools, ["library_docs"]);
 });
 
 test("none is case-insensitive, mutually exclusive, and fails closed", () => {
@@ -108,9 +71,9 @@ test("omitted tools retain portable runtime defaults", () => {
   assert.ok(windows.persistedTools.includes("shell"));
 });
 
-test("every bundled subagent resolves to supported tools on every platform", () => {
+test("the packaged reference definition resolves to supported tools on every platform", () => {
   const files = readdirSync(subagentsDir).filter((file) => file.endsWith(".yaml"));
-  assert.ok(files.length > 0, "expected bundled subagent definitions to exist");
+  assert.ok(files.length > 0, "expected the packaged reference definition to exist");
   for (const file of files) {
     const yaml = loadYaml(file);
     const tools = parseList(yaml, "tools");
@@ -136,7 +99,7 @@ test("the bundled-definition guard rejects retired and unknown tool names", () =
     unknownBuiltIn.errors.some((error) => error.includes("scheme")),
     "an unknown built-in name must be reported",
   );
-  for (const retired of ["sg", "scheme_eval", "time", "github_search", "subagent_delegate", "docs_search"]) {
+  for (const retired of ["sg", "scheme_eval", "time", "subagent_delegate", "docs_search", "pdf_search", "parse", "search", "fetch", "libs", "docs"]) {
     const resolved = resolveSubagentTools({ extensionTools: [retired] }, "linux");
     const child = createChildTools(resolved.extensionTools, "linux");
     assert.ok(
@@ -147,7 +110,7 @@ test("the bundled-definition guard rejects retired and unknown tool names", () =
 });
 
 test("child tool construction accepts a child working directory without changing tools", () => {
-  const names = ["codegraph", "pdf_search"];
+  const names = ["web_search", "library_docs"];
   const plain = createChildTools(names);
   const withCwd = createChildTools(names, undefined, "/workspace/child");
   assert.deepEqual(withCwd.errors, []);
@@ -171,6 +134,23 @@ test("anchored editing tools are capability-gated and cannot be requested by nam
     "replace in extensionTools is rejected with the capability-gated error",
   );
   assert.ok(!inExtension.extensionTools.includes("replace"), "replace is never resolved as an extension tool");
+
+  // Insert (#287) is capability-only like replace: it is granted by the edit
+  // capability together with replace and can never be requested by name in
+  // either list, so it never enters the ordinary child extension catalog.
+  const insertInTools = resolveSubagentTools({ tools: ["read", "insert"] }, "linux");
+  assert.ok(
+    insertInTools.errors.some((error) => error.includes("insert") && error.includes("edit capability")),
+    "insert in tools is rejected with the capability-gated error",
+  );
+  assert.ok(!insertInTools.builtInTools.includes("insert"), "insert is never resolved as a built-in tool");
+  const insertInExtension = resolveSubagentTools({ tools: ["read"], extensionTools: ["insert"] }, "linux");
+  assert.ok(
+    insertInExtension.errors.some((error) => error.includes("insert") && error.includes("edit capability")),
+    "insert in extensionTools is rejected with the capability-gated error",
+  );
+  assert.ok(!insertInExtension.extensionTools.includes("insert"), "insert is never resolved as an extension tool");
+  assert.ok(!insertInExtension.errors.some((error) => error.includes("Unsupported extension tool 'insert'")), "the capability-gated rejection wins before the catalog message");
 });
 
 let failed = 0;

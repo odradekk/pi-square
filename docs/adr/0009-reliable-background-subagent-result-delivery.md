@@ -4,6 +4,22 @@ status: accepted
 
 # Reliable background subagent result delivery
 
+> Status note: ADR-0016 supersedes the portions of this decision that named
+> the terminal vocabulary (`done`/`error`) for delivered results and defined
+> the V4 notification payload with its single-result V3 notification
+> compatibility. The reliable-delivery mechanics themselves — the pending set,
+> safe timing, confirmation, resend, batching, budgets, and bounds — remain in
+> force. ADR-0016 additionally extends this pending set with the atomic
+> claim/take/release result-ownership operations of `wait_subagent`: claimed
+> results are excluded from automatic delivery and eviction under a
+> 50-reservation bound with a single-consumer guarantee, while every adapter
+> that never claims — Shadow Minds included — keeps exactly the automatic
+> semantics recorded here. Since #303 the compact
+> native subagent status this ADR referenced is retired: subagent
+> observability publishes through the session-scoped vertical child roster
+> (`src/subagents/roster.ts`), whose row vocabulary carries no undelivered
+> marker, so `undelivered` visibility lives solely in the `/subagent` manager.
+
 Background subagent results were sent with one fire-and-forget
 `pi.sendMessage` for each finished run, clipped to 1600 characters. Two defects
 follow from that design, both reproduced against a live Pi 0.84.2 session:
@@ -25,9 +41,11 @@ follow from that design, both reproduced against a live Pi 0.84.2 session:
 
 ### pi-square owns the pending set
 
-`src/subagents/delivery.ts` owns every finished `done` or `error` run until the
-parent confirms it. The background lifecycle no longer calls `sendMessage`; it
-hands the run to the controller.
+The confirmed-delivery core (`src/subagents/confirmed-delivery.ts`) owns every
+finished `done` or `error` run until the parent confirms it; since #372,
+`src/subagents/delivery.ts` is the Subagent delivery policy bound to that core.
+The background lifecycle no longer calls `sendMessage`; it hands the run to
+the policy-parameterized core the session holds.
 
 ### Delivery happens only at a safe moment
 
@@ -49,9 +67,10 @@ boundary itself. A `sendMessage` that throws leaves the result pending.
 
 Up to six results are coalesced into one message; the surplus follows at the
 next safe moment. A burst of background completions therefore costs one parent
-turn instead of one turn for each result. The payload is `SubagentNotification`
-V4 (`version`, `deliveryId`, `resent`, `results[]`); V3 payloads persisted by
-earlier sessions still render.
+turn instead of one turn for each result. The payload described here as V4
+with single-result V3 compatibility is superseded by the V5 notification of
+ADR-0016, which carries the current terminal vocabulary and no legacy
+parsing.
 
 ### Budgets
 
@@ -66,8 +85,10 @@ it identifies the run and is not the result.
 The pending set holds at most 50 results and drops the oldest beyond that. A
 finished job whose result is still pending is exempt from the 20-job
 compaction, because compaction would otherwise destroy the only copy. The
-native subagent status shows `undelivered N`, and the `/subagent` manager marks
-the individual runs. Deleting a run's history removes it from the pending set.
+native subagent status this ADR named for `undelivered N` was removed by #303
+in favor of the session-scoped child roster, whose row vocabulary carries no
+undelivered marker; the `/subagent` manager marks the individual undelivered
+runs. Deleting a run's history removes it from the pending set.
 
 ### Session scope
 

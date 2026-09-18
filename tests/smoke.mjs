@@ -43,6 +43,21 @@ writeFileSync(join(agentDir, "settings.json"), JSON.stringify({
   // extension takeover.
   compaction: { keepRecentTokens: 200 },
 }, null, 2) + "\n");
+// The package layer ships no delegatable roles (#334), so the catalog section
+// is exercised through an agent-layer definition the smoke session owns.
+mkdirSync(join(agentDir, "subagents"), { recursive: true });
+writeFileSync(join(agentDir, "subagents", "smoke-role.yaml"), [
+  "promptVersion: 2",
+  "name: smoke-role",
+  "description: >",
+  "  Smoke-test role proving agent-layer definitions reach the parent catalog.",
+  "tools:",
+  "  - read",
+  "  - grep",
+  "skills:",
+  "  - none",
+  "",
+].join("\n"), "utf8");
 
 const settingsManager = SettingsManager.create(cwd, agentDir);
 // noSkills suppresses the host's default skill discovery (Pi 0.84.2 always
@@ -73,9 +88,9 @@ try {
   assert.equal(paths[0], expectedExtensionPath);
 
   const expectedTools = [
-    "ask", "codegraph", "delegate", "docs", "fetch", "github",
-    "libs", "parse", "pdf_search", "replace", "resume", "search",
-    "todo",
+    "abort_subagent", "ask", "delegate_subagent", "insert",
+    "library_docs", "library_search", "replace", "resume_subagent",
+    "todo", "wait_subagent", "web_fetch", "web_search",
   ];
   const allToolNames = extensionsResult.runtime.getAllTools().map((tool) => tool.name).sort();
   const extensionTools = allToolNames.filter((name) => expectedTools.includes(name));
@@ -111,6 +126,7 @@ try {
   const systemPrompt = promptPatch?.systemPrompt ?? "";
   assert.equal(systemPrompt.slice(0, nativePrompt.length), nativePrompt);
   assert.match(systemPrompt.slice(nativePrompt.length), /## Available YAML-defined subagents/);
+  assert.match(systemPrompt.slice(nativePrompt.length), /- smoke-role: Smoke-test role/);
   assert.equal(systemPrompt.includes("System environment:"), false);
 
   const toolByName = (name) => {
@@ -119,6 +135,7 @@ try {
     return tool;
   };
   assert.ok(session.agent.state.tools.some((tool) => tool.name === "replace"), "anchored replace must be active by default");
+  assert.ok(session.agent.state.tools.some((tool) => tool.name === "insert"), "anchored insert must be active by default (#285)");
   assert.ok(!session.agent.state.tools.some((tool) => tool.name === "revert"), "anchored revert must be gone (#187 replace-only surface)");
   assert.ok(!session.agent.state.tools.some((tool) => tool.name === "edit"), "Pi edit must be inactive when anchored editing is enabled by default");
 
@@ -126,7 +143,7 @@ try {
   assert.equal(bashResult.content[0].text, "pi-square-bash");
 
   for (const toolName of [
-    "read", "grep", "find", "ls", "replace", "write", "bash",
+    "read", "grep", "find", "ls", "replace", "insert", "write", "bash",
     ...expectedTools,
   ]) {
     const definition = session.getToolDefinition(toolName);
@@ -146,6 +163,38 @@ try {
   }, undefined, undefined);
   assert.equal(anchoredReplace.details.metrics?.classification, "applied");
   assert.match(anchoredReplace.content[0].text, /pi-square-smoke-replaced/);
+
+  const insertedAnchor = /\+([A-Za-z0-9]{3})│pi-square-smoke-replaced/.exec(anchoredReplace.details.diff ?? "")?.[1];
+  assert.ok(insertedAnchor, "the applied replace carries a fresh anchor for the insert check");
+  const anchoredInsert = await toolByName("insert").execute("smoke:anchored-insert", {
+    path: "sample.txt",
+    anchor: insertedAnchor,
+    direction: "after",
+    lines: ["pi-square-smoke-inserted"],
+  }, undefined, undefined);
+  assert.equal(anchoredInsert.details.metrics?.classification, "applied");
+  assert.equal(anchoredInsert.details.metrics?.added_lines, 1);
+  assert.equal(anchoredInsert.details.metrics?.removed_lines, 0);
+  assert.match(anchoredInsert.details.diff, /\+([A-Za-z0-9]{3})│pi-square-smoke-inserted/);
+  assert.equal(
+    (await import("node:fs")).readFileSync(join(cwd, "sample.txt"), "utf8"),
+    "pi-square-smoke-replaced\npi-square-smoke-inserted\n",
+    "the anchored insert applies after the replaced line",
+  );
+  // The insert's served diff rows authorize an immediate follow-up replace.
+  const insertFreshAnchor = /\+([A-Za-z0-9]{3})│pi-square-smoke-inserted/.exec(anchoredInsert.details.diff)?.[1];
+  const insertFollowUp = await toolByName("replace").execute(
+    "smoke:insert-follow-up-replace",
+    { path: "sample.txt", remove_from: insertFreshAnchor, remove_to: insertFreshAnchor, replacement_text: "pi-square-smoke-after-insert" },
+    undefined,
+    undefined,
+  );
+  assert.equal(insertFollowUp.details.metrics?.classification, "applied");
+  assert.equal(
+    (await import("node:fs")).readFileSync(join(cwd, "sample.txt"), "utf8"),
+    "pi-square-smoke-replaced\npi-square-smoke-after-insert\n",
+    "the insert's fresh anchors support an immediate follow-up replace",
+  );
 
   const writeInput = { path: "sample.txt", content: "pi-square-smoke-written\n" };
   await runner.emitToolCall({ toolName: "write", toolCallId: "smoke:anchored-write", input: writeInput });
@@ -244,12 +293,6 @@ try {
   assert.equal(todoResult.details.counts.total, 1);
   assert.equal(todoResult.details.currentId, "smoke");
   assert.equal(JSON.parse(todoResult.content[0].text).version, 1);
-
-  const codegraphResult = await toolByName("codegraph").execute("smoke:codegraph", {
-    operation: "status",
-  }, undefined, undefined);
-  assert.equal(codegraphResult.details.code, "NOT_INDEXED");
-  assert.equal(codegraphResult.details.phase, "recoverable");
 
   // ── Context Memory shell (#215, #216, #319): default-off, registered but inactive ──
   const allToolsAfterStart = extensionsResult.runtime.getAllTools().map((tool) => tool.name);

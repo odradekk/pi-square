@@ -13,15 +13,17 @@ import {
 } from "./lib/test-helpers.mjs";
 
 const {
+  attachDeliveryController,
   cancelBackgroundJobs,
   createBackgroundState,
   createQueuedJob,
   createQueuedResumeJob,
-  formatBackgroundIndicator,
+  notifyBackgroundChange,
+  replaceBackgroundViewFeed,
   startBackgroundJob,
   startBackgroundResumeJob,
 } = await loadBackgroundModule();
-const { createDeliveryController } = await loadDeliveryModule();
+const { createSubagentDeliveryCore } = await loadDeliveryModule();
 
 const ID = "subagent_00000000-0000-4000-8000-000000000021";
 
@@ -31,9 +33,9 @@ function usage() {
 
 function details(phase = "running", overrides = {}) {
   return {
-    version: 3,
+    version: 4,
     id: ID,
-    mode: "bg",
+    operation: "delegate",
     artifactsDir: `/tmp/subagents/${ID}`,
     sessionFile: `/tmp/subagents/${ID}/session.jsonl`,
     sessionId: "native-session",
@@ -44,7 +46,7 @@ function details(phase = "running", overrides = {}) {
     task: "smoke task",
     cwd: "/tmp/subagents",
     startedAt: 10,
-    finalText: phase === "done" ? "ACK" : "",
+    finalText: phase === "completed" ? "ACK" : "",
     retries: 0,
     toolErrors: [],
     usage: usage(),
@@ -60,11 +62,24 @@ function observedState() {
   return { state, changes: () => changes, reset: () => { changes = 0; } };
 }
 
+// The session delivery core enters only through the single creation path
+// (#373): the test builds it with its own recording pi and attaches it to the
+// job store, exactly as the registration root does.
+function wireDelivery(observed, options = {}) {
+  const pi = createPiStub();
+  attachDeliveryController(observed.state, createSubagentDeliveryCore({
+    pi: pi.api,
+    notify: () => notifyBackgroundChange(observed.state),
+    ...options,
+  }));
+  return pi;
+}
+
 function assertCompletion(pi, status) {
   assert.equal(pi.sent.length, 1);
   assert.equal(pi.sent[0].message.customType, "pi-square.subagent-notification");
   assert.equal(pi.sent[0].message.display, true);
-  assert.equal(pi.sent[0].message.details.version, 4);
+  assert.equal(pi.sent[0].message.details.version, 5);
   assert.equal(pi.sent[0].message.details.resent, false);
   assert.equal(pi.sent[0].message.details.results.length, 1);
   assert.equal(pi.sent[0].message.details.results[0].id, ID);
@@ -110,20 +125,8 @@ test("queue insertion stores the unified public id and emits", () => {
   assert.equal(observed.changes(), 1);
   assert.equal(job.id, ID);
   assert.equal(job.details.id, ID);
-  assert.equal(job.details.mode, "bg");
+  assert.equal(job.details.operation, "delegate");
   assert.equal(observed.state.jobs.get(ID), job);
-});
-
-test("background indicator uses compact text without emoji presentation glyphs", () => {
-  process.env.PI_AGENT_DIR = "/tmp/subagents-test-agent";
-  const observed = observedState();
-  const job = queuedJob(observed);
-  assert.equal(formatBackgroundIndicator(observed.state), "queued 1");
-  job.status = "running";
-  assert.equal(formatBackgroundIndicator(observed.state), "running 1");
-  job.status = "aborted";
-  assert.equal(formatBackgroundIndicator(observed.state), "× 1");
-  assert.doesNotMatch(formatBackgroundIndicator(observed.state), /[⌛⏳◐◌\uFE0F]/u);
 });
 
 test("cancelBackgroundJobs accepts the public id", () => {
@@ -131,6 +134,7 @@ test("cancelBackgroundJobs accepts the public id", () => {
   const observed = observedState();
   const job = queuedJob(observed);
   observed.reset();
+  wireDelivery(observed);
   const result = cancelBackgroundJobs({ state: observed.state, id: ID, reason: "Stop now." });
   assert.equal(result.canceled[0].id, ID);
   assert.equal(job.status, "aborted");
@@ -146,8 +150,8 @@ test("running cancellation remains resumable and exposes a real cancelling trans
     await new Promise((resolve) => input.signal.addEventListener("abort", resolve, { once: true }));
     return { content: "aborted", details: details("aborted", { error: "Canceled from manager." }) };
   });
-  const pi = createPiStub();
-  startBackgroundJob({ pi: pi.api, state: observed.state, job, ctx: {}, task: "smoke task", parentSessionId: "parent-session" });
+  const pi = wireDelivery(observed);
+  startBackgroundJob({ state: observed.state, job, ctx: {}, task: "smoke task", parentSessionId: "parent-session" });
   await waitFor(() => job.status === "running", "running background job");
   const canceled = cancelBackgroundJobs({ state: observed.state, id: ID, reason: "Canceled from manager." });
   assert.equal(canceled.canceled[0].status, "cancelling");
@@ -167,60 +171,74 @@ test("pre-aborted jobs never invoke the child", async () => {
   job.abortController.abort();
   setRunSubagentTaskMock(async () => { throw new Error("must not execute"); });
 
-  const pi = createPiStub();
-  startBackgroundJob({ pi: pi.api, state: observed.state, job, ctx: {}, task: "smoke task", parentSessionId: "parent-session" });
+  const pi = wireDelivery(observed);
+  startBackgroundJob({ state: observed.state, job, ctx: {}, task: "smoke task", parentSessionId: "parent-session" });
   await waitFor(() => job.details.errorInfo?.code === "ABORTED", "pre-aborted cleanup");
   assert.equal(getRunSubagentTaskCalls().length, 0);
   assert.equal(observed.changes(), 1);
   assert.equal(pi.sent.length, 0);
 });
 
-test("running, partial, and final transitions preserve one id", async () => {
+test("queued, detail-update, and final transitions preserve one id", async () => {
   process.env.PI_AGENT_DIR = "/tmp/subagents-test-agent";
   const observed = observedState();
   const job = queuedJob(observed);
   observed.reset();
-  const pi = createPiStub();
+  const pi = wireDelivery(observed);
   setRunSubagentTaskMock(async (input) => {
-    input.onUpdate({ content: [{ type: "text", text: "partial" }], details: details("running", { liveText: "partial" }) });
-    return { content: "ACK", details: details("done", { endedAt: 20, durationMs: 10 }) };
+    input.onUpdate(details("running"));
+    return { details: details("completed", { endedAt: 20, durationMs: 10 }) };
   });
 
   const contextMessages = [{ role: "user", text: "parent context" }];
-  startBackgroundJob({ pi: pi.api, state: observed.state, job, ctx: {}, task: "smoke task", parentSessionId: "parent-session", contextMessages });
-  await waitFor(() => job.status === "done", "done background job");
-  // running, partial, final, and one change for the pending delivery set.
+  startBackgroundJob({ state: observed.state, job, ctx: {}, task: "smoke task", parentSessionId: "parent-session", contextMessages });
+  await waitFor(() => job.status === "completed", "completed background job");
+  // start, detail update, final, and one change for the pending delivery set.
   assert.equal(observed.changes(), 4);
   assert.equal(getRunSubagentTaskCalls()[0].id, ID);
-  assert.equal(getRunSubagentTaskCalls()[0].mode, "bg");
   assert.deepEqual(getRunSubagentTaskCalls()[0].contextMessages, contextMessages);
   assert.equal(job.details.id, ID);
-  assertCompletion(pi, "done");
+  assertCompletion(pi, "completed");
 });
 
 test("manager resumes use the cancellable background lifecycle and frozen snapshot", async () => {
   process.env.PI_AGENT_DIR = "/tmp/subagents-test-agent";
   const observed = observedState();
-  const persisted = details("done", { mode: "fg", finalText: "first", promptSnapshot: createPromptSnapshot() });
+  const persisted = details("completed", { finalText: "first", promptSnapshot: createPromptSnapshot() });
   const job = createQueuedResumeJob({
     state: observed.state,
     details: persisted,
     task: "continue",
     parentSessionId: "parent-session",
   });
-  const pi = createPiStub();
+  const pi = wireDelivery(observed);
   setRunSubagentTaskMock(async (input) => {
     assert.equal(input.id, ID);
     assert.equal(input.task, "continue");
-    input.onUpdate({ content: [{ type: "text", text: "partial" }], details: details("running", { mode: "resume", promptSnapshot: persisted.promptSnapshot }) });
-    return { status: "completed", content: "continued", details: details("done", { mode: "resume", finalText: "continued", promptSnapshot: persisted.promptSnapshot }) };
+    input.onUpdate(details("running", { operation: "resume", promptSnapshot: persisted.promptSnapshot }));
+    return { details: details("completed", { operation: "resume", finalText: "continued", promptSnapshot: persisted.promptSnapshot }) };
   });
 
-  startBackgroundResumeJob({ pi: pi.api, state: observed.state, job, ctx: {}, task: "continue", parentSessionId: "parent-session" });
-  await waitFor(() => job.status === "done", "done background resume");
-  assert.equal(job.details.mode, "resume");
+  startBackgroundResumeJob({ state: observed.state, job, ctx: {}, task: "continue", parentSessionId: "parent-session" });
+  await waitFor(() => job.status === "completed", "completed background resume");
+  assert.equal(job.details.operation, "resume");
   assert.equal(job.details.promptSnapshot, persisted.promptSnapshot);
-  assertCompletion(pi, "done");
+  assertCompletion(pi, "completed");
+});
+
+test("a retained public ID keeps its background-owned roster creation key on resume", () => {
+  process.env.PI_AGENT_DIR = "/tmp/subagents-test-agent";
+  const observed = observedState();
+  const original = queuedJob(observed);
+  original.status = "completed";
+  const resumed = createQueuedResumeJob({
+    state: observed.state,
+    details: details("completed", { finalText: "first" }),
+    task: "continue",
+    parentSessionId: "parent-session",
+  });
+  assert.equal(resumed.createdAt, original.createdAt);
+  assert.ok(resumed.details.startedAt >= resumed.createdAt);
 });
 
 test("thrown background failures become structured run failures", async () => {
@@ -228,24 +246,23 @@ test("thrown background failures become structured run failures", async () => {
   const observed = observedState();
   const job = queuedJob(observed);
   observed.reset();
-  const pi = createPiStub();
+  const pi = wireDelivery(observed);
   setRunSubagentTaskMock(async () => { throw new Error("synthetic failure"); });
 
-  startBackgroundJob({ pi: pi.api, state: observed.state, job, ctx: {}, task: "smoke task", parentSessionId: "parent-session" });
-  await waitFor(() => job.status === "error", "error background job");
+  startBackgroundJob({ state: observed.state, job, ctx: {}, task: "smoke task", parentSessionId: "parent-session" });
+  await waitFor(() => job.status === "failed", "failed background job");
   assert.equal(job.details.errorInfo.code, "SUBAGENT_FAILED");
   assert.match(job.details.error, /synthetic failure/);
-  assertCompletion(pi, "error");
+  assertCompletion(pi, "failed");
 });
 
-test("undelivered results survive job compaction and stay visible in the indicator", async () => {
+test("undelivered results survive job compaction and stay pending", async () => {
   process.env.PI_AGENT_DIR = "/tmp/subagents-test-agent";
   const observed = observedState();
-  const pi = createPiStub();
   // A parent that never becomes idle keeps every completion pending, which is
   // the state that job compaction must not destroy.
-  observed.state.delivery = createDeliveryController({ pi: pi.api, isIdle: () => false });
-  setRunSubagentTaskMock(async () => ({ content: "ACK", details: details("done", { endedAt: 20, durationMs: 10 }) }));
+  const pi = wireDelivery(observed, { isIdle: () => false });
+  setRunSubagentTaskMock(async () => ({ content: "ACK", details: details("completed", { endedAt: 20, durationMs: 10 }) }));
 
   const total = 22;
   for (let index = 0; index < total; index += 1) {
@@ -258,7 +275,7 @@ test("undelivered results survive job compaction and stay visible in the indicat
       parentSessionId: "parent-session",
       promptSnapshot: createPromptSnapshot(),
     });
-    startBackgroundJob({ pi: pi.api, state: observed.state, job, ctx: {}, task: "smoke task", parentSessionId: "parent-session" });
+    startBackgroundJob({ state: observed.state, job, ctx: {}, task: "smoke task", parentSessionId: "parent-session" });
   }
 
   await waitFor(
@@ -267,11 +284,104 @@ test("undelivered results survive job compaction and stay visible in the indicat
   );
   assert.equal(pi.sent.length, 0, "a busy parent receives nothing before a turn boundary");
   assert.equal(observed.state.jobs.size, total, "compaction never drops an undelivered result");
-  assert.match(formatBackgroundIndicator(observed.state), /undelivered 22/);
+  assert.equal(observed.state.delivery.pendingCount(), total, "every undelivered result stays pending");
 
   observed.state.delivery.handleTurnEnd();
   assert.equal(pi.sent.length, 1, "the burst costs one parent turn, not 22");
   assert.equal(pi.sent[0].message.details.results.length, 6);
+});
+
+const busyWait = (ms) => {
+  const end = Date.now() + ms;
+  while (Date.now() < end) { /* deliberate slow viewer work */ }
+};
+
+test("live view: feed events flow in order and a broken subscriber changes nothing", async () => {
+  process.env.PI_AGENT_DIR = "/tmp/subagents-test-agent";
+  const observed = observedState();
+  const pi = wireDelivery(observed);
+  const job = createQueuedJob({
+    state: observed.state,
+    id: "subagent_00000000-0000-4000-8000-0000000000aa",
+    task: "smoke task",
+    cwd: "/tmp/subagents",
+    parentSessionId: "parent-session",
+    promptSnapshot: createPromptSnapshot(),
+  });
+
+  const captured = [];
+  observed.state.viewFeed.subscribe(job.id, (event) => captured.push(event.kind));
+  observed.state.viewFeed.subscribe(job.id, () => {
+    busyWait(5);
+    throw new Error("broken viewer subscriber");
+  });
+
+  setRunSubagentTaskMock(async (input) => {
+    input.onViewEvent?.({ kind: "run_started" });
+    input.onViewEvent?.({ kind: "message_delta", parts: [{ type: "text", text: "partial" }] });
+    input.onViewEvent?.({ kind: "message_completed", content: [] });
+    input.onViewEvent?.({ kind: "run_finished" });
+    return { details: details("completed", { finalText: "ACK", endedAt: 20, durationMs: 10 }) };
+  });
+
+  startBackgroundJob({
+    state: observed.state,
+    job,
+    ctx: {},
+    task: "smoke task",
+    parentSessionId: "parent-session",
+  });
+
+  await waitFor(() => job.status === "completed", "job completion");
+  await waitFor(() => pi.sent.length === 1, "the ordinary completion delivery");
+  await waitFor(() => captured.length >= 4, "the decoupled flush drains");
+  assert.deepEqual(captured, ["run_started", "message_delta", "message_completed", "run_finished"]);
+  assert.equal(job.details.phase, "completed");
+  assert.equal(job.details.finalText, "ACK");
+  assert.equal(pi.sent[0].message.customType, "pi-square.subagent-notification",
+    "a broken live subscriber leaves the ordinary completion delivery untouched");
+});
+
+test("a replaced parent feed fences late events from its still-running child", async () => {
+  process.env.PI_AGENT_DIR = "/tmp/subagents-test-agent";
+  const observed = observedState();
+  const pi = wireDelivery(observed);
+  const job = createQueuedJob({
+    state: observed.state,
+    id: "subagent_00000000-0000-4000-8000-0000000000ab",
+    task: "old parent task",
+    cwd: "/tmp/subagents",
+    parentSessionId: "parent-old",
+    promptSnapshot: createPromptSnapshot(),
+  });
+  let oldPublisher;
+  let finishRun;
+  const finish = new Promise((resolve) => { finishRun = resolve; });
+  observed.state.viewFeed.subscribe(job.id, () => {});
+  setRunSubagentTaskMock(async (input) => {
+    oldPublisher = input.onViewEvent;
+    await finish;
+    return { details: details("completed", { finalText: "done", endedAt: 20, durationMs: 10 }) };
+  });
+
+  startBackgroundJob({
+    state: observed.state,
+    job,
+    ctx: {},
+    task: "old parent task",
+    parentSessionId: "parent-old",
+  });
+  await waitFor(() => typeof oldPublisher === "function", "old-generation publisher capture");
+
+  replaceBackgroundViewFeed(observed.state);
+  const seenByNewParent = [];
+  observed.state.viewFeed.subscribe(job.id, (event) => seenByNewParent.push(event.kind));
+  oldPublisher({ kind: "run_started" });
+  for (let turn = 0; turn < 4; turn += 1) await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(seenByNewParent, [], "the old publisher remains bound to the discarded feed generation");
+
+  finishRun();
+  await waitFor(() => job.status === "completed", "old child cleanup");
 });
 
 await run();

@@ -14,7 +14,7 @@ bounded pages.
 The feature is **experimental** and **disabled by default**. Installing or
 upgrading pi-square never creates Context Memory model calls, tools, or files.
 This guide documents what ships today; the architecture decisions live in
-`docs/adr/0017-context-memory-request-projection.md` (ADR-0013 is superseded
+`docs/adr/0018-context-memory-request-projection.md` (ADR-0013 is superseded
 history), and `README.md` carries the summary. Recorded Memory survives
 interruptions and native session branches (see
 [Branches, resume, forks, and copies](#branches-resume-forks-and-copies)).

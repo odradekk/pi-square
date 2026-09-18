@@ -393,18 +393,22 @@ try {
 
   // --- Criterion 8/9: the lock coexists with Pi's per-session mutation queue.
   // Two replaces on the same file in one process complete without deadlock:
-  // the queue serializes them, exactly one edit applies, and the other is
-  // refused recoverably against the winner's updated served state (no lost
-  // update, no interleave). Clear any stale locks left by the killed holders
-  // first so the cleanliness assertion below checks only the concurrent
-  // replaces. ---
+  // the queue serializes them into one linear order with no lost update and
+  // no interleave. #299 refines the outcome: two *disjoint* concurrent
+  // replaces both apply — the loser's anchor demonstrably survived the
+  // winner's mutation, so its authorization carries to the installed version
+  // instead of producing a self-generated stale refusal — while two
+  // *conflicting* concurrent replaces still produce exactly one applied edit
+  // and one recoverable refusal. Clear any stale locks left by the killed
+  // holders first so the cleanliness assertion below checks only the
+  // concurrent replaces. ---
   rmSync(lockDir(), { recursive: true, force: true });
   writeFileSync(join(workspace, "coexist.txt"), "l1\nl2\nl3\nl4\n");
   const coexHashes = hashesOf("l1\nl2\nl3\nl4\n");
   {
-    // Seed the served rows for the starting version: whichever replace wins
-    // the queue publishes its own diff rows for the new version, so the
-    // loser's authorization against the starting version is stale.
+    // Seed the served rows for the starting version: each replace verifies
+    // its range against them, and the winner's publication carries the
+    // survivor rows forward for the queued loser (#299).
     const seedStore = await loadAnchoredHashStore(storeDir, PARENT_OWNER);
     seedStore.mergeServed(join(workspace, "coexist.txt"), coexHashes, "l1\nl2\nl3\nl4\n");
     seedStore.release();
@@ -430,18 +434,53 @@ try {
   assert.ok(r1 && r2, "concurrent same-file replaces complete without deadlock");
   // #264: with one queue-then-lock order the queue serializes both replaces
   // before either lock wait begins, so there is no circular wait and no false
-  // contention. Exactly one edit applies; the other is refused recoverably by
-  // the served-state gate against the winner's fresh diff rows.
+  // contention. #299: both disjoint edits take effect exactly once, in the
+  // queue's linear order.
   const coexContent = readFileSync(join(workspace, "coexist.txt"), "utf8");
-  const x1Land = coexContent.includes("X1") && !coexContent.includes("X4");
-  const x4Land = coexContent.includes("X4") && !coexContent.includes("X1");
-  assert.ok(x1Land || x4Land, "exactly one of the two concurrent edits landed (well-defined, no lost update)");
-  const r1Applied = r1.details.metrics?.classification === "applied";
-  const r2Applied = r2.details.metrics?.classification === "applied";
-  assert.ok(r1Applied !== r2Applied, "exactly one concurrent edit was applied");
-  const refused = r1Applied ? r2 : r1;
-  assert.equal(refused.details.errorCode, "E_RANGE_STALE", "the other concurrent edit was refused recoverably against the updated served state");
+  assert.equal(coexContent, "X1\nl2\nl3\nX4\n", "both disjoint concurrent edits landed exactly once");
+  assert.equal(r1.details.metrics?.classification, "applied", "the first concurrent edit was applied");
+  assert.equal(r2.details.metrics?.classification, "applied", "the queued concurrent edit was applied through the carried authorization");
   assert.ok(!lockDirFiles().length, "no lock artefacts remain after the concurrent replaces");
+
+  // The conflicting control: two concurrent replaces naming the same anchor
+  // cannot both apply. The winner consumes the row; the loser's anchor was
+  // consumed, so it is refused recoverably with fresh anchored feedback.
+  writeFileSync(join(workspace, "conflict.txt"), "c1\nc2\nc3\n");
+  const conflictHashes = hashesOf("c1\nc2\nc3\n");
+  {
+    const seedStore = await loadAnchoredHashStore(storeDir, PARENT_OWNER);
+    seedStore.mergeServed(join(workspace, "conflict.txt"), conflictHashes, "c1\nc2\nc3\n");
+    seedStore.release();
+  }
+  const [c1, c2] = await Promise.all([
+    replace.execute(
+      "conflict-1",
+      { path: "conflict.txt", remove_from: conflictHashes[1], remove_to: conflictHashes[1], replacement_text: "W1" },
+      undefined,
+      undefined,
+      ctx,
+    ),
+    replace.execute(
+      "conflict-2",
+      { path: "conflict.txt", remove_from: conflictHashes[1], remove_to: conflictHashes[1], replacement_text: "W2" },
+      undefined,
+      undefined,
+      ctx,
+    ),
+  ]);
+  const conflictContent = readFileSync(join(workspace, "conflict.txt"), "utf8");
+  const w1Land = conflictContent.includes("W1") && !conflictContent.includes("W2");
+  const w2Land = conflictContent.includes("W2") && !conflictContent.includes("W1");
+  assert.ok(w1Land || w2Land, "exactly one of the two conflicting concurrent edits landed");
+  const c1Applied = c1.details.metrics?.classification === "applied";
+  const c2Applied = c2.details.metrics?.classification === "applied";
+  assert.ok(c1Applied !== c2Applied, "exactly one conflicting edit was applied");
+  const conflictRefused = c1Applied ? c2 : c1;
+  assert.ok(
+    conflictRefused.details.errorCode === "E_RANGE_STALE" || conflictRefused.details.errorCode === "E_STALE_ANCHOR",
+    "the other conflicting edit was refused recoverably (its consumed anchor no longer authorizes anything)",
+  );
+  assert.ok(!lockDirFiles().length, "no lock artefacts remain after the conflicting replaces");
 
   // --- #264 crash-at-boundary: a real process dies between the filesystem
   // commit and the store publication. The changed file is reported

@@ -47,19 +47,14 @@ function context(args, overrides = {}) {
 }
 
 const cases = [
-  ["search", { queries: ["display systems"], sites: ["example.test"], limit: 5 }, /display systems/],
-  ["fetch", { urls: ["https://example.test/a"], mode: "readable" }, /example\.test/],
-  ["libs", { libraryName: "react", query: "context" }, /react/],
-  ["docs", { libraryId: "/facebook/react", query: "context" }, /facebook\/react/],
-  ["parse", { path: "manual.pdf", pages: "1-3", mode: "auto" }, /manual\.pdf/],
-  ["github", { operation: "search", kind: "code", query: "repo:owner/name ghp_SECRET" }, /repo:owner\/name/],
-  ["github", { operation: "read", repo: "owner/name", path: "README.md", ref: "main" }, /README\.md/],
-  ["github", { operation: "tree", repo: "owner/name", path: "src", ref: "main" }, /src/],
-  ["github", { operation: "commit", repo: "owner/name", ref: "abcdef" }, /abcdef/],
+  ["web_search", { queries: ["display systems"], sites: ["example.test"], limit: 5 }, /display systems/],
+  ["web_fetch", { urls: ["https://example.test/a"], mode: "readable" }, /example\.test/],
+  ["library_search", { libraryName: "react", query: "context" }, /react/],
+  ["library_docs", { libraryId: "/facebook/react", query: "context" }, /facebook\/react/],
   ["ask", { questions: [{ id: "secret-question", text: "private question", options: [] }] }, /Questions/],
   ["todo", { action: "set", todos: [{ text: "private task" }] }, /set/],
-  ["delegate", { agent: "explorer", mode: "fg", task: "inspect runtime" }, /inspect runtime/],
-  ["resume", { id: "subagent_12345678", task: "continue review" }, /continue review/],
+  ["delegate_subagent", { agent: "explorer", task: "inspect runtime" }, /inspect runtime/],
+  ["resume_subagent", { id: "subagent_12345678", task: "continue review" }, /continue review/],
 ];
 
 for (const [name, args, expected] of cases) {
@@ -78,9 +73,9 @@ for (const [name, args, expected] of cases) {
   const result = { content: [{ type: "text", text: "private result body" }], details: { status: "success", returned: 1 } };
   const collapsed = decorated.renderResult(result, { expanded: false, isPartial: false }, theme, context(args));
   const collapsedText = collapsed.render(80).join("\n");
-  const resultIdentity = name === "delegate"
+  const resultIdentity = name === "delegate_subagent"
     ? /explorer/
-    : name === "resume"
+    : name === "resume_subagent"
       ? /subagent_12345678/
       : expected;
   assert.match(collapsedText, resultIdentity, `${name} result identity`);
@@ -93,59 +88,61 @@ for (const [name, args, expected] of cases) {
   // through records or empty-state indicators rather than the raw text
   // fallback; other tools expose the text via output fallback or a
   // content/markdown section.
-  const hasStructuredDomain = name === "github" || name === "todo" || name === "ask";
-  const isWebTool = ["search", "fetch", "libs", "docs", "parse"].includes(name);
+  const hasStructuredDomain = name === "todo" || name === "ask";
+  const isWebTool = ["web_search", "web_fetch", "library_search", "library_docs"].includes(name);
   if (!hasStructuredDomain && !isWebTool) {
     assert.match(expandedText, /private result body/);
   }
   // REQUEST, SUMMARY, ACTION, and RESULT sections are pruned restating titles (C8).
 }
 
-const subagentArgs = { agent: "explorer", mode: "fg", task: "inspect runtime" };
-const subagent = decorateSubagentTool(fake("delegate"), runtime);
-const subagentDetails = {
-  version: 3,
+// The delegate tool returns immediately with the queued job record, so its
+// collapsed result is the queued outcome and the expanded body carries the
+// queued row plus the task evidence.
+const subagentArgs = { agent: "explorer", task: "inspect runtime" };
+const subagent = decorateSubagentTool(fake("delegate_subagent"), runtime);
+const queuedDetails = {
+  version: 4,
   id: "subagent_12345678-1234-4123-8123-123456789abc",
-  mode: "fg",
-  phase: "running",
+  operation: "delegate",
+  phase: "queued",
   agent: { name: "explorer", effort: "high" },
   task: "inspect runtime",
   cwd: process.cwd(),
   model: "provider/model",
   startedAt: Date.now() - 4_200,
   finalText: "",
-  liveText: "scanning repository for candidates\nfound 3 matches",
   retries: 0,
   toolErrors: [],
-  usage: { input: 10, output: 4, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 1 },
-  timeline: [{ kind: "tool", phase: "start", text: 'rg {"pattern":"needle","path":"src"}' }],
+  usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
+  timeline: [{ kind: "status", text: "queued background subagent job" }],
 };
-const running = subagent.renderResult(
-  { content: [{ type: "text", text: subagentDetails.liveText }], details: subagentDetails },
-  { expanded: false, isPartial: true },
+const queued = subagent.renderResult(
+  { content: [{ type: "text", text: "Queued background subagent subagent_12345678." }], details: queuedDetails },
+  { expanded: false, isPartial: false },
   theme,
-  context(subagentArgs, { isPartial: true }),
+  context(subagentArgs),
 ).render(80).join("\n");
-assert.match(running, /explorer/);
-// C4 revision: the collapsed running entry is one row; the inline summary
-// states the running outcome, and the live text is visible only expanded.
-assert.match(running, /running · 1 turns/, "collapsed running shows the inline outcome head");
-  assert.match(running, /run 12345678/, "collapsed running keeps the run id tail through elision");
-assert.doesNotMatch(running, /scanning repository|found 3 matches/, "collapsed running hides the live text");
-// Activity rows never appear in the collapsed body
-assert.doesNotMatch(running, /Activity/);
-const expandedSubagent = subagent.renderResult(
-  { content: [{ type: "text", text: subagentDetails.liveText }], details: subagentDetails },
-  { expanded: true, isPartial: true },
+assert.match(queued, /explorer/);
+assert.match(queued, /Queued in the parent session · run 12345678/, "queued result states the queued outcome with the run id");
+const unnamedQueued = subagent.renderResult(
+  { content: [{ type: "text", text: "Queued background subagent subagent_12345678." }], details: { ...queuedDetails, agent: undefined } },
+  { expanded: false, isPartial: false },
   theme,
-  context(subagentArgs, { isPartial: true, expanded: true }),
+  context({ task: "inspect runtime" }),
 ).render(80).join("\n");
-assert.match(expandedSubagent, /Live/);
-assert.match(expandedSubagent, /Activity/);
-assert.match(expandedSubagent, /Usage/);
-assert.doesNotMatch(running, /Completed/);
+assert.match(unnamedQueued, /Subagent 12345678/, "a queued generic run shows the short id as the target");
+const expandedQueued = subagent.renderResult(
+  { content: [{ type: "text", text: "Queued background subagent subagent_12345678." }], details: queuedDetails },
+  { expanded: true, isPartial: false },
+  theme,
+  context(subagentArgs, { expanded: true }),
+).render(80).join("\n");
+assert.match(expandedQueued, /Queued in the parent session/);
+assert.match(expandedQueued, /Task/);
+assert.doesNotMatch(expandedQueued, /inspect runtime\n.*inspect runtime\n.*inspect runtime/, "task evidence stays bounded");
 
-const webSearch = decorateInternalTool(fake("search"), runtime);
+const webSearch = decorateInternalTool(fake("web_search"), runtime);
 const webExpanded = webSearch.renderResult({
   content: [{ type: "text", text: "model output" }],
   details: {
@@ -162,9 +159,7 @@ const resultTitleLine = webExpanded.find((line) => line.includes("earendil-works
 assert.ok(webExpanded[0]?.startsWith("● Web search"), "tool header remains flush-left");
 assert.ok(resultTitleLine?.startsWith("  ") && resultTitleLine?.includes("earendil-works/pi"), "result record is indented under the quiet body indent");
 
-for (const child of createChildTools([
-  "search", "fetch", "libs", "docs", "github_search", "github_read", "github_tree", "github_commit",
-]).definitions) {
+for (const child of createChildTools(["web_search", "web_fetch", "library_search", "library_docs"]).definitions) {
   assert.notEqual(child.renderShell, "self", `${child.name} child factory remains runtime-independent`);
 }
 

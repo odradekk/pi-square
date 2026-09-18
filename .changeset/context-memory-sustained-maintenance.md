@@ -2,7 +2,7 @@
 "@odradekk/pi-square": minor
 ---
 
-Context Memory: sustained maintenance inside one long-running task (odradekk/pi-square#320, ADR-0017)
+Context Memory: sustained maintenance inside one long-running task (odradekk/pi-square#320, ADR-0018)
 
 - Maintenance need is now evaluated before every ordinary model request — never only at real user input or settle — while the threshold still controls only the advisory: `compact_to_memory_block` stays resident with a stable schema, and no extra summarization call, background model, autonomous turn, or "continue" message is ever produced.
 - At most one maintenance request is pending at any time. Each due request pins the exact append sources its advisory invites — range end, retained exceptions, Memory boundary, and Memory version — and that pinned range never silently grows: tool work completed after the advisory stays uncompressed until a later request covers it, growth re-scopes the request only at a served request boundary (the old request is invalidated and the new sources are served in that very request), and model, branch, and compaction changes invalidate it for the next due request to re-establish from the live branch. The advisory keeps one fixed body and one safe position, rides due requests without accumulating into the transcript, and clears with the completed request once the recorded projection relieves the pressure.

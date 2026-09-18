@@ -52,9 +52,9 @@ export function fmtReadPreviewSync(
 	const startLine = normPosInt(options.offset, "offset") ?? 1;
 	if (totalLines === 0) {
 		if (startLine === 1) {
-      const emptyLineHash = allHashes[0] ?? "";
-      return {
-				text: `${emptyLineHash}${HASH_SEP}\n[File is empty. Use replace to insert content.]`,
+			const emptyLineHash = allHashes[0] ?? "";
+			return {
+				text: `${emptyLineHash}${HASH_SEP}\n[File is empty. Use insert with the anchor row above to add its first lines.]`,
 				servedHashes: emptyLineHash ? [emptyLineHash] : [],
 			};
 		}

@@ -711,7 +711,7 @@ try {
   {
     // The filter is a standalone additional extension, so the resource
     // loader orders it ahead of the package and pi-square observes its
-    // output — the upstream position ADR-0017 defines.
+    // output — the upstream position ADR-0018 defines.
     const extensionDir = mkdtempSync(join(tmpdir(), "pi-square-arbitration-ext-"));
     const extensionPath = join(extensionDir, "upstream.ts");
     writeFileSync(extensionPath, [

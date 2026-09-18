@@ -62,21 +62,29 @@ function ok(input) {
   const envelope = ok({ cwd, tools: [...SHADOW_SAFE_TOOLS] });
   assert.deepEqual(envelope.toolNames, [
     "read", "grep", "find", "ls",
-    "codegraph", "pdf_search", "search", "fetch", "libs", "docs",
+    "web_search", "web_fetch", "library_search", "library_docs",
   ]);
   assert.deepEqual(envelope.customTools.map((tool) => tool.name), [
-    "codegraph", "pdf_search", "search", "fetch", "libs", "docs",
+    "web_search", "web_fetch", "library_search", "library_docs",
   ]);
 }
 
 {
   // Excluded capabilities are not in the catalog and drop with a warning.
-  for (const excluded of ["bash", "shell", "pwsh", "write", "edit", "replace", "revert", "ssh", "parse", "github", "delegate", "resume", "todo", "ask"]) {
+  // `insert` joins the anchored mutations that stay Shadow-excluded (#288).
+  for (const excluded of ["bash", "shell", "pwsh", "write", "edit", "replace", "insert", "revert", "ssh", "parse", "delegate_subagent", "resume_subagent", "todo", "ask"]) {
     const envelope = ok({ cwd, tools: ["read", excluded] });
     assert.deepEqual(envelope.toolNames, ["read"], excluded);
     assert.equal(envelope.warnings.length, 1, excluded);
     assert.match(envelope.warnings[0], new RegExp(`'${excluded}'`), excluded);
   }
+}
+
+{
+  // A required anchored mutation fails the run before prompting (#288).
+  const outcome = resolveShadowTools({ cwd, tools: ["read", "insert"], requiredTools: ["insert"] });
+  assert.equal(outcome.ok, false);
+  assert.match(outcome.error, /Required Shadow tools are unavailable: insert/);
 }
 
 {
@@ -90,9 +98,9 @@ function ok(input) {
 
 {
   // Definition text order never changes the envelope or its hash.
-  const forward = ok({ cwd, tools: ["docs", "search", "ls", "read", "codegraph"] });
-  const reverse = ok({ cwd, tools: ["codegraph", "read", "ls", "search", "docs"] });
-  assert.deepEqual(forward.toolNames, ["read", "ls", "codegraph", "search", "docs"]);
+  const forward = ok({ cwd, tools: ["library_docs", "web_search", "ls", "read", "web_fetch"] });
+  const reverse = ok({ cwd, tools: ["web_fetch", "read", "ls", "web_search", "library_docs"] });
+  assert.deepEqual(forward.toolNames, ["read", "ls", "web_search", "web_fetch", "library_docs"]);
   assert.equal(forward.schemaHash, reverse.schemaHash);
 }
 
@@ -105,8 +113,8 @@ function ok(input) {
 
 {
   // The hash is stable across working directories.
-  const here = ok({ cwd, tools: ["read", "codegraph"] });
-  const elsewhere = ok({ cwd: "/tmp/elsewhere", tools: ["read", "codegraph"] });
+  const here = ok({ cwd, tools: ["read", "web_search"] });
+  const elsewhere = ok({ cwd: "/tmp/elsewhere", tools: ["read", "web_search"] });
   assert.equal(here.schemaHash, elsewhere.schemaHash);
 }
 
@@ -143,8 +151,8 @@ function ok(input) {
 {
   // Extension tools come from the child-safe read-only factories: the
   // Shadow envelope only ever receives catalog definitions, never a
-  // github/pwsh definition even when adjacent names are requested.
-  const envelope = ok({ cwd, tools: ["codegraph", "search"] });
+  // shell definition even when adjacent names are requested.
+  const envelope = ok({ cwd, tools: ["web_fetch", "web_search"] });
   assert.equal(envelope.customTools.length, 2);
   for (const tool of envelope.customTools) {
     assert.equal(SHADOW_EXTENSION_BASE_ORDER.includes(tool.name), true);

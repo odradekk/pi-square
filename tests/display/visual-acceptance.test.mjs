@@ -207,7 +207,6 @@ const secretValues = [
   "token: abc-token-xyz",
   "github_pat_ABCDE",
   "ghp_production_token",
-  "fc-api-key-12345",
 ];
 
 for (const secret of secretValues) {
@@ -224,7 +223,7 @@ for (const secret of secretValues) {
     };
     const lines = new OperationalDisplayComponent(description, DEFAULT_DISPLAY_POLICY, theme, { expanded: false }).render(80);
     const plain = stripVTControlCharacters(lines.join("\n"));
-    for (const sensitive of ["ghp_SECRET123", "hidden-key", "do-not-show", "abc-token-xyz", "github_pat_ABCDE", "ghp_production_token", "fc-api-key-12345"]) {
+    for (const sensitive of ["ghp_SECRET123", "hidden-key", "do-not-show", "abc-token-xyz", "github_pat_ABCDE", "ghp_production_token"]) {
       assert.doesNotMatch(plain, new RegExp(sensitive), `secret '${sensitive}' leaked in ${themeName}`);
     }
     assert.match(plain, /\[REDACTED\]/, `failed state must show [REDACTED] in ${themeName}`);
@@ -574,7 +573,7 @@ for (const themeFile of ["pi-square-theme-dark.json", "pi-square-theme-light.jso
   const compact = stripVTControlCharacters(new OperationalDisplayComponent(
     {
       version: 1,
-      tool: "delegate",
+      tool: "delegate_subagent",
       family: "agent",
       lifecycle: "running",
       qualifiers: ["partial", "cancelling"],
@@ -626,7 +625,7 @@ for (const themeFile of ["pi-square-theme-dark.json", "pi-square-theme-light.jso
       parameters: { type: "object", properties: {}, additionalProperties: false },
       execute() { return { content: [] }; },
     };
-    const decorated = entry.name.startsWith("subagent_")
+    const decorated = entry.family === "agent"
       ? decorateSubagentTool(definition, () => runtime)
       : decorateInternalTool(definition, () => runtime);
     assert.equal(decorated.renderShell, "self", `${entry.name} must own its render shell`);
@@ -664,7 +663,7 @@ for (const themeFile of ["pi-square-theme-dark.json", "pi-square-theme-light.jso
 // ── 18. C4 revision: every non-mutation collapsed entry is one row ──
 
 {
-  const mutationFamily = new Set(["edit", "replace", "write"]);
+  const mutationFamily = new Set(["edit", "insert", "replace", "write"]);
   const runStates = ["queued", "pending", "running", "completed", "failed", "aborted"];
   for (const entry of DISPLAY_CATALOG) {
     for (const lifecycle of runStates) {
@@ -748,6 +747,450 @@ for (const themeFile of ["pi-square-theme-dark.json", "pi-square-theme-light.jso
   assert.ok(header.includes(darkTheme.fg("success", "\u2713")), "marker uses the success state tone");
   assert.ok(header.includes(darkTheme.fg("toolTitle", darkTheme.bold("Bash"))), "title carries the identity tone");
   assert.ok(header.includes(darkTheme.fg("muted", "npm test")), "target stays neutral");
+}
+
+// ── 21. wait_subagent: production catalog/adapter path (#277) ──
+
+{
+  const waitEntry = DISPLAY_CATALOG.find((entry) => entry.name === "wait_subagent");
+  assert.ok(waitEntry, "wait_subagent must be declared in the display catalog");
+  assert.equal(waitEntry.family, "agent");
+  assert.equal(waitEntry.parent, true);
+  assert.equal(waitEntry.child, false);
+
+  const runtime = new DisplayRuntime(structuredClone(DEFAULT_CONFIG), {
+    environment: { isTTY: true, test: true },
+  });
+  const definition = {
+    name: "wait_subagent",
+    description: "wait",
+    parameters: { type: "object", properties: {}, additionalProperties: false },
+    execute() { return { content: [] }; },
+  };
+  const decorated = decorateSubagentTool(definition, () => runtime);
+  assert.equal(decorated.renderShell, "self", "wait_subagent must own its render shell");
+
+  const ids = [
+    "subagent_11111111-1111-4111-8111-111111111111",
+    "subagent_22222222-2222-4222-8222-222222222222",
+    "subagent_33333333-3333-4333-8333-333333333333",
+  ];
+  const args = { ids };
+  const waitDetails = {
+    version: 1,
+    ids,
+    consumed: true,
+    waitedMs: 2500,
+    results: [
+      {
+        id: ids[0],
+        status: "failed",
+        run: {
+          id: ids[0],
+          operation: "delegate",
+          status: "failed",
+          task: "first selected task",
+          startedAt: 1,
+          endedAt: 2,
+          durationMs: 1,
+          result: "",
+          error: "RAW-FAILURE-9Z7Q first run stopped",
+          usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
+          toolErrors: 0,
+          toolWarnings: 0,
+        },
+      },
+      {
+        id: ids[1],
+        status: "completed",
+        run: {
+          id: ids[1],
+          operation: "delegate",
+          status: "completed",
+          task: "second selected task",
+          startedAt: 1,
+          endedAt: 2,
+          durationMs: 1,
+          result: "COMPLETED-EVIDENCE-4K2P sibling output",
+          usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
+          toolErrors: 0,
+          toolWarnings: 0,
+        },
+      },
+      {
+        id: ids[2],
+        status: "aborted",
+        run: {
+          id: ids[2],
+          operation: "delegate",
+          status: "aborted",
+          task: "third selected task",
+          startedAt: 1,
+          endedAt: 2,
+          durationMs: 1,
+          result: "",
+          error: "RAW-ABORT-6C1M third run was stopped",
+          usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
+          toolErrors: 0,
+          toolWarnings: 0,
+        },
+      },
+    ],
+  };
+
+  function context(overrides = {}) {
+    return {
+      args,
+      toolCallId: "wait-call-1",
+      invalidate() {},
+      lastComponent: undefined,
+      state: {},
+      cwd: root,
+      executionStarted: true,
+      argsComplete: true,
+      isPartial: false,
+      expanded: false,
+      showImages: false,
+      isError: true,
+      ...overrides,
+    };
+  }
+
+  const call = decorated.renderCall(args, darkTheme, context());
+  const resultComponent = decorated.renderResult(
+    { content: [{ type: "text", text: "waited" }], details: waitDetails },
+    { expanded: false, isPartial: false },
+    darkTheme,
+    context({ lastComponent: call }),
+  );
+
+  // Collapsed: exactly one row, ordered counts in the summary, one failure
+  // sentence in the header, and no payload anywhere.
+  const collapsed = stripVTControlCharacters(resultComponent.render(120).join("\n"));
+  assert.match(collapsed, /^× Wait 3 runs/, "collapsed wait keeps the failed fallback marker, title, and selected count");
+  assert.match(collapsed, /2 of 3 selected runs failed or aborted/, "the header carries the one-sentence failure");
+  assert.doesNotMatch(collapsed, /RAW-FAILURE-9Z7Q|COMPLETED-EVIDENCE-4K2P|RAW-ABORT-6C1M/, "collapsed shows no payload");
+  assert.doesNotMatch(collapsed, /\n.*\n/, "a collapsed wait entry is exactly one row");
+
+  // Expanded: the ordered rows plus one bounded evidence section per run;
+  // each failure's raw text appears exactly once, in an Error section.
+  const expanded = decorated.renderResult(
+    { content: [{ type: "text", text: "waited" }], details: waitDetails },
+    { expanded: true, isPartial: false },
+    darkTheme,
+    context({ lastComponent: call, expanded: true }),
+  );
+  const expandedPlain = stripVTControlCharacters(expanded.render(120).join("\n"));
+  const rowIndex = expandedPlain.indexOf("11111111");
+  const secondIndex = expandedPlain.indexOf("22222222");
+  const thirdIndex = expandedPlain.indexOf("33333333");
+  assert.ok(rowIndex >= 0 && secondIndex > rowIndex && thirdIndex > secondIndex, "expanded rows follow requested-ID order");
+  assert.match(expandedPlain, /Results/);
+  assert.match(expandedPlain, /COMPLETED-EVIDENCE-4K2P/, "expanded shows the completed sibling's result evidence");
+  assert.equal(
+    expandedPlain.split("RAW-FAILURE-9Z7Q").length - 1,
+    1,
+    "the failed run's raw text appears exactly once",
+  );
+  assert.equal(
+    expandedPlain.split("RAW-ABORT-6C1M").length - 1,
+    1,
+    "the aborted run's raw text appears exactly once",
+  );
+  const errorHeaderCount = (expandedPlain.match(/Error 11111111/g) ?? []).length
+    + (expandedPlain.match(/Error 33333333/g) ?? []).length;
+  assert.equal(errorHeaderCount, 2, "each failure evidence section is titled with its run");
+
+  for (const width of [40, 63, 80, 120]) {
+    for (const component of [call, expanded]) {
+      const lines = component.render(width);
+      assert.ok(
+        lines.every((line) => visibleWidth(line) <= width),
+        `wait_subagent exceeded ${width} through the production decoration path`,
+      );
+    }
+  }
+
+  // Rejected and interrupted waits keep one human sentence in the collapsed
+  // header and expose the complete raw failure exactly once when expanded.
+  for (const failure of [
+    {
+      name: "validation failure",
+      raw: "Subagent failed: RESULT_CLAIMED\nMessage: RAW-WAIT-CLAIM-4M8Q is already claimed by another wait_subagent call.\nOperation: wait\nRetryable: yes",
+      details: {
+        status: "error",
+        error: {
+          code: "RESULT_CLAIMED",
+          message: "A selected subagent result is already claimed by another wait_subagent call.",
+        },
+      },
+      sentence: /A selected subagent resul/,
+      marker: "RAW-WAIT-CLAIM-4M8Q",
+    },
+    {
+      name: "interruption failure",
+      raw: "Subagent failed: ABORTED\nMessage: RAW-WAIT-INTERRUPT-9T2N claims were released without stopping the selected children.\nOperation: wait\nRetryable: no",
+      details: {
+        status: "error",
+        error: {
+          code: "ABORTED",
+          message: "The wait was interrupted; its claims were released without stopping the selected children.",
+        },
+      },
+      sentence: /The wait was interrup/,
+      marker: "RAW-WAIT-INTERRUPT-9T2N",
+    },
+  ]) {
+    const result = {
+      content: [{ type: "text", text: failure.raw }],
+      details: failure.details,
+      isError: true,
+    };
+    const collapsedFailure = decorated.renderResult(
+      result,
+      { expanded: false, isPartial: false },
+      darkTheme,
+      context({ lastComponent: call }),
+    );
+    const collapsedFailurePlain = stripVTControlCharacters(collapsedFailure.render(120).join("\n"));
+    assert.match(collapsedFailurePlain, /^× Wait 3 runs/, `${failure.name}: the collapsed failure keeps one header row`);
+    assert.match(collapsedFailurePlain, failure.sentence, `${failure.name}: the header states the failure in one sentence`);
+    assert.doesNotMatch(collapsedFailurePlain, new RegExp(failure.marker), `${failure.name}: the collapsed row hides raw failure details`);
+    assert.doesNotMatch(collapsedFailurePlain, /\n.*\n/, `${failure.name}: the collapsed failure is exactly one row`);
+
+    const expandedFailure = decorated.renderResult(
+      result,
+      { expanded: true, isPartial: false },
+      darkTheme,
+      context({ lastComponent: collapsedFailure, expanded: true }),
+    );
+    const expandedFailurePlain = stripVTControlCharacters(expandedFailure.render(120).join("\n"));
+    assert.match(expandedFailurePlain, /Error/, `${failure.name}: expanded output contains the Error evidence section`);
+    assert.equal(
+      expandedFailurePlain.split(failure.marker).length - 1,
+      1,
+      `${failure.name}: raw failure details appear exactly once when expanded`,
+    );
+  }
+}
+
+// ── 22. abort_subagent: production catalog/adapter path (#278) ──
+
+{
+  const abortEntry = DISPLAY_CATALOG.find((entry) => entry.name === "abort_subagent");
+  assert.ok(abortEntry, "abort_subagent must be declared in the display catalog");
+  assert.equal(abortEntry.family, "agent");
+  assert.equal(abortEntry.parent, true);
+  assert.equal(abortEntry.child, false);
+
+  const runtime = new DisplayRuntime(structuredClone(DEFAULT_CONFIG), {
+    environment: { isTTY: true, test: true },
+  });
+  const definition = {
+    name: "abort_subagent",
+    description: "abort",
+    parameters: { type: "object", properties: {}, additionalProperties: false },
+    execute() { return { content: [] }; },
+  };
+  const decorated = decorateSubagentTool(definition, () => runtime);
+  assert.equal(decorated.renderShell, "self", "abort_subagent must own its render shell");
+
+  const ids = [
+    "subagent_11111111-1111-4111-8111-111111111111",
+    "subagent_22222222-2222-4222-8222-222222222222",
+    "subagent_33333333-3333-4333-8333-333333333333",
+  ];
+  const args = { ids };
+  const abortDetails = {
+    version: 1,
+    ids,
+    waitedMs: 800,
+    results: [
+      {
+        id: ids[0],
+        before: "running",
+        status: "aborted",
+        abortApplied: true,
+        reason: "ABORT-REASON-5K3N stopped by request",
+        task: "first stopped task",
+        startedAt: 1,
+        endedAt: 2,
+        durationMs: 1,
+      },
+      {
+        id: ids[1],
+        before: "completed",
+        status: "completed",
+        abortApplied: false,
+        task: "second completed task",
+        startedAt: 1,
+        endedAt: 2,
+        durationMs: 1,
+      },
+      {
+        id: ids[2],
+        before: "failed",
+        status: "failed",
+        abortApplied: false,
+        error: "FAILURE-TEXT-8Q2M earlier failure",
+        task: "third failed task",
+        startedAt: 1,
+        endedAt: 2,
+        durationMs: 1,
+      },
+    ],
+  };
+
+  function context(overrides = {}) {
+    return {
+      args,
+      toolCallId: "abort-call-1",
+      invalidate() {},
+      lastComponent: undefined,
+      state: {},
+      cwd: root,
+      executionStarted: true,
+      argsComplete: true,
+      isPartial: false,
+      expanded: false,
+      showImages: false,
+      isError: false,
+      ...overrides,
+    };
+  }
+
+  const call = decorated.renderCall(args, darkTheme, context());
+  const resultComponent = decorated.renderResult(
+    { content: [{ type: "text", text: "aborted" }], details: abortDetails },
+    { expanded: false, isPartial: false },
+    darkTheme,
+    context({ lastComponent: call }),
+  );
+
+  // Collapsed: exactly one row; a successful abort request is a completed call
+  // whose summary states the truthful outcome counts, with no payload.
+  const collapsed = stripVTControlCharacters(resultComponent.render(120).join("\n"));
+  assert.match(collapsed, /^\u2713 Abort 3 runs/, "a successful abort renders as a completed call with the selected count");
+  assert.match(collapsed, /completed · failed · aborted/, "the inline summary states the outcome counts");
+  assert.doesNotMatch(collapsed, /ABORT-REASON-5K3N|FAILURE-TEXT-8Q2M/, "collapsed shows no payload");
+  assert.doesNotMatch(collapsed, /\n.*\n/, "a collapsed abort entry is exactly one row");
+
+  // Expanded: the ordered target rows plus one evidence section per non-
+  // completed target; each raw text appears exactly once.
+  const expanded = decorated.renderResult(
+    { content: [{ type: "text", text: "aborted" }], details: abortDetails },
+    { expanded: true, isPartial: false },
+    darkTheme,
+    context({ lastComponent: call, expanded: true }),
+  );
+  const expandedPlain = stripVTControlCharacters(expanded.render(120).join("\n"));
+  const firstIndex = expandedPlain.indexOf("11111111");
+  const secondIndex = expandedPlain.indexOf("22222222");
+  const thirdIndex = expandedPlain.indexOf("33333333");
+  assert.ok(firstIndex >= 0 && secondIndex > firstIndex && thirdIndex > secondIndex, "expanded rows follow requested-ID order");
+  assert.match(expandedPlain, /Targets/);
+  assert.equal(expandedPlain.split("ABORT-REASON-5K3N").length - 1, 1, "the abort reason appears exactly once");
+  assert.equal(expandedPlain.split("FAILURE-TEXT-8Q2M").length - 1, 1, "the failure text appears exactly once");
+
+  for (const width of [40, 63, 80, 120]) {
+    for (const component of [call, expanded]) {
+      const lines = component.render(width);
+      assert.ok(
+        lines.every((line) => visibleWidth(line) <= width),
+        `abort_subagent exceeded ${width} through the production decoration path`,
+      );
+    }
+  }
+}
+
+// ── 22b. abort_subagent failure display: one sentence header, raw once ──
+
+{
+  const runtime = new DisplayRuntime(structuredClone(DEFAULT_CONFIG), {
+    environment: { isTTY: true, test: true },
+  });
+  const definition = {
+    name: "abort_subagent",
+    description: "abort",
+    parameters: { type: "object", properties: {}, additionalProperties: false },
+    execute() { return { content: [] }; },
+  };
+  const decorated = decorateSubagentTool(definition, () => runtime);
+  const ids = ["subagent_11111111-1111-4111-8111-111111111111"];
+
+  const failureCases = [
+    {
+      name: "validation failure",
+      raw: "Subagent failed: SUBAGENT_NOT_FOUND\nMessage: Subagent 'subagent_11111111-1111-4111-8111-111111111111' belongs to another parent session; only current-session background runs can be aborted.\nOperation: abort\nRetryable: no\nRetries: 0\nID: subagent_11111111-1111-4111-8111-111111111111\nSuggested action: Use an ID returned by delegate_subagent or resume_subagent in this parent session.",
+      details: { status: "error", error: { code: "SUBAGENT_NOT_FOUND" } },
+      // The header elides a long sentence with middle retention, so the
+      // assertion matches the stable head of the sentence.
+      sentence: /The abort request was re/,
+    },
+    {
+      name: "interruption failure",
+      raw: "Subagent failed: ABORTED\nMessage: abort_subagent was interrupted before every selected active target reached a terminal state, so their final states were not observed; every abort signal already sent stays in effect and the runs continue to stop on their own.\nOperation: abort\nRetryable: no\nRetries: 0\nSuggested action: Check the /subagent manager or the background status for the final states instead of calling abort_subagent again.",
+      details: { status: "error", error: { code: "ABORTED" } },
+      sentence: /The abort wait ended/,
+    },
+  ];
+
+  for (const failure of failureCases) {
+    const result = {
+      content: [{ type: "text", text: failure.raw }],
+      details: failure.details,
+      isError: true,
+    };
+    const context = (overrides = {}) => ({
+      args: { ids },
+      toolCallId: `abort-fail-${failure.name}`,
+      invalidate() {},
+      lastComponent: undefined,
+      state: {},
+      cwd: root,
+      executionStarted: true,
+      argsComplete: true,
+      isPartial: false,
+      expanded: false,
+      showImages: false,
+      isError: true,
+      ...overrides,
+    });
+
+    const collapsed = decorated.renderResult(
+      result,
+      { expanded: false, isPartial: false },
+      darkTheme,
+      context(),
+    );
+    const collapsedPlain = stripVTControlCharacters(collapsed.render(120).join("\n"));
+    assert.match(collapsedPlain, /^× Abort 11111111/, `${failure.name}: the collapsed failure keeps the failed marker, title, and target`);
+    assert.match(collapsedPlain, failure.sentence, `${failure.name}: the header carries the one-sentence summary`);
+    assert.doesNotMatch(collapsedPlain, /Operation: abort|Suggested action/, `${failure.name}: the collapsed row never leaks the raw failure text`);
+    assert.doesNotMatch(collapsedPlain, /\n.*\n/, `${failure.name}: a collapsed failure is exactly one row`);
+
+    const expanded = decorated.renderResult(
+      result,
+      { expanded: true, isPartial: false },
+      darkTheme,
+      context({ lastComponent: collapsed, expanded: true }),
+    );
+    const expandedPlain = stripVTControlCharacters(expanded.render(120).join("\n"));
+    assert.match(expandedPlain, /Error/, `${failure.name}: the expanded body carries an Error section`);
+    assert.equal(
+      expandedPlain.split("Operation: abort").length - 1,
+      1,
+      `${failure.name}: the raw failure text appears exactly once`,
+    );
+
+    for (const width of [40, 63, 80, 120]) {
+      const lines = expanded.render(width);
+      assert.ok(
+        lines.every((line) => visibleWidth(line) <= width),
+        `${failure.name}: expanded failure exceeded ${width} through the production decoration path`,
+      );
+    }
+  }
 }
 
 console.log("visual acceptance tests: OK");

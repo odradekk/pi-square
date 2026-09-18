@@ -1,0 +1,1146 @@
+import type { ExtensionContext, Theme, ThemeColor } from "@earendil-works/pi-coding-agent";
+import { matchesKey, truncateToWidth, visibleWidth, type Component } from "@earendil-works/pi-tui";
+import { isOwnedInputSurfaceActive } from "../core/input-surface";
+import type { DisplayRuntime } from "../display/runtime";
+import { listBackgroundJobs, subscribeBackgroundState, type BackgroundJobStore } from "./background";
+import { sanitizeSubagentDisplay } from "./display";
+import {
+  createChildTranscriptRegistry,
+  defaultPaintTimers,
+  LIVE_REPAINT_COALESCE_MS,
+  type ChildTranscript,
+  type ChildTranscriptRegistry,
+  type PaintTimers,
+} from "./transcript";
+import { latestRosterToolCallSummary } from "./tool-display";
+import type { BackgroundJobSnapshot } from "./run-types";
+import {
+  childOverlayOptions,
+  type ChildOverlayModel,
+  type ChildReadingState,
+  ChildTranscriptOverlay,
+} from "./viewer";
+
+export const SUBAGENT_ROSTER_KEY = "pi-square.subagents.roster";
+
+/** Public-ID prefixes start at eight characters and extend only to disambiguate. */
+const MIN_ID_PREFIX = 8;
+/** Child rows shown at normal terminal heights. */
+const MAX_ROSTER_ROWS = 10;
+/** Floor for the row budget so even very short terminals keep the roster legible. */
+const MIN_ROSTER_ROWS = 2;
+/**
+ * Duration refresh cadence while any current-parent child is still active.
+ * Ticks come from the display runtime's session motion scheduler, so `off`
+ * motion and downgraded environments never tick at all; a `full`-motion
+ * scheduler fires faster and the roster throttles its publishes to this rate.
+ */
+const ROSTER_TICK_MS = 1_000;
+
+const ACTIVE_STATUSES = new Set<BackgroundJobSnapshot["status"]>(["queued", "running", "cancelling"]);
+
+/** Motion source the roster subscribes to; satisfied by the display runtime. */
+export interface RosterMotion {
+  readonly subscribe: (listener: () => void) => () => void;
+}
+
+interface WidgetTui {
+  terminal: { rows: number };
+}
+
+/** One projected roster row: a sanitized, read-only view of a background child. */
+export interface RosterRow {
+  id: string;
+  role: string;
+  status: BackgroundJobSnapshot["status"];
+  createdAt: number;
+  startedAt: number;
+  endedAt?: number;
+  activity: string;
+}
+
+export function rosterRowBudget(terminalRows: number): number {
+  return Math.min(MAX_ROSTER_ROWS, Math.max(MIN_ROSTER_ROWS, Math.floor(Math.max(1, terminalRows) * 0.3)));
+}
+
+export function formatRosterDuration(milliseconds: number): string {
+  const totalSeconds = Math.max(0, Math.floor(milliseconds / 1_000));
+  if (totalSeconds < 60) return `${totalSeconds}s`;
+  const minutes = Math.floor(totalSeconds / 60);
+  if (minutes < 60) return `${minutes}m ${String(totalSeconds % 60).padStart(2, "0")}s`;
+  const hours = Math.floor(minutes / 60);
+  return `${hours}h ${String(minutes % 60).padStart(2, "0")}m`;
+}
+
+function rosterId(id: string): string {
+  return sanitizeSubagentDisplay(id).replace(/^subagent_/, "");
+}
+
+/**
+ * Collision-safe ID prefixes for the current roster: eight characters by
+ * default, extended to the shortest value that is unique among the displayed
+ * set. Selection and ordering stay keyed by the complete public ID; the prefix
+ * is presentation only.
+ */
+export function uniqueRosterIdPrefixes(ids: readonly string[]): Map<string, string> {
+  const entries = ids.map((id) => ({ id, clean: rosterId(id) }));
+  const prefixes = new Map<string, string>();
+  for (const entry of entries) {
+    const others = entries.filter((candidate) => candidate.id !== entry.id);
+    let length = MIN_ID_PREFIX;
+    while (length < entry.clean.length
+      && others.some((other) => other.clean.slice(0, length) === entry.clean.slice(0, length))) {
+      length += 1;
+    }
+    prefixes.set(entry.id, entry.clean.slice(0, length));
+  }
+  return prefixes;
+}
+
+/**
+ * Candidate labels for one over-budget prefix, most descriptive first. The
+ * conventional head/tail forms win when they distinguish the row; raw slices
+ * are a narrow-width fallback for peers whose visible heads and tails match.
+ */
+function candidateLabels(points: readonly string[], budget: number): string[] {
+  const labels: string[] = [];
+  const seen = new Set<string>();
+  const add = (label: string) => {
+    if (label !== "" && visibleWidth(label) <= budget && !seen.has(label)) {
+      seen.add(label);
+      labels.push(label);
+    }
+  };
+  const maxHead = Math.min(MIN_ID_PREFIX, budget - 1);
+  for (let head = maxHead; head >= 1; head -= 1) {
+    const tail = budget - head - 1;
+    add(`${points.slice(0, head).join("")}…${points.slice(Math.max(0, points.length - tail)).join("")}`);
+  }
+  for (let tail = budget - 1; tail >= 1; tail -= 1) {
+    add(`…${points.slice(points.length - tail).join("")}`);
+  }
+  for (let start = 0; start < points.length; start += 1) {
+    add(points.slice(start, start + budget).join(""));
+  }
+  return labels;
+}
+
+/**
+ * Fits all visible prefixes together. A small augmenting-path assignment
+ * avoids a greedy early choice taking the only distinguishing label available
+ * to a later peer. Full prefixes that already fit are kept verbatim.
+ */
+function fitRosterIdLabels(prefixes: readonly string[], budgets: readonly number[]): string[] {
+  const labels = new Array<string>(prefixes.length);
+  const owners = new Map<string, number>();
+  const locked = new Set<number>();
+
+  for (const [index, prefix] of prefixes.entries()) {
+    if (visibleWidth(prefix) <= budgets[index]!) {
+      labels[index] = prefix;
+      owners.set(prefix, index);
+      locked.add(index);
+    }
+  }
+
+  const candidates = prefixes.map((prefix, index) => (
+    candidateLabels(Array.from(prefix), budgets[index]!)
+      .filter((candidate) => !owners.has(candidate))
+  ));
+  const claim = (index: number, visited: Set<string>): boolean => {
+    for (const candidate of candidates[index]!) {
+      if (visited.has(candidate)) continue;
+      visited.add(candidate);
+      const owner = owners.get(candidate);
+      if (owner === undefined || (!locked.has(owner) && claim(owner, visited))) {
+        owners.set(candidate, index);
+        labels[index] = candidate;
+        return true;
+      }
+    }
+    return false;
+  };
+
+  for (const [index, prefix] of prefixes.entries()) {
+    if (locked.has(index)) continue;
+    if (!claim(index, new Set())) labels[index] = truncateToWidth(prefix, budgets[index]!, "…");
+  }
+  return labels;
+}
+
+const LIFECYCLE_TONES: Record<BackgroundJobSnapshot["status"], ThemeColor> = {
+  queued: "muted",
+  running: "accent",
+  cancelling: "warning",
+  completed: "success",
+  failed: "error",
+  aborted: "muted",
+};
+
+const LIFECYCLE_LABELS: Record<BackgroundJobSnapshot["status"], string> = {
+  queued: "– queued",
+  running: "● running",
+  cancelling: "× cancelling",
+  completed: "✓ completed",
+  failed: "✗ failed",
+  aborted: "× aborted",
+};
+
+function lifecycleText(theme: Theme, status: BackgroundJobSnapshot["status"]): string {
+  return theme.fg(LIFECYCLE_TONES[status], LIFECYCLE_LABELS[status]);
+}
+
+/**
+ * One physical roster row. Width pressure removes the latest activity, then
+ * the duration, then truncates the role, while the selection marker, the
+ * unique ID label, and the lifecycle always survive — the ID label is fitted
+ * to the row's own budget before composition, so the lifecycle can never be
+ * squeezed off the line.
+ */
+function renderRosterRow(
+  theme: Theme,
+  row: RosterRow,
+  idPrefix: string,
+  width: number,
+  now: number,
+  focused: boolean,
+): string {
+  const safeWidth = Math.max(1, width);
+  const marker = theme.fg("muted", "○");
+  const lifecycle = LIFECYCLE_LABELS[row.status];
+  const roleWidth = visibleWidth(row.role);
+  const idWidth = visibleWidth(idPrefix);
+  const lifecycleWidth = visibleWidth(lifecycle);
+  const separatorWidth = visibleWidth(" · ");
+
+  const coreWidth = visibleWidth("○ ") + roleWidth + visibleWidth(" ") + idWidth + visibleWidth(" ") + lifecycleWidth;
+  const duration = row.status === "queued" || row.status === "running" || row.status === "cancelling"
+    ? formatRosterDuration(now - row.startedAt)
+    : formatRosterDuration((row.endedAt ?? row.startedAt) - row.startedAt);
+  const durationWidth = duration ? separatorWidth + visibleWidth(duration) : 0;
+  const activityWidth = row.activity ? separatorWidth + visibleWidth(row.activity) : 0;
+
+  let showDuration = durationWidth > 0;
+  let showActivity = activityWidth > 0;
+  if (coreWidth + durationWidth + activityWidth > safeWidth) showActivity = false;
+  if (showDuration && coreWidth + durationWidth > safeWidth) showDuration = false;
+
+  let role = row.role;
+  if (coreWidth > safeWidth) {
+    const roleBudget = safeWidth
+      - (visibleWidth("○ ") + visibleWidth(" ") + idWidth + visibleWidth(" ") + lifecycleWidth);
+    role = roleBudget >= 1 ? truncateToWidth(row.role, roleBudget, "…") : "";
+  }
+
+  const parts = [focused ? theme.fg("accent", "●") : marker];
+  if (role) parts.push(theme.fg("accent", role));
+  parts.push(theme.fg("dim", idPrefix), lifecycleText(theme, row.status));
+  let line = parts.join(" ");
+  if (showDuration) line += theme.fg("dim", ` · ${duration}`);
+  if (showActivity) line += theme.fg("dim", " · ") + theme.fg("text", row.activity);
+  return truncateToWidth(line, safeWidth, "…");
+}
+
+export interface RosterRenderOptions {
+  width: number;
+  rowBudget: number;
+  now: number;
+  /** Complete public ID of the keyboard candidate or open child, if any. */
+  focusId?: string;
+  /** First visible row index; the controller keeps the focus row on screen. */
+  start?: number;
+}
+
+/** Renders the vertical child roster: one line per visible row plus accounting. */
+export function renderSubagentRoster(
+  theme: Theme,
+  rows: readonly RosterRow[],
+  options: RosterRenderOptions,
+): string[] {
+  if (rows.length === 0) return [];
+  const safeWidth = Math.max(1, options.width);
+  const budget = Math.max(1, options.rowBudget);
+  const prefixes = uniqueRosterIdPrefixes(rows.map((row) => row.id));
+  const maxStart = Math.max(0, rows.length - budget);
+  let start = Math.min(Math.max(0, options.start ?? 0), maxStart);
+  // The controller resolves the window at publish time, but a height-only
+  // resize changes the budget without a new publication. Re-anchor on the
+  // focus row here, under the budget this render actually uses, so the solid
+  // marker can never leave the window.
+  const focusIndex = options.focusId !== undefined
+    ? rows.findIndex((row) => row.id === options.focusId)
+    : -1;
+  if (focusIndex >= 0) {
+    if (focusIndex < start) start = focusIndex;
+    else if (focusIndex >= start + budget) start = focusIndex - budget + 1;
+    start = Math.min(Math.max(0, start), maxStart);
+  }
+  const visibleRows = rows.slice(start, start + budget);
+  const fullPrefixes = visibleRows.map((row) => prefixes.get(row.id) ?? rosterId(row.id));
+  const idBudgets = visibleRows.map((row) => {
+    const lifecycleWidth = visibleWidth(LIFECYCLE_LABELS[row.status]);
+    return Math.max(1, safeWidth - lifecycleWidth - visibleWidth("○ ") - visibleWidth(" "));
+  });
+  const labels = fitRosterIdLabels(fullPrefixes, idBudgets);
+
+  const lines = visibleRows
+    .map((row, index) => {
+      // The ID label never widens past the space left beside the lifecycle,
+      // so the core of the row always fits and the lifecycle survives. The
+      // floor composition is marker + space + ID + space + lifecycle; a role
+      // truncates away before the ID label does.
+      return renderRosterRow(theme, row, labels[index]!, safeWidth, options.now, row.id === options.focusId);
+    });
+  // A scrolled window states what lies above it; the trailing line keeps the
+  // established `… +N more` accounting for what lies below.
+  if (start > 0) lines.unshift(truncateToWidth(theme.fg("dim", `… +${start} earlier`), safeWidth, "…"));
+  const hidden = rows.length - Math.min(rows.length, start + budget);
+  if (hidden > 0) lines.push(truncateToWidth(theme.fg("dim", `… +${hidden} more`), safeWidth, "…"));
+  return lines;
+}
+
+/**
+ * The roster widget component. The projection is immutable per publication, so
+ * rendered lines cache by width and terminal height like the other pi-square
+ * frame components; the row budget shrinks on a height-only resize.
+ */
+export function createSubagentRosterWidget(
+  tui: WidgetTui,
+  theme: Theme,
+  rows: readonly RosterRow[],
+  now: number,
+  focusId?: string,
+  start?: number,
+): Component {
+  let cache: { width: number; rows: number; lines: string[] } | undefined;
+  return {
+    render(width: number): string[] {
+      const terminalRows = Math.max(1, tui.terminal.rows);
+      if (cache && cache.width === width && cache.rows === terminalRows) return cache.lines;
+      const lines = renderSubagentRoster(theme, rows, {
+        width,
+        rowBudget: rosterRowBudget(terminalRows),
+        now,
+        ...(focusId !== undefined ? { focusId } : {}),
+        ...(start !== undefined ? { start } : {}),
+      });
+      cache = { width, rows: terminalRows, lines };
+      return lines;
+    },
+    invalidate(): void {
+      cache = undefined;
+    },
+  };
+}
+
+function rosterRole(job: BackgroundJobSnapshot): string {
+  return sanitizeSubagentDisplay(job.details.agent?.name ?? "generic").replace(/\s+/g, " ").trim() || "generic";
+}
+
+function rosterActivity(job: BackgroundJobSnapshot): string {
+  // Latest activity is the shared allowlisted tool-call summary: argument
+  // labels only, never tool-result bodies. A terminal child that never called
+  // a tool has no activity to show — its lifecycle already tells the story.
+  const terminal = !ACTIVE_STATUSES.has(job.status);
+  return latestRosterToolCallSummary(job.details.timeline, terminal ? "" : "working");
+}
+
+/**
+ * Error payloads can contain provider identifiers, credentials, or artifact
+ * paths in shapes a best-effort text sanitizer cannot recognize. Empty
+ * terminal views therefore derive their reason only from the closed error-code
+ * vocabulary and lifecycle, never from `details.error`, `message`, or `cause`.
+ */
+function rosterFailureReason(job: BackgroundJobSnapshot): string {
+  if (job.status === "aborted") return "Child run was aborted";
+  switch (job.details.errorInfo?.code) {
+    case "AUTH_FAILED": return "Child authentication failed";
+    case "CONTEXT_TOO_LARGE": return "Child prompt exceeded the model context";
+    case "RETRY_EXHAUSTED": return "Child model retries were exhausted";
+    case "PERSISTENCE_FAILED": return "Child run state could not be saved";
+    case "SESSION_HISTORY_UNAVAILABLE": return "Child session history was unavailable";
+    default: return "Child execution failed";
+  }
+}
+
+export interface SubagentRosterController {
+  start(ctx: ExtensionContext): void;
+  stop(): void;
+  refresh(): void;
+  /**
+   * One real prompt was submitted to main (#308): interactive or rpc input,
+   * never an extension continuation. Advances the session-scoped main-task
+   * visibility epoch so the preceding task's ordinary terminal rows expire,
+   * while active rows survive and join the new epoch when they terminalize.
+   */
+  advanceMainTaskEpoch(): void;
+}
+
+export interface SubagentRosterOptions {
+  readonly now?: () => number;
+  /** Display runtime used by transcript tool rows and, by default, ticking. */
+  readonly display?: () => Pick<DisplayRuntime, "createComponent" | "subscribeMotion"> | undefined;
+  /**
+   * Session motion source, resolved at each start so a session replacement
+   * that rebuilds the display runtime is followed; when absent or undefined
+   * the roster never ticks on its own.
+   */
+  readonly motion?: () => RosterMotion | undefined;
+  /**
+   * Timer seam for the live overlay repaint (#306): one pending coalesced
+   * repaint at most, injected as a clock in tests.
+   */
+  readonly timers?: PaintTimers;
+}
+
+/**
+ * Session-scoped projection of the background job store into the roster
+ * widget, plus the keyboard seam over it: exact-empty-editor Up/Down select a
+ * read-only child candidate, Enter opens the child transcript overlay, and
+ * ordinary input returns to the native editor untouched (#304). The store
+ * stays the lifecycle source of truth: the controller adds no durable state,
+ * no retention exemption, and no delivery interaction, and opening or viewing
+ * a child is observational only.
+ *
+ * Since #306 an open overlay is live: the transcript module's registry
+ * forwards the observed child's ephemeral view feed into its tail, this
+ * controller subscribes to the module-originated changes while the overlay
+ * is open and repaints structural changes immediately and ordinary streaming
+ * deltas through the one coalesced repaint timer it owns, keeps the open
+ * title's lifecycle truthful across transitions, and unsubscribes plus
+ * cancels the timer on overlay close and session teardown. A subscriber
+ * defect is contained by the module as one bounded overlay diagnostic and
+ * never reaches the child.
+ *
+ * Since #308 the projection is also main-task scoped: the controller tracks a
+ * session-scoped visibility epoch that advances on each real prompt submitted
+ * to main. Ordinary terminal rows of the preceding task expire from the
+ * roster at that boundary, active rows survive it and join the current epoch
+ * when they later terminalize, and a resumed public ID becomes visible again
+ * the moment it is re-queued. The epoch is presentation state only — the
+ * background store keeps its finished-job compaction and delivery exemptions
+ * as the single retention authority, and the manager still owns historical
+ * inspection.
+ */
+export function createSubagentRosterController(
+  state: BackgroundJobStore,
+  options: SubagentRosterOptions = {},
+): SubagentRosterController {
+  const now = options.now ?? Date.now;
+  let display: Pick<DisplayRuntime, "createComponent" | "subscribeMotion"> | undefined;
+  let motion: RosterMotion | undefined;
+  let context: ExtensionContext | undefined;
+  let parentSessionId = "";
+  let unsubscribe: (() => void) | undefined;
+  let unsubscribeInput: (() => void) | undefined;
+  let motionUnsubscribe: (() => void) | undefined;
+  let lastPublishAt = -Infinity;
+  /** Unconfirmed keyboard candidate over the roster; keyed by complete public ID. */
+  let candidateId: string | undefined;
+  /** Child whose transcript overlay currently owns input; keyed by public ID. */
+  let openId: string | undefined;
+  /** Resolves the pending `ui.custom` promise and removes the overlay. */
+  let closeOverlay: (() => void) | undefined;
+  /** Component reference retained independently so a rejected custom promise can dispose it. */
+  let activeOverlay: ChildTranscriptOverlay | undefined;
+  /** TUI of the open overlay, used only to request coalesced live repaints. */
+  let openTui: { requestRender(): void } | undefined;
+  /** Module-owned transcript of the open child; the catch-up and paint seam. */
+  let openTranscript: ChildTranscript | undefined;
+  /** Transcript change subscription driving the open child's repaints (#306). */
+  let unsubscribeLive: (() => void) | undefined;
+  /** Lifecycle status last pushed into the open overlay, to detect transitions. */
+  let openModelStatus: BackgroundJobSnapshot["status"] | undefined;
+  /**
+   * Session-scoped transcript registry (#371): owns pager construction,
+   * per-child retention, and the observed child's live feed forwarding. It
+   * resolves the session feed at each observation move, so teardown releasing
+   * it and the next session's observations follow the replacement generation
+   * the registrar installs before each start (#306).
+   */
+  const transcripts: ChildTranscriptRegistry = createChildTranscriptRegistry({ feed: () => state.viewFeed, now });
+  const timers = options.timers ?? defaultPaintTimers;
+  /** The one session-owned live repaint timer; at most one is ever pending. */
+  let paintTimer: unknown;
+  let lastPaintAt = -Infinity;
+
+  /**
+   * Main-task visibility epoch (#308): 1 for the session's first task, one
+   * more for each real prompt submitted to main. Session-scoped presentation
+   * state only — never persisted, and reset by teardown together with the
+   * rest of the controller.
+   */
+  let taskEpoch = 1;
+  /**
+   * Epoch in which each terminal child last terminalized, keyed by public
+   * ID. A row stays visible while its recorded epoch is current; active
+   * children carry no entry and never expire.
+   */
+  const terminalEpochs = new Map<string, number>();
+  const cancelLivePaint = () => {
+    if (paintTimer !== undefined) {
+      timers.clearTimeout(paintTimer);
+      paintTimer = undefined;
+    }
+  };
+
+  const paintOpenOverlay = () => {
+    lastPaintAt = now();
+    try {
+      openTui?.requestRender();
+    } catch {
+      // Repaint requests are best-effort; the next frame retries.
+    }
+  };
+
+  /**
+   * Live repaint scheduling (#306): structural events render immediately,
+   * ordinary streaming deltas coalesce to at most one repaint per window and
+   * share the single pending timer with any structural flush.
+   */
+  const scheduleLivePaint = (structural: boolean) => {
+    if (structural) {
+      cancelLivePaint();
+      paintOpenOverlay();
+      return;
+    }
+    if (paintTimer !== undefined) return;
+    const remaining = LIVE_REPAINT_COALESCE_MS - (now() - lastPaintAt);
+    if (remaining <= 0) {
+      paintOpenOverlay();
+      return;
+    }
+    paintTimer = timers.setTimeout(() => {
+      paintTimer = undefined;
+      paintOpenOverlay();
+    }, remaining);
+  };
+
+  const detachOpenTranscript = () => {
+    unsubscribeLive?.();
+    unsubscribeLive = undefined;
+    cancelLivePaint();
+    openTui = undefined;
+    openModelStatus = undefined;
+    openTranscript = undefined;
+  };
+
+  /** Drops only the transcript paint subscription; the overlay stays open (#307). */
+  const detachTranscriptPaint = () => {
+    unsubscribeLive?.();
+    unsubscribeLive = undefined;
+  };
+
+  /**
+   * Subscribes the repaint scheduling to the open child's module-originated
+   * changes (#306, #307): structural changes render at their first flush and
+   * ordinary streaming deltas coalesce through the one timer above. The
+   * module contains a broken view listener as the bounded diagnostic row.
+   * This listener binds before the overlay does (and re-binds before it on a
+   * switch): the module notifies subscribers in subscription order and stops
+   * at the first throw, so a throwing view listener must never starve the
+   * repaint scheduling that follows it.
+   */
+  const attachTranscriptPaint = (transcript: ChildTranscript) => {
+    detachTranscriptPaint();
+    unsubscribeLive = transcript.subscribe((change) => {
+      try {
+        scheduleLivePaint(change.structural);
+      } catch {
+        // A presentation refresh defect must never escape the transcript.
+      }
+    });
+  };
+  let viewportStart = 0;
+  let tuiRef: WidgetTui | undefined;
+  const stopMotion = () => {
+    motionUnsubscribe?.();
+    motionUnsubscribe = undefined;
+  };
+
+  const ensureMotion = () => {
+    if (motionUnsubscribe !== undefined || !motion) return;
+    motionUnsubscribe = motion.subscribe(() => {
+      try {
+        // A full-motion scheduler fires at 120 ms; the roster republishes at
+        // most once per duration cadence. An off-motion scheduler never fires.
+        if (now() - lastPublishAt < ROSTER_TICK_MS) return;
+        refresh();
+      } catch {
+        // A presentation refresh defect must never escape the scheduler.
+      }
+    });
+  };
+
+  // Only children of the current parent session: jobs an earlier parent
+  // session left in-process are as foreign as persisted history on disk.
+  const rosterJobs = () => listBackgroundJobs(state)
+    .filter((job) => parentSessionId !== "" && job.details.lastParentSessionId === parentSessionId);
+
+  /**
+   * Current-task roster membership (#308): every current-parent job that is
+   * still active or terminalized inside the current visibility epoch. The
+   * store's synchronous change notification means each terminalization is
+   * observed inside the epoch it happened in; entries whose job left the
+   * store leave with it, because compaction — not this map — owns retention.
+   * The map is therefore bounded by the store's own retained set.
+   */
+  const visibleRosterJobs = (): BackgroundJobSnapshot[] => {
+    const jobs = rosterJobs();
+    for (const job of jobs) {
+      if (ACTIVE_STATUSES.has(job.status)) {
+        // A re-queued (resumed) public ID is active again; it joins the
+        // current epoch whenever it next terminalizes.
+        terminalEpochs.delete(job.id);
+      } else if (!terminalEpochs.has(job.id)) {
+        terminalEpochs.set(job.id, taskEpoch);
+      }
+    }
+    for (const id of [...terminalEpochs.keys()]) {
+      if (!jobs.some((job) => job.id === id)) terminalEpochs.delete(id);
+    }
+    return jobs.filter((job) => ACTIVE_STATUSES.has(job.status) || terminalEpochs.get(job.id) === taskEpoch);
+  };
+
+  // The background store owns immutable creation time for every retained
+  // public ID; the full ID only breaks an exact tie.
+  const rosterRows = (jobs: readonly BackgroundJobSnapshot[]): RosterRow[] => jobs
+    .map((job): RosterRow => ({
+      id: job.id,
+      role: rosterRole(job),
+      status: job.status,
+      createdAt: job.createdAt,
+      startedAt: job.details.startedAt,
+      endedAt: job.details.endedAt,
+      activity: rosterActivity(job),
+    }))
+    .sort((left, right) => (
+      left.createdAt - right.createdAt
+      || (left.id < right.id ? -1 : left.id > right.id ? 1 : 0)
+    ));
+
+  // While a tentative candidate exists it owns the solid marker (#307); the
+  // open child keeps it otherwise.
+  const focusId = () => candidateId ?? openId;
+
+  /**
+   * Per-child retained reading state (#307), keyed by complete public ID. The
+   * module's registry owns the transcripts themselves; this map keeps only
+   * the controller's scroll, follow, notice, and tool-expansion state.
+   */
+  const childEntries = new Map<string, ChildReadingState>();
+
+  /** Shifts the visible window the minimum needed to keep the focus row on screen. */
+  const followViewport = (rows: readonly RosterRow[]) => {
+    const terminalRows = tuiRef ? Math.max(1, tuiRef.terminal.rows) : 0;
+    if (terminalRows < 1) {
+      viewportStart = 0;
+      return;
+    }
+    const budget = rosterRowBudget(terminalRows);
+    const maxStart = Math.max(0, rows.length - budget);
+    const focus = focusId();
+    const focusIndex = focus === undefined ? -1 : rows.findIndex((row) => row.id === focus);
+    if (focusIndex >= 0) {
+      if (focusIndex < viewportStart) viewportStart = focusIndex;
+      else if (focusIndex >= viewportStart + budget) viewportStart = focusIndex - budget + 1;
+    }
+    viewportStart = Math.min(Math.max(0, viewportStart), maxStart);
+  };
+
+  /**
+   * Keeps the open overlay's lifecycle truthful while it stays open (#306):
+   * every transition of the viewed child — including terminalization — updates
+   * the title and state line, a terminal transition performs one final
+   * bounded history catch-up through the module (a changed window notifies,
+   * so the view refreshes through its own subscription), and the change
+   * renders immediately. A presentation defect here is contained like every
+   * refresh failure.
+   */
+  const pushOpenOverlayLifecycle = (jobs: readonly BackgroundJobSnapshot[]) => {
+    const overlay = activeOverlay;
+    if (overlay === undefined || openId === undefined) return;
+    const job = jobs.find((candidate) => candidate.id === openId);
+    if (!job || openModelStatus === job.status) return;
+    openModelStatus = job.status;
+    const status = job.status;
+    const failureReason = status === "failed" || status === "aborted" ? rosterFailureReason(job) : undefined;
+    try {
+      overlay.updateLifecycle({
+        status,
+        lifecycleLabel: LIFECYCLE_LABELS[status],
+        lifecycleTone: LIFECYCLE_TONES[status],
+        durationText: formatRosterDuration(
+          ACTIVE_STATUSES.has(status)
+            ? now() - job.details.startedAt
+            : (job.details.endedAt ?? job.details.startedAt) - job.details.startedAt,
+        ),
+        ...(failureReason ? { failureReason } : {}),
+      });
+      if (!ACTIVE_STATUSES.has(status)) openTranscript?.reconcileNewer(8);
+    } catch {
+      // The overlay stays observational; a rendering defect stays contained.
+    }
+    scheduleLivePaint(true);
+  };
+
+  const refresh = () => {
+    if (!context?.hasUI || context.mode !== "tui") return;
+    // The overlay's lifecycle truth tracks the full store: a viewed child
+    // keeps updating even after its roster row expired with a previous main
+    // task (#308).
+    const jobs = rosterJobs();
+    const rows = rosterRows(visibleRosterJobs());
+
+    // Reading state and the module-owned transcripts are retained only for
+    // children the roster still shows and the one still open (#307). The
+    // pruning runs in every branch: expiry that empties the roster (#308)
+    // must drop the retained views of children that left with the preceding
+    // task, so a later same-ID row starts fresh.
+    for (const id of childEntries.keys()) {
+      if (id !== openId && !rows.some((row) => row.id === id)) {
+        childEntries.delete(id);
+        transcripts.release(id);
+      }
+    }
+
+    if (rows.length === 0) {
+      stopMotion();
+      candidateId = undefined;
+      syncOverlayCandidate([]);
+      context.ui.setWidget(SUBAGENT_ROSTER_KEY, undefined);
+      return;
+    }
+
+    // Resolve the effective focus before the window moves: a candidate whose
+    // row left the store must not steer the viewport away from the open child
+    // it falls back to.
+    if (candidateId !== undefined
+      && candidateId !== openId
+      && !rows.some((row) => row.id === candidateId)) {
+      candidateId = undefined;
+    }
+
+    followViewport(rows);
+    pushOpenOverlayLifecycle(jobs);
+    syncOverlayCandidate(rows);
+    const focus = focusId();
+    const snapshotAt = now();
+    lastPublishAt = snapshotAt;
+    context.ui.setWidget(
+      SUBAGENT_ROSTER_KEY,
+      (tui, theme) => {
+        tuiRef = tui;
+        return createSubagentRosterWidget(tui, theme, rows, snapshotAt, focus, viewportStart);
+      },
+      { placement: "aboveEditor" },
+    );
+    // Only still-active children have a moving duration; a settled roster
+    // keeps its final timestamps without ticking.
+    if (jobs.some((job) => ACTIVE_STATUSES.has(job.status))) ensureMotion();
+    else stopMotion();
+  };
+
+  const editorText = (): string => {
+    if (!context || typeof context.ui.getEditorText !== "function") return "\u0000";
+    return context.ui.getEditorText();
+  };
+
+  const clearCandidate = () => {
+    if (candidateId === undefined) return;
+    candidateId = undefined;
+    refresh();
+  };
+
+  const moveCandidate = (delta: number, rows: readonly RosterRow[]) => {
+    if (rows.length === 0) return;
+    // A candidate that no longer has a row (the child left the store between
+    // key presses) counts as no candidate, so entry semantics apply again:
+    // first Down selects the first child, first Up the last. Movement clamps
+    // at both ends and never wraps.
+    const found = candidateId === undefined ? -1 : rows.findIndex((row) => row.id === candidateId);
+    const next = found < 0
+      ? (delta > 0 ? 0 : rows.length - 1)
+      : Math.min(rows.length - 1, Math.max(0, found + delta));
+    candidateId = rows[next]?.id ?? candidateId;
+    refresh();
+  };
+
+  /**
+   * Builds the open-child model from the current job snapshot and the child's
+   * module-retained transcript, so a direct switch restores the loaded window
+   * and reading position rather than restarting at the tail (#307, #371).
+   */
+  const buildOverlayModel = (job: BackgroundJobSnapshot, transcript: ChildTranscript): ChildOverlayModel => {
+    const rows = rosterRows(visibleRosterJobs());
+    const prefixes = uniqueRosterIdPrefixes(rows.map((row) => row.id));
+    const failureReason = job.status === "failed" || job.status === "aborted"
+      ? rosterFailureReason(job)
+      : "";
+    return {
+      role: rosterRole(job),
+      id: job.id,
+      idLabel: prefixes.get(job.id) ?? rosterId(job.id),
+      lifecycleLabel: LIFECYCLE_LABELS[job.status],
+      lifecycleTone: LIFECYCLE_TONES[job.status],
+      status: job.status,
+      durationText: formatRosterDuration(
+        ACTIVE_STATUSES.has(job.status)
+          ? now() - job.details.startedAt
+          : (job.details.endedAt ?? job.details.startedAt) - job.details.startedAt,
+      ),
+      ...(failureReason ? { failureReason } : {}),
+      transcript,
+    };
+  };
+
+  /**
+   * Re-points the open overlay at another child (#307): the same overlay
+   * handle switches content in place — no stacking, no pass through main —
+   * while each child keeps its own module-retained transcript, scroll
+   * position, follow state, and tool-expansion state. The registry moves the
+   * single live observation to the new child and ends the previous one's feed
+   * subscription; an unobserved child retained no live events, so its tail
+   * restarts from the persisted window.
+   */
+  const switchChildOverlay = (id: string) => {
+    const overlay = activeOverlay;
+    if (overlay === undefined || openId === undefined || openId === id) return;
+    const jobs = rosterJobs();
+    const job = jobs.find((candidate) => candidate.id === id);
+    if (!job) return;
+
+    const previous = childEntries.get(openId);
+    const captured = overlay.captureViewState();
+    if (previous !== undefined) childEntries.set(openId, captured);
+
+    let reading = childEntries.get(id);
+    if (reading === undefined) {
+      reading = { scrollTop: Number.POSITIVE_INFINITY, following: true, toolsExpanded: false, newOutput: false };
+      childEntries.set(id, reading);
+    }
+
+    const transcript = transcripts.observe(id);
+    // The paint subscription binds before the overlay re-binds (the module
+    // notifies subscribers in order and stops at the first throw): a broken
+    // view listener must never starve the repaint scheduling behind it.
+    attachTranscriptPaint(transcript);
+    openId = job.id;
+    openTranscript = transcript;
+    openModelStatus = job.status;
+    candidateId = undefined;
+    try {
+      overlay.switchChild(buildOverlayModel(job, transcript), reading);
+      // Catch the retained window up with anything the child persisted while
+      // unobserved; a position away from the tail stays put and records the
+      // new-output state instead. The external catch-up notifies through the
+      // module, so the view refreshes without any controller-side forward.
+      transcript.reconcileNewer(8);
+    } catch {
+      // A switching defect is contained like every refresh failure: the
+      // overlay keeps showing its last consistent state.
+    }
+    scheduleLivePaint(true);
+    refresh();
+  };
+
+  /**
+   * Keeps the open overlay's footer candidate truthful (#307): the controller
+   * owns the candidate, so every roster refresh re-derives what the overlay
+   * shows — including a candidate whose row left the store.
+   */
+  const syncOverlayCandidate = (rows: readonly RosterRow[]) => {
+    const overlay = activeOverlay;
+    if (overlay === undefined) return;
+    const changed = candidateId !== undefined
+      && candidateId !== openId
+      && rows.some((row) => row.id === candidateId);
+    if (changed) {
+      const row = rows.find((candidate) => candidate.id === candidateId);
+      const prefixes = uniqueRosterIdPrefixes(rows.map((candidate) => candidate.id));
+      overlay.updateCandidate({
+        id: row!.id,
+        role: row!.role,
+        idLabel: prefixes.get(row!.id) ?? rosterId(row!.id),
+      });
+      return;
+    }
+    if (candidateId !== undefined) candidateId = undefined;
+    overlay.updateCandidate(undefined);
+  };
+
+  /**
+   * In-overlay roster navigation (#307): movement anchors on the open child
+   * when no candidate exists, clamps at both ends, and lands back on the open
+   * child as no change at all.
+   */
+  const navigateOverlayCandidate = (delta: -1 | 1) => {
+    const rows = rosterRows(visibleRosterJobs());
+    if (rows.length === 0 || openId === undefined) return;
+    const anchor = candidateId !== undefined && rows.some((row) => row.id === candidateId)
+      ? candidateId
+      : openId;
+    const found = rows.findIndex((row) => row.id === anchor);
+    const next = Math.min(rows.length - 1, Math.max(0, (found < 0 ? 0 : found) + delta));
+    candidateId = rows[next]?.id ?? candidateId;
+    refresh();
+  };
+
+  const openChildOverlay = (id: string) => {
+    if (!context?.hasUI || context.mode !== "tui") return;
+    if (openId !== undefined || closeOverlay !== undefined) return;
+    const jobs = rosterJobs();
+    const job = jobs.find((candidate) => candidate.id === id);
+    if (!job) return;
+
+    // A fresh open starts at the tail with collapsed tools; the module's
+    // registry retains the transcript so later direct switches restore the
+    // loaded window and reading position (#307, #371).
+    childEntries.clear();
+    transcripts.releaseAll();
+    const transcript = transcripts.observe(job.id);
+    // The paint subscription binds before the overlay's constructor binds its
+    // own (the module notifies subscribers in order and stops at the first
+    // throw): a broken view listener must never starve repaint scheduling.
+    attachTranscriptPaint(transcript);
+    const reading: ChildReadingState = { scrollTop: Number.POSITIVE_INFINITY, following: true, toolsExpanded: false, newOutput: false };
+    childEntries.set(job.id, reading);
+    const model = buildOverlayModel(job, transcript);
+
+    candidateId = undefined;
+    openId = job.id;
+    openTranscript = transcript;
+    openModelStatus = job.status;
+
+    const settle = () => {
+      if (closeOverlay !== undefined) {
+        const close = closeOverlay;
+        closeOverlay = undefined;
+        try {
+          close();
+        } catch {
+          // Closing an already-closed overlay is harmless.
+        }
+      }
+      detachOpenTranscript();
+      openId = undefined;
+      candidateId = undefined;
+      // Closing drops per-child reading state and the retained transcripts:
+      // the next open is a first open and follows the tail again (#307).
+      childEntries.clear();
+      transcripts.releaseAll();
+      refresh();
+    };
+
+    let overlayOptions: ReturnType<typeof childOverlayOptions> | undefined;
+    try {
+      void context.ui.custom<void>((tui, theme, keybindings, done) => {
+        // Live getters: the TUI re-reads these options every render, so the
+        // outer geometry follows terminal resizes across the small/normal
+        // threshold for as long as the overlay stays open.
+        overlayOptions = childOverlayOptions(tui);
+        openTui = tui;
+        const overlay = new ChildTranscriptOverlay({
+          tui,
+          theme,
+          model,
+          now: () => now(),
+          ...(display ? { display } : {}),
+          // Pi's effective expand-tools shortcut reaches only this overlay
+          // (#307); the main transcript never sees the key.
+          ...(typeof keybindings?.matches === "function"
+            ? {
+              keybindings: {
+                matches: keybindings.matches.bind(keybindings),
+                ...(typeof keybindings.getKeys === "function"
+                  ? { getKeys: (keybinding: string) => (keybindings.getKeys as (binding: string) => string[])(keybinding) }
+                  : {}),
+              },
+            }
+            : {}),
+          onClose: settle,
+          onReplay: (text) => {
+            settle();
+            try {
+              context?.ui.pasteToEditor(text);
+            } catch {
+              // Replay stays best-effort; the overlay still closed and the
+              // user keeps the native editor.
+            }
+          },
+          // Cross-child navigation (#307): Up/Down move a candidate, Enter
+          // re-points this overlay, Escape cancels a changed candidate. All
+          // three stay read-only projections of the background store.
+          onNavigate: navigateOverlayCandidate,
+          onConfirm: () => {
+            const rows = rosterRows(visibleRosterJobs());
+            const candidate = candidateId !== undefined && candidateId !== openId
+              && rows.some((row) => row.id === candidateId)
+              ? candidateId
+              : undefined;
+            if (candidate === undefined) {
+              // Enter with no changed candidate confirms the open child.
+              candidateId = undefined;
+              refresh();
+              return;
+            }
+            switchChildOverlay(candidate);
+          },
+          onCancelCandidate: () => {
+            candidateId = undefined;
+            refresh();
+          },
+        });
+        activeOverlay = overlay;
+        // The transcript's feed forwarding and the repaint subscription were
+        // bound before this factory ran; the overlay only renders what the
+        // module notifies (#306, #307, #371).
+        closeOverlay = () => {
+          overlay.dispose();
+          if (activeOverlay === overlay) activeOverlay = undefined;
+          done(undefined);
+        };
+        return overlay;
+      }, {
+        overlay: true,
+        overlayOptions: () => overlayOptions ?? { width: "80%", maxHeight: "75%", anchor: "center" },
+      }).catch(() => {
+        if (openId === job.id) {
+          activeOverlay?.dispose();
+          activeOverlay = undefined;
+          closeOverlay = undefined;
+          detachOpenTranscript();
+          openId = undefined;
+          refresh();
+        }
+      });
+    } catch {
+      activeOverlay?.dispose();
+      activeOverlay = undefined;
+      closeOverlay = undefined;
+      detachOpenTranscript();
+      openId = undefined;
+      refresh();
+      return;
+    }
+    refresh();
+  };
+
+  /**
+   * The accepted global terminal-input listener. Roster navigation runs only
+   * while the native editor holds exactly zero content and no pi-square-owned
+   * modal has focus; everything else reaches Pi unchanged. Pi 0.84.2 exposes
+   * no focus query, so a third-party capturing overlay cannot be detected —
+   * a documented limitation of this seam, not a replaced editor.
+   */
+  const handleTerminalInput = (data: string): { consume?: boolean; data?: string } | undefined => {
+    if (context === undefined || openId !== undefined || closeOverlay !== undefined || data === "") return undefined;
+    if (isOwnedInputSurfaceActive()) {
+      clearCandidate();
+      return undefined;
+    }
+    const up = matchesKey(data, "up");
+    const down = matchesKey(data, "down");
+    if (up || down) {
+      const rows = rosterRows(visibleRosterJobs());
+      if (editorText() !== "" || rows.length === 0) {
+        clearCandidate();
+        return undefined;
+      }
+      moveCandidate(up ? -1 : 1, rows);
+      return { consume: true };
+    }
+    if (matchesKey(data, "enter")) {
+      const rows = rosterRows(visibleRosterJobs());
+      const editorEmpty = editorText() === "";
+      const candidate = candidateId !== undefined && editorEmpty && rows.some((row) => row.id === candidateId)
+        ? candidateId
+        : undefined;
+      if (candidate === undefined) {
+        // Enter without an explicit candidate keeps Pi's native behavior.
+        clearCandidate();
+        return undefined;
+      }
+      openChildOverlay(candidate);
+      return { consume: true };
+    }
+    // Beginning to edit (text, whitespace, paste, IME composition) clears an
+    // unopened candidate and passes the input through unchanged.
+    clearCandidate();
+    return undefined;
+  };
+
+  const stop = () => {
+    unsubscribe?.();
+    unsubscribe = undefined;
+    unsubscribeInput?.();
+    unsubscribeInput = undefined;
+    stopMotion();
+    display = undefined;
+    motion = undefined;
+    lastPublishAt = -Infinity;
+    if (closeOverlay !== undefined) {
+      const close = closeOverlay;
+      closeOverlay = undefined;
+      try {
+        close();
+      } catch {
+        // Closing an already-closed overlay is harmless.
+      }
+    }
+    detachOpenTranscript();
+    activeOverlay?.dispose();
+    activeOverlay = undefined;
+    openId = undefined;
+    candidateId = undefined;
+    childEntries.clear();
+    transcripts.releaseAll();
+    viewportStart = 0;
+    tuiRef = undefined;
+    // The visibility epoch is session-scoped presentation state: teardown
+    // returns the next session to its first main task with no expiry carried
+    // over (#308). Store retention and the established shutdown path are not
+    // touched here — the viewer never aborts children or resets delivery.
+    taskEpoch = 1;
+    terminalEpochs.clear();
+    lastPaintAt = -Infinity;
+    if (context?.hasUI) context.ui.setWidget(SUBAGENT_ROSTER_KEY, undefined);
+    context = undefined;
+    parentSessionId = "";
+  };
+
+  return {
+    start(ctx) {
+      stop();
+      // Interactive TUI only: print, JSON, RPC, and headless sessions create
+      // no roster, no subscription, and hold no context.
+      if (!ctx.hasUI || ctx.mode !== "tui") return;
+      context = ctx;
+      display = options.display?.();
+      const activeDisplay = display;
+      motion = options.motion?.()
+        ?? (activeDisplay ? { subscribe: (listener) => activeDisplay.subscribeMotion(listener) } : undefined);
+      parentSessionId = String(ctx.sessionManager?.getSessionId?.() ?? "").trim();
+      unsubscribe = subscribeBackgroundState(state, refresh);
+      if (typeof ctx.ui.onTerminalInput === "function") {
+        unsubscribeInput = ctx.ui.onTerminalInput(handleTerminalInput);
+      }
+      refresh();
+    },
+    stop,
+    refresh,
+    /**
+     * Visibility-epoch boundary (#308). The registrar calls this only where
+     * main provably accepted a real prompt — `before_agent_start` for an
+     * idle prompt, the user `message_start` for a queued steer/follow-up —
+     * because the `input` event alone cannot prove submission: a later
+     * extension may return action:"handled" from the input chain, and a
+     * preflight failure never starts a run. Slash commands, local `!` shell
+     * commands, drafts, and extension continuations never reach this method.
+     */
+    advanceMainTaskEpoch() {
+      taskEpoch += 1;
+      refresh();
+    },
+  };
+}

@@ -24,14 +24,35 @@ const secrets = [
   "password: hunter2",
   "github_pat_ABC123",
   "ghp_ABC123",
-  "fc-ABC_def",
   "Bearer opaque-token",
   "exact-value",
 ].join("\n");
 const redacted = sanitizeDisplayText(secrets, { exactSecrets: ["exact-value"] });
-assert.doesNotMatch(redacted, /abc\.def|super-secret|plain-token|hunter2|github_pat_|ghp_|fc-ABC|opaque-token|exact-value/i);
-assert.ok((redacted.match(/\[REDACTED\]/g) ?? []).length >= 9);
+assert.doesNotMatch(redacted, /abc\.def|super-secret|plain-token|hunter2|github_pat_|ghp_|opaque-token|exact-value/i);
+assert.ok((redacted.match(/\[REDACTED\]/g) ?? []).length >= 8);
 assert.equal(redactDisplaySecrets("token one one", ["one"]), "token [REDACTED] [REDACTED]");
+
+// Space-separated secret flags and credential-shaped userinfo redact too.
+const flagged = [
+  "tool --token secret-value run",
+  "deploy --api-key raw-key",
+  "curl -u alice:swordfish https://api.test",
+  "fetch --user bob:hunter2 --password pw data",
+  "echo ghp_deadbeefdead",
+].join("\n");
+const flaggedRedacted = redactDisplaySecrets(flagged);
+assert.doesNotMatch(flaggedRedacted, /secret-value|raw-key|swordfish|hunter2|:pw\b|ghp_deadbeefdead/i);
+assert.match(flaggedRedacted, /--token \[REDACTED\]/);
+assert.match(flaggedRedacted, /-u \[REDACTED\]/);
+assert.match(flaggedRedacted, /--user \[REDACTED\]/);
+assert.match(flaggedRedacted, /--password \[REDACTED\]/);
+// Non-credential uses of the same flags keep their values.
+assert.equal(redactDisplaySecrets("sort -u names.txt"), "sort -u names.txt");
+
+// Quoted JSON keys and values are common in model-visible logs and messages.
+const jsonRedacted = redactDisplaySecrets('{"password":"bare-secret","token" : "quoted token","safe":"visible"}');
+assert.doesNotMatch(jsonRedacted, /bare-secret|quoted token/);
+assert.match(jsonRedacted, /"safe":"visible"/, "non-secret JSON fields remain readable");
 
 const markdown = sanitizeMarkdownForDisplay("[bad](https://evil.test) www.evil.test a@b.test\n```js\n[code](x)\n```");
 assert.match(markdown, /\\\[bad\]/);

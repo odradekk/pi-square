@@ -2,24 +2,27 @@
  * Shadow Minds feature entry (odradekk/pi-square#149, slices #153–#155;
  * read-only manager since #190).
  *
- * This entry owns the definition registry state, refreshes it on session
- * start from the canonical workspace result and before every no-argument
- * `/shadow` open, registers the read-only manager, and provides the
- * parameterized `/shadow <request>` Config Guide flow. The session
- * runtime executes manual no-tool trials through the shared one-time
- * child-session executor seam: every run freezes the parent core, project
- * rules, and canonical working directory from the parent's current
- * prompt options at activation, and composes the versioned Shadow SYSTEM and
- * reference-only trajectory from that snapshot. Definition files change only
- * through ordinary file tools; the manager never writes. The runtime performs
- * model calls only for explicitly started manual trials while the master
- * switch is on.
+ * This entry owns the Pi event wiring: it registers the read-only manager
+ * and the parameterized `/shadow <request>` Config Guide flow, wires the
+ * delivery core and the completion gate at registration, and promotes the
+ * registered state to the session state at `session_start` (the two state
+ * shapes and the conversion live in `./state`, #373). Handlers that touch
+ * session-only work narrow the state union with `isShadowSessionState` —
+ * the input, agent-start, and tool-execution observers read registered
+ * state alone — and that work — delivery, gate transitions, task snapshots,
+ * transcript references — is an explicit no-op before a session starts,
+ * never a throw. The session runtime executes
+ * manual no-tool trials through the shared one-time child-session executor
+ * seam: every run freezes the parent core, project rules, and canonical
+ * working directory from the parent's current prompt options at activation,
+ * and composes the versioned Shadow SYSTEM and reference-only trajectory
+ * from that snapshot. Definition files change only through ordinary file
+ * tools; the manager never writes. The runtime performs model calls only
+ * for explicitly started manual trials while the master switch is on.
  */
 
-import { realpathSync } from "node:fs";
 import type {
   ExtensionAPI,
-  ExtensionCommandContext,
   ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import {
@@ -28,593 +31,131 @@ import {
   type PiSquareConfig,
   type ShadowMindsConfig,
 } from "../core/config";
-import { sanitizeDisplayLine } from "../display/sanitize";
 import {
   buildShadowConfigGuide,
   renderShadowConfigGuide,
   SHADOW_CONFIG_GUIDE_TYPE,
 } from "./config-guide";
+import { openShadowManager } from "./manager";
 import {
-  discoverShadowDefinitions,
-  shadowDefinitionContextFingerprint,
-  type EffectiveShadowDefinition,
-  type ShadowDefinitionRegistry,
-} from "./definitions";
-import {
-  openShadowManager,
-  snapshot,
-  type ShadowManagerServices,
-  type ShadowManagerSnapshot,
-} from "./manager";
-import { formatModel } from "../subagents/child-session-executor";
-import {
-  buildShadowSystem,
-  canonicalSchemaJson,
-  type ShadowProjectRule,
-} from "./prompt";
-import { matchesParentModelFilter, resolveShadowModel, resolveShadowThinkingLevel } from "./resolve";
-import {
-  createPersistentShadowInbox,
+  createPersistentShadowResultStore,
   reconcileShadowPartitions,
   sweepShadowDebugRetention,
-} from "./inbox-store";
+} from "./result-partition";
 import {
-  createShadowRuntime,
-  shadowCohortHash,
-  type ShadowRunRequest,
-  type ShadowRuntime,
-  type ShadowRuntimeDeps,
-} from "./runtime";
+  createShadowResultStore,
+  type ShadowResultStore,
+} from "./result-store";
 import {
-  createShadowScheduler,
   TASK_EPOCH_RETENTION_MAX,
-  type ShadowScheduler,
   type ShadowSchedulerStartInput,
+  type ShadowSchedulerStartOutcome,
+  type ShadowScheduler,
 } from "./scheduler";
-import { buildTrajectory, type ShadowTrajectoryEvidence } from "./trajectory";
-import { resolveShadowTools } from "./tools";
-import { createShadowInbox, type ShadowInbox } from "./result";
 import {
-  createShadowDeliveryController,
-  MAX_PENDING_RESULTS,
+  DEFAULT_MAX_PENDING_RESULTS,
+  subscribeDeliveryLifecycle,
+  type DeliverySettleForwarding,
+} from "../subagents/confirmed-delivery";
+import {
+  createShadowDeliveryCore,
   shadowNotificationResultIds,
-  type ShadowDeliveryController,
+  type ShadowDeliveryCore,
 } from "./delivery";
 import { createCompletionGate, type ShadowCompletionGate } from "./gate";
+import type { ShadowRuntimeDeps } from "./runtime";
+import {
+  captureTrajectory,
+  composeShadowRun,
+  deliveredEvidence,
+  notifyText,
+  toolWarningNotice,
+} from "./run-composer";
+import {
+  createRegisteredState,
+  createStateRuntime,
+  createStateScheduler,
+  hasRunningGateCompletion,
+  isShadowSessionState,
+  makeServices,
+  promoteToSessionState,
+  taskSnapshotFromOptions,
+  type ShadowMindsRegisteredState,
+  type ShadowMindsSessionState,
+  type ShadowSessionPartition,
+  type ShadowTaskSnapshot,
+} from "./state";
 
 /** Parent-session custom entry type for one bounded result reference. */
 export const SHADOW_RESULT_ENTRY_TYPE = "pi-square.shadow-result";
-
-export interface ShadowMindsState {
-  registry: ShadowDefinitionRegistry;
-  cwd: string;
-  runtime: ShadowRuntime;
-  /** Deterministic automatic scheduling for this parent session. */
-  scheduler: ShadowScheduler;
-  /** Confirmed delivery of Shadow results as advisory evidence (#159). */
-  delivery?: ShadowDeliveryController;
-  /** Bounded answer-after-review completion gate (#160). */
-  gate?: ShadowCompletionGate;
-  /** Current parent-run sequence used to bind manual activation provenance. */
-  currentParentRun(): number;
-  /** Frozen per-task snapshot used by every automatic activation of the task. */
-  taskSnapshot?: ShadowTaskSnapshot;
-  /** Present when the parent session persists; Shadow results survive reopening. */
-  partition?: { sessionDir: string; sessionId: string };
-  /** The frozen task snapshot, captured from one command context. */
-  captureTaskSnapshot(commandCtx: ExtensionCommandContext): ShadowTaskSnapshot;
-  refresh(cwd: string): void;
-  managerSnapshot(): ShadowManagerSnapshot;
-}
-
-/** Parent-task authority snapshot frozen at each real user task start. */
-interface ShadowTaskSnapshot {
-  parentCore?: string;
-  projectRules: ShadowProjectRule[];
-  cwd: string;
-  error?: string;
-}
-
-function rulesFromContextFiles(files: unknown): ShadowProjectRule[] {
-  if (!Array.isArray(files)) return [];
-  return files
-    .filter((file): file is { path: string; content: string } =>
-      Boolean(file) && typeof file === "object"
-      && typeof (file as { path?: unknown }).path === "string"
-      && typeof (file as { content?: unknown }).content === "string")
-    .map((file) => ({ path: file.path, content: file.content }));
-}
-
-/** Freezes the parent-task authority snapshot from prompt-build options. */
-function taskSnapshotFromOptions(options: unknown, cwd: string): ShadowTaskSnapshot {
-  const parentCore = parentCoreFromOptions(options);
-  let canonical: string;
-  try {
-    canonical = realpathSync.native(cwd);
-  } catch (error) {
-    return {
-      ...(parentCore ? { parentCore } : {}),
-      projectRules: [],
-      cwd,
-      error: `The Shadow working directory cannot be canonicalized: ${error instanceof Error ? error.message : String(error)}`,
-    };
-  }
-  return {
-    ...(parentCore ? { parentCore } : {}),
-    // Project rules participate unconditionally (#188): trust never gates
-    // the frozen Shadow authority snapshot.
-    projectRules: rulesFromContextFiles((options as { contextFiles?: unknown } | undefined)?.contextFiles),
-    cwd: canonical,
-  };
-}
-
-function parentCoreFromOptions(options: unknown): string | undefined {
-  const source = options as { customPrompt?: unknown; appendSystemPrompt?: unknown } | undefined;
-  const custom = typeof source?.customPrompt === "string" ? source.customPrompt.trim() : "";
-  const append = typeof source?.appendSystemPrompt === "string" ? source.appendSystemPrompt.trim() : "";
-  if (!custom && !append) return undefined;
-  return append ? `${custom}\n\n${append}` : custom || undefined;
-}
-
-/** Resolves the run model: an explicit Shadow model or the activating parent model. */
-function captureTrajectory(
-  ctx: Pick<ExtensionContext, "sessionManager"> | ExtensionCommandContext,
-  evidence: readonly ShadowTrajectoryEvidence[] = [],
-) {
-  try {
-    // The compaction-aware context projection: `buildContextEntries` follows
-    // the current leaf and omits entries the latest compaction replaced, so
-    // the trajectory matches what the parent model actually sees. The plain
-    // branch remains the fallback for surfaces without the projection.
-    const manager = ctx.sessionManager;
-    const branch = manager?.buildContextEntries?.() ?? manager?.getBranch?.(manager.getLeafId?.() ?? undefined);
-    return buildTrajectory(Array.isArray(branch) ? branch : [], { evidence });
-  } catch {
-    return buildTrajectory([], { evidence });
-  }
-}
-
-function hasRunningGateCompletion(
-  runs: readonly { phase: string; trigger?: string; shadowId: string }[],
-  gateIds: ReadonlySet<string>,
-): boolean {
-  return runs.some((run) => run.phase === "running" && run.trigger === "completion" && gateIds.has(run.shadowId));
-}
-
-/** Delivered Shadow results as trajectory evidence; notified results stay out. */
-function deliveredEvidence(runtime: ShadowRuntime): ShadowTrajectoryEvidence[] {
-  return runtime.snapshot().results
-    .filter((result) => result.delivery === "delivered")
-    .map((result) => ({
-      shadowId: result.shadowId,
-      shadowName: result.shadowName,
-      summary: result.summary,
-      deliveredAt: result.createdAt,
-      delivery: result.delivery,
-    }));
-}
-
-const QUIET_CONFIRM_BRANCH_ENTRIES_MAX = 128;
-
-/** IDs carried by actual persisted Shadow custom-message entries near the leaf. */
-function quietDeliveryIdsFromBranch(sessionManager: unknown): string[] {
-  const branch = (sessionManager as { getBranch?: () => unknown[] } | undefined)?.getBranch?.();
-  if (!Array.isArray(branch)) return [];
-  const ids = new Set<string>();
-  for (const entry of branch.slice(-QUIET_CONFIRM_BRANCH_ENTRIES_MAX)) {
-    for (const id of shadowNotificationResultIds(entry)) ids.add(id);
-  }
-  return [...ids];
-}
-
-const MAX_NOTIFY_CHARS = 400;
-
-function notifyText(message: string): string {
-  const sanitized = sanitizeDisplayLine(message);
-  return sanitized.length <= MAX_NOTIFY_CHARS ? sanitized : `${sanitized.slice(0, MAX_NOTIFY_CHARS - 1)}…`;
-}
-
-/**
- * Composes and starts one run from an effective definition against a live
- * context. Manual trials and scheduler dispatch share every guard: registry
- * refresh, definition lookup, parent-model filter, tool-envelope resolution
- * with visible warnings, model and thinking resolution, and the same child
- * seam. Returns the runtime start outcome.
- */
-function composeShadowRun(input: {
-  state: ShadowMindsState;
-  ctx: ExtensionContext;
-  definition: EffectiveShadowDefinition;
-  source: "manual" | "automatic";
-  note?: string;
-  taskEpoch?: number;
-  sourceRun?: number;
-  trigger?: ShadowRunRequest["trigger"];
-  triggerReasons?: ShadowRunRequest["triggerReasons"];
-  /** Frozen automatic snapshot; manual trials capture fresh per run. */
-  snapshot?: ShadowTaskSnapshot;
-  trajectory?: ReturnType<typeof captureTrajectory>;
-  /** Surfaces bounded pre-start warnings (unavailable optional tools). */
-  onWarning?: (message: string) => void;
-}): { started: boolean; reason?: string; kind?: "busy" | "failed" } {
-  const { state, ctx } = input;
-  const runtime = state.runtime;
-  try {
-    state.refresh(ctx.cwd);
-    const liveConfig = state.managerSnapshot().config ?? DEFAULT_CONFIG.shadowMinds;
-    const definition = state.registry.definitions.find((entry) => entry.id === input.definition.id);
-    const automaticReasons = input.source === "automatic"
-      ? (input.triggerReasons ?? []).filter((reason) => definition?.triggers.includes(reason.trigger))
-      : [];
-    if (!definition
-      || (input.source === "automatic" && (
-        !definition.enabled
-        || definition.hidden
-        || !liveConfig.enabled
-        || automaticReasons.length === 0
-      ))) {
-      return {
-        started: false,
-        kind: "failed",
-        reason: `Shadow '${input.definition.id}' is no longer eligible after the pre-start refresh.`,
-      };
-    }
-    const parentLabel = formatModel(ctx.model);
-    if (!matchesParentModelFilter(definition.parentModels, parentLabel)) {
-      input.onWarning?.(
-        `Shadow '${definition.id}' is filtered to parent models ${(definition.parentModels ?? []).join(", ")}${parentLabel ? `; the parent model is ${parentLabel}` : ""}.`,
-      );
-      return {
-        started: false,
-        kind: "failed",
-        reason: `Shadow '${definition.id}' is filtered to parent models ${(definition.parentModels ?? []).join(", ")}${parentLabel ? `; the parent model is ${parentLabel}` : ""}.`,
-      };
-    }
-    const snapshot = input.snapshot ?? state.captureTaskSnapshot(ctx as ExtensionCommandContext);
-    if (snapshot.error) {
-      return { started: false, kind: "failed", reason: snapshot.error };
-    }
-    const resolution = resolveShadowTools({
-      ...(definition.tools !== undefined ? { tools: definition.tools } : {}),
-      ...(definition.requiredTools && definition.requiredTools.length > 0 ? { requiredTools: definition.requiredTools } : {}),
-      cwd: snapshot.cwd,
-    });
-    if (!resolution.ok) {
-      input.onWarning?.(resolution.error);
-      return { started: false, kind: "failed", reason: resolution.error };
-    }
-    for (const warning of resolution.envelope.warnings) {
-      input.onWarning?.(warning);
-    }
-    const modelResolution = resolveShadowModel(definition.model, ctx);
-    if (modelResolution.error) {
-      input.onWarning?.(modelResolution.error);
-      return { started: false, kind: "failed", reason: modelResolution.error };
-    }
-    const thinkingResolution = resolveShadowThinkingLevel(
-      definition.thinking,
-      liveConfig.defaults.thinking,
-      ctx.thinkingLevel,
-      modelResolution.model,
-    );
-    if (thinkingResolution.error) {
-      input.onWarning?.(thinkingResolution.error);
-      return { started: false, kind: "failed", reason: thinkingResolution.error };
-    }
-    const request: ShadowRunRequest = {
-      definition,
-      ...(input.note ? { note: input.note } : {}),
-      ...(input.source === "automatic" && automaticReasons[0] ? { trigger: automaticReasons[0].trigger } : input.trigger ? { trigger: input.trigger } : {}),
-      ...(input.taskEpoch !== undefined ? { taskEpoch: input.taskEpoch } : {}),
-      ...(input.sourceRun !== undefined ? { sourceRun: input.sourceRun } : {}),
-      ...(input.source === "automatic" && automaticReasons.length > 0
-        ? { triggerReasons: automaticReasons }
-        : input.triggerReasons && input.triggerReasons.length > 0
-          ? { triggerReasons: input.triggerReasons }
-          : {}),
-      system: buildShadowSystem({
-        ...(snapshot.parentCore ? { parentCore: snapshot.parentCore } : {}),
-        projectRules: snapshot.projectRules,
-        cwd: snapshot.cwd,
-      }),
-      trajectory: input.trajectory ?? captureTrajectory(ctx, deliveredEvidence(runtime)),
-      cwd: snapshot.cwd,
-      modelResolution,
-      ...(thinkingResolution.level ? { thinkingLevel: thinkingResolution.level } : {}),
-      envelope: resolution.envelope,
-      // Authority hashes are computed here — where the raw snapshot text is
-      // visible — so the run record stores only hash prefixes, never the
-      // prompt text (odradekk/pi-square#161).
-      authorityCohort: {
-        ...(snapshot.parentCore ? { parentCoreHash: shadowCohortHash(snapshot.parentCore) } : {}),
-        ...(snapshot.projectRules.length > 0
-          ? {
-              projectRulesHash: shadowCohortHash(
-                canonicalSchemaJson(snapshot.projectRules.map((rule) => ({ path: rule.path, content: rule.content }))),
-              ),
-            }
-          : {}),
-      },
-      ...(definition.debug && state.partition ? { debug: state.partition } : {}),
-    };
-    const outcome = input.source === "manual"
-      ? runtime.startManualRun(request)
-      : runtime.startAutomaticRun(request);
-    return outcome.started
-      ? { started: true }
-      : { started: false, reason: outcome.reason, ...(outcome.kind ? { kind: outcome.kind } : {}) };
-  } catch (error) {
-    return {
-      started: false,
-      kind: "failed",
-      reason: notifyText(`The Shadow run context is no longer active: ${error instanceof Error ? error.message : String(error)}`),
-    };
-  }
-}
-
-/** Builds the manager runtime services against one command invocation. */
-function makeServices(
-  state: ShadowMindsState,
-  ctx: ExtensionCommandContext,
-  runtime: ShadowRuntime = state.runtime,
-  hooks?: { onSchedulerChange?: () => void },
-): ShadowManagerServices {
-  return {
-    runtime: {
-      snapshot: () => runtime.snapshot(),
-      runManual(input) {
-        try {
-          state.refresh(ctx.cwd);
-          const definition = state.registry.definitions.find((entry) => entry.id === input.shadowId);
-          if (!definition) {
-            return { ok: false, message: `Shadow definition '${input.shadowId}' is no longer available.` };
-          }
-          // The reviewed snapshot must still match the live definition and
-          // effective limits; a drift refuses the run before any prompt.
-          const liveConfig = state.managerSnapshot().config ?? DEFAULT_CONFIG.shadowMinds;
-          const liveFingerprint = shadowDefinitionContextFingerprint(definition.layers);
-          const expectedBounds = {
-            timeoutSeconds: definition.timeoutSeconds ?? liveConfig.defaults.runTimeoutSeconds,
-            maxTurns: definition.maxTurns ?? liveConfig.defaults.maxModelTurnsPerRun,
-            maxToolCalls: definition.maxToolCalls ?? liveConfig.defaults.maxToolCallsPerRun,
-          };
-          const carriesReview = input.definitionFingerprint !== undefined
-            || input.defaultThinking !== undefined
-            || input.timeoutSeconds !== undefined
-            || input.maxTurns !== undefined
-            || input.maxToolCalls !== undefined;
-          if (carriesReview && (
-            liveFingerprint !== input.definitionFingerprint
-            || liveConfig.defaults.thinking !== input.defaultThinking
-            || expectedBounds.timeoutSeconds !== input.timeoutSeconds
-            || expectedBounds.maxTurns !== input.maxTurns
-            || expectedBounds.maxToolCalls !== input.maxToolCalls
-          )) {
-            return { ok: false, message: "The Shadow definition or run limits changed since review; reopen /shadow and review the current run." };
-          }
-          const outcome = composeShadowRun({
-            state,
-            ctx,
-            definition,
-            source: "manual",
-            ...(input.note ? { note: input.note } : {}),
-            taskEpoch: state.scheduler.snapshot().taskEpoch,
-            sourceRun: state.currentParentRun(),
-            onWarning: (message) => ctx.ui.notify(`shadow-minds: ${notifyText(message)}`, "warning"),
-          });
-          if (!outcome.started) {
-            return { ok: false, message: outcome.reason ?? "The run did not start." };
-          }
-          ctx.ui.notify(`shadow-minds: started manual run of ${definition.id}`, "info");
-          return { ok: true, message: `Started manual run of ${definition.id}.` };
-        } catch (error) {
-          return { ok: false, message: notifyText(`The Shadow run context is no longer active: ${error instanceof Error ? error.message : String(error)}`) };
-        }
-      },
-      cancelRun(runId) {
-        return runtime.cancelRun(runId);
-      },
-      markResultRead: (id) => runtime.markResultRead(id),
-      dismissResult: (id) => runtime.dismissResult(id),
-      deleteResult: (id) => {
-        const ok = runtime.deleteResult(id);
-        if (ok) state.delivery?.remove(id);
-        return ok;
-      },
-      subscribe: (listener) => runtime.subscribe(listener),
-    },
-    scheduler: {
-      snapshot: () => state.scheduler.snapshot(),
-      pause: () => {
-        state.scheduler.pause();
-        hooks?.onSchedulerChange?.();
-      },
-      resume: () => {
-        state.scheduler.resume();
-        hooks?.onSchedulerChange?.();
-      },
-    },
-    delivery: {
-      sendResultToAgent(id: string): { ok: boolean; message: string } {
-        const result = state.runtime.snapshot().results.find((entry) => entry.id === id);
-        if (!result) return { ok: false, message: "That result is no longer available." };
-        const sent = state.delivery?.sendResultToAgent(result) ?? false;
-        return sent
-          ? { ok: true, message: "Sent to the agent as advisory evidence." }
-          : { ok: false, message: "That result is already being delivered or was delivered." };
-      },
-      sendErrorSummary(runId: string): { ok: boolean; message: string } {
-        const run = state.runtime.snapshot().runs.find((entry) => entry.id === runId);
-        if (!run) return { ok: false, message: "That run is no longer available." };
-        if (run.phase !== "error") return { ok: false, message: "Only failed runs can send a failure summary." };
-        const sent = state.delivery?.sendErrorSummary({
-          id: run.id,
-          shadowId: run.shadowId,
-          shadowName: run.shadowName,
-          phase: run.phase,
-          ...(run.message ? { message: run.message } : {}),
-        }) ?? false;
-        return sent
-          ? { ok: true, message: "Sent the failure summary to the agent." }
-          : { ok: false, message: "The failure summary could not be sent." };
-      },
-    },
-  };
-}
 
 export default function registerShadowMinds(
   pi: ExtensionAPI,
   config?: () => PiSquareConfig,
   runtimeDeps?: ShadowRuntimeDeps,
-): ShadowMindsState {
+): ShadowMindsRegisteredState | ShadowMindsSessionState {
   const effectiveConfig = (): ShadowMindsConfig => config?.().shadowMinds ?? DEFAULT_CONFIG.shadowMinds;
-  let currentInbox: ShadowInbox | undefined;
-  const makeRuntime = (inbox?: ShadowInbox): ShadowRuntime => {
-    // An explicit inbox is always tracked so old-task downgrades reach the
-    // in-memory fallback of non-persisted sessions too.
-    currentInbox = inbox ?? createShadowInbox({});
-    return createShadowRuntime({
-      config: effectiveConfig,
-      ...(runtimeDeps ? { deps: runtimeDeps } : {}),
-      inbox: currentInbox,
-      currentTaskEpoch: () => state.scheduler.snapshot().taskEpoch,
+
+  // Automatic runs start while nobody is watching the manager, so a reduced
+  // tool set is notified too — but once per shadow and warning set, not on
+  // every automatic trigger. A later definition edit changes the key and
+  // reports again; an unchanged reduction stays quiet for the session.
+  const announcedToolWarnings = new Set<string>();
+
+  // The registration root holds one of the two state shapes (#373): the
+  // registered shape from extension registration until `session_start`
+  // promotes it to the session shape; the returned handle is the union
+  // because the promotion rewrites this same object in place. Handlers
+  // narrow the union before any session-only work.
+  let state: ShadowMindsRegisteredState | ShadowMindsSessionState;
+
+  const dispatchAutomatic = (activation: ShadowSchedulerStartInput): ShadowSchedulerStartOutcome => {
+    const sessionCtx = ctx;
+    if (!sessionCtx) return { outcome: "failed", reason: "No parent session context." };
+    const taskSnapshot = taskSnapshots.get(activation.taskEpoch);
+    if (!taskSnapshot) {
+      return {
+        outcome: "failed",
+        reason: `The frozen authority snapshot for task ${activation.taskEpoch} is no longer retained.`,
+      };
+    }
+    const outcome = composeShadowRun({
+      state,
+      ctx: sessionCtx,
+      definition: activation.definition,
+      source: "automatic",
+      trigger: activation.reasons[0]?.trigger,
+      taskEpoch: activation.taskEpoch,
+      sourceRun: activation.sourceRun,
+      triggerReasons: activation.reasons,
+      snapshot: taskSnapshot,
+      trajectory: activation.checkpoint as ReturnType<typeof captureTrajectory> | undefined,
+      onToolWarnings: (warnings) => {
+        if (!sessionCtx.hasUI) return;
+        const key = `${activation.definition.id}\n${warnings.join("\n")}`;
+        if (announcedToolWarnings.has(key)) return;
+        announcedToolWarnings.add(key);
+        sessionCtx.ui.notify(notifyText(toolWarningNotice(activation.definition.id, warnings)), "warning");
+      },
     });
+    if (outcome.started) return { outcome: "started" };
+    if (outcome.kind === "busy") return { outcome: "busy" };
+    return { outcome: "failed", reason: outcome.reason ?? "The automatic run did not start." };
   };
 
-  const makeScheduler = (): ShadowScheduler => {
-    const scheduler = createShadowScheduler({
-      now: () => Date.now(),
-      currentRun: () => parentRunSeq,
-      config: effectiveConfig,
-      definitions: () => state.registry.definitions,
-      start(activation: ShadowSchedulerStartInput) {
-        const sessionCtx = ctx;
-        if (!sessionCtx) return { outcome: "failed", reason: "No parent session context." };
-        const taskSnapshot = taskSnapshots.get(activation.taskEpoch);
-        if (!taskSnapshot) {
-          return {
-            outcome: "failed",
-            reason: `The frozen authority snapshot for task ${activation.taskEpoch} is no longer retained.`,
-          };
-        }
-        const outcome = composeShadowRun({
-          state,
-          ctx: sessionCtx,
-          definition: activation.definition,
-          source: "automatic",
-          trigger: activation.reasons[0]?.trigger,
-          taskEpoch: activation.taskEpoch,
-          sourceRun: activation.sourceRun,
-          triggerReasons: activation.reasons,
-          snapshot: taskSnapshot,
-          trajectory: activation.checkpoint as ReturnType<typeof captureTrajectory> | undefined,
-        });
-        if (outcome.started) return { outcome: "started" };
-        if (outcome.kind === "busy") return { outcome: "busy" };
-        return { outcome: "failed", reason: outcome.reason ?? "The automatic run did not start." };
-      },
-      preemptOldestAutomatic: (currentEpoch) => state.runtime.preemptOldestAutomatic(currentEpoch),
-      activeRun: (shadowId) => state.runtime.activeRun(shadowId),
-      cancelTaskRuns: (epoch) => state.runtime.cancelTaskRuns(epoch),
-      cancelAutomaticRuns: (reason) => state.runtime.cancelAutomaticRuns(reason),
-      forceNotifyOldResults(beforeEpoch) {
-        let downgraded = 0;
-        for (const result of state.runtime.snapshot().results) {
-          // Results without a recorded task identity predate scheduling;
-          // treat them as old work.
-          if ((result.taskIdentity?.epoch ?? 0) >= beforeEpoch) continue;
-          if (currentInbox?.forceNotify?.(result.id)) downgraded += 1;
-        }
-        return downgraded;
-      },
-    });
-    // Pause state is user-visible: both entry points (manager service and
-    // any future direct call) refresh the conditional status.
-    return {
-      ...scheduler,
-      pause() {
-        state.gate?.close("paused");
-        settleHeld = false;
-        scheduler.pause();
-        refreshStatus();
-      },
-      resume() {
-        scheduler.resume();
-        refreshStatus();
-      },
-    };
-  };
-  const state: ShadowMindsState = {
-    registry: { definitions: [], invalid: [], diagnostics: [] },
-    cwd: process.cwd(),
-    runtime: makeRuntime(),
-    scheduler: makeScheduler(),
+  state = createRegisteredState({
+    config,
+    ...(runtimeDeps ? { runtimeDeps } : {}),
     currentParentRun: () => parentRunSeq,
-    captureTaskSnapshot(commandCtx: ExtensionCommandContext): ShadowTaskSnapshot {
-      // `getSystemPromptOptions` exists only on command contexts in Pi
-      // 0.84.2 — the session-start event context never carries it — so the
-      // command context that opened the manager is the capture source.
-      const options = commandCtx.getSystemPromptOptions?.();
-      const parentCore = parentCoreFromOptions(options);
-      let cwd: string;
-      try {
-        cwd = realpathSync.native(commandCtx.cwd ?? state.cwd);
-      } catch (error) {
-        return {
-          ...(parentCore ? { parentCore } : {}),
-          projectRules: [],
-          cwd: commandCtx.cwd ?? state.cwd,
-          error: `The Shadow working directory cannot be canonicalized: ${error instanceof Error ? error.message : String(error)}`,
-        };
-      }
-      return {
-        ...(parentCore ? { parentCore } : {}),
-        projectRules: rulesFromContextFiles((options as { contextFiles?: unknown } | undefined)?.contextFiles),
-        cwd,
-      };
-    },
-    refresh(cwd: string): void {
-      state.cwd = cwd;
-      state.registry = discoverShadowDefinitions(cwd);
-      // #191: the refreshed registry revalidates pending activations at once
-      // — a disabled master switch or deleted, disabled, hidden, invalid, or
-      // unsubscribed definition drops queued work visibly instead of starting
-      // from stale configuration at the next dispatch. The scheduler is assigned
-      // again before the session_start refresh, so it always exists here.
-      state.scheduler.revalidate();
-    },
-    managerSnapshot(): ShadowManagerSnapshot {
-      const effective = config?.().shadowMinds;
-      return snapshot(state.registry, effective);
-    },
-  };
-  // ── Bounded completion gate (#160) ─────────────────────────────────
-  // The gate never delays the parent answer: it only holds this extension's
-  // settled handling for a bounded window after the answer has rendered.
-  state.gate = createCompletionGate({
-    now: () => Date.now(),
-    config: effectiveConfig,
-    definitions: () => state.registry.definitions,
-    scheduler: {
-      pendingCompletions: () => state.scheduler.pendingCompletions(),
-      cancelPendingCompletions: () => state.scheduler.cancelPendingCompletions(),
-    },
-    hasRunningCompletionRuns: (gateIds) => hasRunningGateCompletion(state.runtime.snapshot().runs, gateIds),
-    forwardSettle: (_at) => {
-      if (!settleHeld) return;
-      settleHeld = false;
-      state.delivery?.handleAgentSettled();
-      refreshStatus();
-    },
-    onClose: (reason, cancelled) => {
-      if (cancelled > 0 && ctx?.hasUI) {
-        ctx.ui.notify(
-          notifyText(`shadow-minds: completion gate closed (${reason}); ${cancelled} queued completion run${cancelled === 1 ? "" : "s"} cancelled`),
-          "info",
-        );
-      }
-    },
+    dispatchAutomatic,
   });
+
+  // ── Caller-forwarded delivery settles (odradekk/pi-square#369) ─────────
+  // The delivery subscription leaves `agent_settled` unwired: the completion
+  // gate below releases a parked settle through this handle, an unheld settle
+  // forwards at the settled event itself, and the headless shutdown drain
+  // forwards settles itself. Assigned once the delivery controller exists.
+  let deliverySettleForwarding: DeliverySettleForwarding | undefined;
 
   let ctx: ExtensionContext | undefined;
   const seenPhases = new Map<string, string>();
@@ -647,6 +188,65 @@ export default function registerShadowMinds(
     statusContext = sessionCtx;
     refreshStatus();
   };
+
+  // ── Bounded completion gate (#160) ─────────────────────────────────
+  // The gate never delays the parent answer: it only holds this extension's
+  // settled handling for a bounded window after the answer has rendered. The
+  // root reports parent run-state transitions below and at the Pi event
+  // boundaries; which transition opens, re-evaluates, or closes the gate —
+  // and with which reason — is derived inside the gate. The gate outlives
+  // individual sessions: it is created once at registration, reset at each
+  // session boundary, and published onto the state by the session promotion.
+  const completionGate: ShadowCompletionGate = createCompletionGate({
+    now: () => Date.now(),
+    config: effectiveConfig,
+    definitions: () => state.registry.definitions,
+    scheduler: {
+      pendingCompletions: () => state.scheduler.pendingCompletions(),
+      cancelPendingCompletions: () => state.scheduler.cancelPendingCompletions(),
+    },
+    hasRunningCompletionRuns: (gateIds) => hasRunningGateCompletion(state.runtime.snapshot().runs, gateIds),
+    // The gate calls this only when a settle is actually parked, so the
+    // delivery flush needs no hold-state check of its own.
+    forwardSettle: (_at) => {
+      deliverySettleForwarding?.settle();
+      refreshStatus();
+    },
+    onClose: (reason, cancelled) => {
+      if (cancelled > 0 && ctx?.hasUI) {
+        ctx.ui.notify(
+          notifyText(`shadow-minds: completion gate closed (${reason}); ${cancelled} queued completion run${cancelled === 1 ? "" : "s"} cancelled`),
+          "info",
+        );
+      }
+    },
+  });
+
+  // The delivery core is created once at registration and reset at each
+  // session boundary; Pi's event emitter offers no unsubscribe, so its
+  // lifecycle subscription is wired once against this instance. The session
+  // promotion publishes the same instance onto the state — the session shape
+  // never carries a second, differently configured core.
+  const shadowDelivery: ShadowDeliveryCore = createShadowDeliveryCore({
+    pi,
+    getResultStore: () => state.resultStore,
+    timing: () => ({
+      currentRun: parentRunSeq,
+      currentTaskEpoch: state.scheduler.snapshot().taskEpoch,
+      parentRunning: parentRunActive,
+      ...(draining ? { quiet: true } : {}),
+    }),
+    onDegrade: (count) => {
+      if (!ctx?.hasUI) return;
+      ctx.ui.notify(
+        notifyText(`shadow-minds: ${count} result${count === 1 ? "" : "s"} stayed in the inbox; the delivery window passed`),
+        "info",
+      );
+    },
+    onPendingChange: refreshStatus,
+  });
+  deliverySettleForwarding = subscribeDeliveryLifecycle(shadowDelivery, pi, { subscribeSettled: false });
+
   pi.registerMessageRenderer(SHADOW_CONFIG_GUIDE_TYPE, renderShadowConfigGuide);
 
   pi.registerCommand("shadow", {
@@ -667,7 +267,7 @@ export default function registerShadowMinds(
         return;
       }
       if (!ctx.hasUI) return;
-      await openShadowManager(ctx, state.managerSnapshot(), makeServices(state, ctx, undefined, {
+      await openShadowManager(ctx, state.managerSnapshot(), makeServices(state, ctx, {
         onSchedulerChange: refreshStatus,
       }));
     },
@@ -692,28 +292,45 @@ export default function registerShadowMinds(
   let parentRunSeq = 0;
   let parentRunActive = false;
   let parentRunPrepared = false;
-  // Completion-gate state: the subsystem settle is held while the gate is
-  // open, and a headless drain makes every delivery quiet (no new turn).
-  let settleHeld = false;
+  // A headless drain makes every delivery quiet (no new turn); the gate
+  // owns the held-settle bit itself.
   let draining = false;
-  state.delivery = createShadowDeliveryController({
-    pi,
-    getRuntime: () => state.runtime,
-    timing: () => ({
-      currentRun: parentRunSeq,
-      currentTaskEpoch: state.scheduler.snapshot().taskEpoch,
-      parentRunning: parentRunActive,
-      ...(draining ? { quiet: true } : {}),
-    }),
-    onDegrade: (count) => {
-      if (!ctx?.hasUI) return;
-      ctx.ui.notify(
-        notifyText(`shadow-minds: ${count} result${count === 1 ? "" : "s"} stayed in the inbox; the delivery window passed`),
-        "info",
-      );
-    },
-    onPendingChange: refreshStatus,
+
+  const makeRuntime = (store: ShadowResultStore) => createStateRuntime({
+    config: effectiveConfig,
+    ...(runtimeDeps ? { runtimeDeps } : {}),
+    resultStore: store,
+    currentTaskEpoch: () => state.scheduler.snapshot().taskEpoch,
   });
+
+  const makeScheduler = (): ShadowScheduler => {
+    const scheduler = createStateScheduler({
+      config: effectiveConfig,
+      currentRun: () => parentRunSeq,
+      dispatch: dispatchAutomatic,
+      sources: {
+        definitions: () => state.registry.definitions,
+        runtime: () => state.runtime,
+        resultStore: () => state.resultStore,
+      },
+    });
+    // This wrapper exists only on the session shape: makeScheduler runs
+    // solely inside the session_start promotion, so the pause notifies the
+    // gate directly — no state narrowing can be needed here (#373).
+    return {
+      ...scheduler,
+      pause() {
+        completionGate.handleRunTransition({ kind: "scheduler-paused" });
+        scheduler.pause();
+        refreshStatus();
+      },
+      resume() {
+        scheduler.resume();
+        refreshStatus();
+      },
+    };
+  };
+
   const toolArgsById = new Map<string, { toolName: string; args: unknown }>();
   const TOOL_ARG_PAIRS_MAX = 64;
   const STREAMING_INPUT_PAIRS_MAX = 64;
@@ -744,18 +361,19 @@ export default function registerShadowMinds(
     pendingIdleInput = undefined;
     const realUserTask = source === "real";
     if (source) state.scheduler.handleInput(realUserTask ? "interactive" : "extension");
-    // A new real-user task ends any held gate window: its unstarted
-    // completions cancel and resolve through the stale-task downgrade.
-    if (realUserTask) {
-      state.gate?.close("new-task");
-      settleHeld = false;
-    }
-    state.taskSnapshot = taskSnapshotFromOptions(
-      event?.systemPromptOptions,
-      sessionCtx?.cwd ?? state.cwd,
-    );
-    if (realUserTask) {
-      taskSnapshots.record(state.scheduler.snapshot().taskEpoch, state.taskSnapshot);
+    // The run-start transition is reported for both input classes; the gate
+    // itself derives that only a real-user task closes the held window. The
+    // task snapshot is session-scoped state: before session_start there is
+    // no session authority to freeze, so both are skipped there (#373).
+    if (isShadowSessionState(state)) {
+      state.gate.handleRunTransition({ kind: "parent-run-start", realUserTask });
+      state.taskSnapshot = taskSnapshotFromOptions(
+        event?.systemPromptOptions,
+        sessionCtx?.cwd ?? state.cwd,
+      );
+      if (realUserTask) {
+        taskSnapshots.record(state.scheduler.snapshot().taskEpoch, state.taskSnapshot);
+      }
     }
     skipInitialUserMessage = true;
     parentRunSeq += 1;
@@ -774,24 +392,23 @@ export default function registerShadowMinds(
       parentRunActive = true;
     }
     parentRunPrepared = false;
-    state.delivery?.handleAgentStart();
   });
 
   pi.on("agent_settled", () => {
     parentRunActive = false;
     // The completion gate (#160) holds the subsystem settle for its bounded
     // window: the parent answer has already rendered; only this extension's
-    // settled handling waits. The close forwards the settle exactly once.
-    if (state.gate?.open) {
-      settleHeld = true;
+    // settled handling waits. The gate parks the settle and its close
+    // forwards it exactly once. Without a session there is no gate to park
+    // it; an unheld settle forwards at the settled event itself.
+    if (isShadowSessionState(state) && state.gate.holdSettle()) {
       refreshStatus();
       return;
     }
-    state.delivery?.handleAgentSettled();
+    deliverySettleForwarding?.settle();
   });
 
   pi.on("message_start", (event) => {
-    state.delivery?.observeMessage(event?.message);
     if (event?.message?.role !== "user") return;
     if (skipInitialUserMessage) {
       skipInitialUserMessage = false;
@@ -804,14 +421,11 @@ export default function registerShadowMinds(
     const source = queuedSteeringSources.shift() ?? queuedFollowUpSources.shift();
     if (!source) return;
     const realUserTask = source === "real";
-    if (realUserTask) {
-      state.gate?.close("new-task");
-      settleHeld = false;
-    }
+    if (isShadowSessionState(state)) state.gate.handleRunTransition({ kind: "parent-run-start", realUserTask });
     state.scheduler.handleInput(realUserTask ? "interactive" : "extension");
     // A queued continuation stays inside the same parent agent run, so it uses
     // the authority frozen by that run's before_agent_start boundary.
-    if (realUserTask && state.taskSnapshot) {
+    if (realUserTask && isShadowSessionState(state) && state.taskSnapshot) {
       taskSnapshots.record(state.scheduler.snapshot().taskEpoch, state.taskSnapshot);
     }
     state.scheduler.handleRunStart(realUserTask);
@@ -838,14 +452,12 @@ export default function registerShadowMinds(
   });
 
   pi.on("turn_end", (event, sessionCtx) => {
-    state.delivery?.handleTurnEnd(event?.message);
     if (!sessionCtx) return;
     // A turn that ended through user interruption drops its observations
     // instead of dispatching: Pi emits turn_end before agent_end on abort,
     // and an aborted quality command is not a failure trigger.
     if ((event?.message as { stopReason?: unknown } | undefined)?.stopReason === "aborted") {
-      state.gate?.close("aborted");
-      settleHeld = false;
+      if (isShadowSessionState(state)) state.gate.handleRunTransition({ kind: "parent-run-interrupted" });
       state.scheduler.handleTurnAbort();
       refreshStatus();
       return;
@@ -874,11 +486,7 @@ export default function registerShadowMinds(
       }
     }
     state.scheduler.handleAgentEnd({ interrupted, checkpoint });
-    state.delivery?.handleAgentEnd(event?.messages);
-    if (interrupted) {
-      state.gate?.close("aborted");
-      settleHeld = false;
-    } else state.gate?.maybeOpen();
+    if (isShadowSessionState(state)) state.gate.handleRunTransition({ kind: "parent-run-end", interrupted });
     refreshStatus();
     streamingInputDesynchronized = false;
     queuedSteeringSources.length = 0;
@@ -893,18 +501,19 @@ export default function registerShadowMinds(
     state.runtime.reset("Parent Pi session changed");
     seenPhases.clear();
     // Each parent session owns its Shadow state: persisted sessions get the
-    // authoritative partition inbox (results survive reopening) while
+    // authoritative partition store (results survive reopening) while
     // non-persisted sessions fall back to memory with a visible diagnostic.
     const sessionDir = sessionCtx.sessionManager?.getSessionDir?.() ?? "";
     const sessionFile = sessionCtx.sessionManager?.getSessionFile?.();
-    let inbox: ShadowInbox | undefined;
+    let store: ShadowResultStore | undefined;
+    let partition: ShadowSessionPartition | undefined;
     if (!effectiveConfig().enabled) {
       // Disabled: no partition is opened, scanned, or created, and the
       // fallback notice stays silent.
-      state.partition = undefined;
+      partition = undefined;
     } else if (sessionDir && typeof sessionFile === "string" && sessionFile.length > 0) {
       const sessionId = String(sessionCtx.sessionManager?.getSessionId?.() ?? "session");
-      state.partition = { sessionDir, sessionId };
+      partition = { sessionDir, sessionId };
       const reconciled = reconcileShadowPartitions(sessionDir, sessionId);
       if (reconciled.removed.length > 0) {
         sessionCtx.hasUI && sessionCtx.ui.notify(
@@ -914,20 +523,20 @@ export default function registerShadowMinds(
       }
       try {
         sweepShadowDebugRetention(sessionDir, sessionId);
-        const persistentInbox = createPersistentShadowInbox({ sessionDir, sessionId });
-        inbox = persistentInbox;
-        for (const diagnostic of persistentInbox.diagnostics().slice(0, 3)) {
+        const persistentStore = createPersistentShadowResultStore({ sessionDir, sessionId });
+        store = persistentStore;
+        for (const diagnostic of persistentStore.diagnostics().slice(0, 3)) {
           sessionCtx.hasUI && sessionCtx.ui.notify(`shadow-minds: ${notifyText(diagnostic)}`, "warning");
         }
       } catch (error) {
-        state.partition = undefined;
+        partition = undefined;
         sessionCtx.hasUI && sessionCtx.ui.notify(
           `shadow-minds: the persistent inbox could not open (${error instanceof Error ? error.message : String(error)}); results stay in memory`,
           "warning",
         );
       }
     } else {
-      state.partition = undefined;
+      partition = undefined;
       if (sessionCtx.hasUI) {
         sessionCtx.ui.notify(
           "shadow-minds: this session is not persisted; Shadow results stay in memory",
@@ -935,18 +544,30 @@ export default function registerShadowMinds(
         );
       }
     }
-    state.runtime = makeRuntime(inbox);
-    state.scheduler = makeScheduler();
-    state.delivery?.reset();
-    state.gate?.reset();
+    const sessionStore = store ?? createShadowResultStore({});
+    // session_start converts the registered state into the session state
+    // (#373): every session member is present from here on, and the
+    // identity-preserving promotion keeps the state's methods valid.
+    state = promoteToSessionState(state, {
+      delivery: shadowDelivery,
+      gate: completionGate,
+      partition,
+      runtime: makeRuntime(sessionStore),
+      scheduler: makeScheduler(),
+      resultStore: sessionStore,
+    });
+    // The delivery core and the gate outlive the session; each boundary
+    // resets them (their lifecycle subscription is wired once, at
+    // registration, because Pi's emitter offers no unsubscribe).
+    shadowDelivery.reset();
+    completionGate.reset();
     parentRunSeq = 0;
     parentRunActive = false;
     parentRunPrepared = false;
-    settleHeld = false;
     draining = false;
     // A result left pending by a lost session never resumes automatically:
     // it returns inbox-only with notify policy and waits for an explicit send.
-    const recoveredDeliveries = inbox?.recoverPendingDelivery?.() ?? 0;
+    const recoveredDeliveries = sessionStore.recoverPendingDelivery();
     if (recoveredDeliveries > 0 && sessionCtx.hasUI) {
       sessionCtx.ui.notify(
         `shadow-minds: recovered ${recoveredDeliveries} undelivered result${recoveredDeliveries === 1 ? "" : "s"} to the inbox`,
@@ -958,7 +579,6 @@ export default function registerShadowMinds(
     queuedFollowUpSources.length = 0;
     streamingInputDesynchronized = false;
     skipInitialUserMessage = false;
-    state.taskSnapshot = undefined;
     taskSnapshots.clear();
     toolArgsById.clear();
     bindRuntimeNotifications();
@@ -976,15 +596,18 @@ export default function registerShadowMinds(
     // Session replacement (switch/fork/new/resume/reload) and interactive
     // quit cancel the applicable gate and Shadow work promptly: there is no
     // continuation to drain into.
-    state.gate?.close("session");
+    if (isShadowSessionState(state)) state.gate.handleRunTransition({ kind: "session-ending" });
     // A print/JSON quit is headless: Pi awaits this handler before the
     // process exits, so started completion runs get one bounded drain
     // window to finish, persist, and deliver quietly — no turn is started.
     // Replacement reasons must not drain: the outgoing session is replaced,
-    // not continued.
+    // not continued. Only a session state holds pending completion work.
     const headless = (ctx?.mode === "print" || ctx?.mode === "json")
       && (event as { reason?: unknown } | undefined)?.reason === "quit";
-    if (headless && effectiveConfig().enabled) {
+    if (headless && isShadowSessionState(state) && effectiveConfig().enabled) {
+      // Awaits inside the drain reset narrowing on the union, so the session
+      // shape is captured once, before the loop.
+      const session = state;
       const seconds = Math.min(
         Math.max(1, effectiveConfig().defaults.headlessDrainSeconds),
         SHADOW_MINDS_HEADLESS_DRAIN_HARD_MAX_SECONDS,
@@ -999,27 +622,26 @@ export default function registerShadowMinds(
         // Drain compatible batches one at a time. Each batch is confirmed only
         // from an actual session entry; without confirmation, stop rather than
         // resend in a hot loop. The iteration cap is the pending hard bound.
-        for (let batch = 0; batch < MAX_PENDING_RESULTS && Date.now() < deadline; batch += 1) {
-          const before = state.delivery?.pendingCount() ?? 0;
+        for (let batch = 0; batch < DEFAULT_MAX_PENDING_RESULTS && Date.now() < deadline; batch += 1) {
+          const before = session.delivery.pendingCount();
           if (before === 0) break;
-          state.delivery?.handleAgentSettled();
+          deliverySettleForwarding?.settle();
           await new Promise((resolve) => setTimeout(resolve, 0));
-          const confirmed = state.delivery?.confirmQuietDeliveries(
+          const confirmed = session.delivery.confirmQuietDeliveries(
             quietDeliveryIdsFromBranch(ctx?.sessionManager),
-          ) ?? 0;
+          );
           if (confirmed === 0) break;
         }
-        settleHeld = false;
       } finally {
         draining = false;
-        settleHeld = false;
       }
     }
     state.runtime.reset("Parent Pi session shutdown");
     state.scheduler.reset();
-    state.delivery?.reset();
-    state.gate?.reset();
-    settleHeld = false;
+    // The delivery core and the gate are registration-owned: they reset even
+    // for a session that never started, exactly as before the state split.
+    shadowDelivery.reset();
+    completionGate.reset();
     draining = false;
     seenPhases.clear();
     statusContext?.ui.setStatus?.(SHADOW_STATUS_KEY, undefined);
@@ -1060,8 +682,13 @@ export default function registerShadowMinds(
       const sessionCtx = ctx;
       // A settled run may have freed a concurrency slot for queued work.
       state.scheduler.handleRunSettled();
+      // Result delivery, gate transitions, and transcript references are
+      // session-scoped work (#373): before session_start there is neither a
+      // transcript to reference nor a delivery window to honor, so the
+      // subscriber observes lifecycle state only and never throws.
+      if (!isShadowSessionState(state)) return;
       // Every gate-subscribed completion draining closes the gate early.
-      state.gate?.notifyActivity();
+      state.gate.handleRunTransition({ kind: "shadow-activity" });
       refreshStatus();
       const results = state.runtime.snapshot().results;
       for (const result of results) {
@@ -1070,7 +697,7 @@ export default function registerShadowMinds(
         // from a reopened partition stay inbox-only until explicitly sent.
         if (!seenDelivery.has(result.id)) {
           seenDelivery.add(result.id);
-          state.delivery?.enqueueResult(result);
+          state.delivery.enqueueResult(result);
         }
         if (!effectiveConfig().enabled) continue;
         inFlightReferences.add(result.id);
@@ -1080,7 +707,7 @@ export default function registerShadowMinds(
         // of one authoritative result cannot both append it. A refused claim
         // stays fail-closed; only an append that explicitly throws releases
         // its owner token for a later retry.
-        if (!(currentInbox?.claimReference?.(result.id) ?? true)) {
+        if (!state.resultStore.claimReference(result.id)) {
           inFlightReferences.delete(result.id);
           continue;
         }
@@ -1096,7 +723,7 @@ export default function registerShadowMinds(
           // A session append that did not complete leaves no reference. The
           // result stays authoritative in the inbox and releasing this
           // instance's token lets a later observer retry.
-          currentInbox?.releaseReferenceClaim?.(result.id);
+          state.resultStore.releaseReferenceClaim(result.id);
           inFlightReferences.delete(result.id);
           continue;
         }
@@ -1107,7 +734,7 @@ export default function registerShadowMinds(
         // persisted optimization bit until a later repair path.
         seenResults.add(result.id);
         try {
-          currentInbox?.markReferenced?.(result.id);
+          state.resultStore.markReferenced(result.id);
         } catch {
           // Keep the claim fail-closed: the transcript append already landed.
         } finally {
@@ -1136,6 +763,19 @@ export default function registerShadowMinds(
   return state;
 }
 
+const QUIET_CONFIRM_BRANCH_ENTRIES_MAX = 128;
+
+/** IDs carried by actual persisted Shadow custom-message entries near the leaf. */
+function quietDeliveryIdsFromBranch(sessionManager: unknown): string[] {
+  const branch = (sessionManager as { getBranch?: () => unknown[] } | undefined)?.getBranch?.();
+  if (!Array.isArray(branch)) return [];
+  const ids = new Set<string>();
+  for (const entry of branch.slice(-QUIET_CONFIRM_BRANCH_ENTRIES_MAX)) {
+    for (const id of shadowNotificationResultIds(entry)) ids.add(id);
+  }
+  return [...ids];
+}
+
 /** Bounded per-task-epoch snapshot store: late dispatch composes with the authority frozen for that task. */
 export function createTaskSnapshotStore() {
   const store = new Map<number, ShadowTaskSnapshot>();
@@ -1159,7 +799,7 @@ export function createTaskSnapshotStore() {
 
 export const __testables = {
   makeServices,
-  createTaskSnapshotStore,
   hasRunningGateCompletion,
+  createTaskSnapshotStore,
   quietDeliveryIdsFromBranch,
 };

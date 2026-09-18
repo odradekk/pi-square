@@ -1,13 +1,18 @@
 import { isWindowsPlatform } from "../shell/platform";
 
-const BUILT_IN_TOOL_NAMES = ["read", "bash", "edit", "write", "grep", "find", "ls"] as const;
+/**
+ * Every built-in tool name a subagent definition may list under `tools`, in
+ * canonical order. The configuration guide renders its built-in tool list from
+ * this constant (#334) so the guide cannot drift from tool resolution.
+ */
+export const BUILT_IN_TOOL_NAMES = ["read", "bash", "edit", "write", "grep", "find", "ls"] as const;
 const NON_SHELL_BUILT_INS = BUILT_IN_TOOL_NAMES.filter((name) => name !== "bash");
 const NO_BUILT_IN_TOOLS = "none";
 
 // Anchored editing tools are granted only by the edit capability, never by
 // name: a definition that lists `edit` resolves to them while anchored editing
 // is on, and a definition that names them directly is rejected.
-const CAPABILITY_ONLY_TOOL_NAMES = new Set(["replace"]);
+const CAPABILITY_ONLY_TOOL_NAMES = new Set(["replace", "insert"]);
 
 type BuiltInToolName = typeof BUILT_IN_TOOL_NAMES[number];
 

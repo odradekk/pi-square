@@ -50,6 +50,138 @@ describe("servedHashesFromDiff", () => {
   });
 });
 
+describe("mutation survivor publication (#299)", () => {
+  it("derives survivors from structural evidence instead of trusting caller-selected hashes", async () => {
+    await withTempHome(async (home) => {
+      const store = await openStore(home);
+      try {
+        const before = { content: "a\nb\nc\n", hashes: ["AAA", "BBB", "CCC"] };
+        store.publishRead({
+          path: "/a.ts",
+          ...before,
+          servedHashes: [...before.hashes],
+        });
+
+        // BBB keeps both its identity and bytes in replacement text, but it
+        // was consumed together with CCC. Only untouched AAA may carry.
+        const after = { content: "a\nb\nC\n", hashes: ["AAA", "BBB", "DDD"] };
+        store.publishMutation({
+          path: "/a.ts",
+          before,
+          after,
+          survival: { kind: "replace", consumedRange: { first: 2, last: 3 } },
+        });
+
+        expect(store.getServedState("/a.ts", after.content)).toEqual({ served: new Set(["AAA"]) });
+      } finally {
+        store.release();
+      }
+    });
+  });
+
+  it("does not carry a survivor hash moved onto another identical logical row", async () => {
+    await withTempHome(async (home) => {
+      const store = await openStore(home);
+      try {
+        const before = { content: "same\nx\nsame\n", hashes: ["AAA", "BBB", "CCC"] };
+        store.publishRead({ path: "/a.ts", ...before, servedHashes: [...before.hashes] });
+
+        const after = { content: "same\ny\nsame\n", hashes: ["CCC", "DDD", "AAA"] };
+        store.publishMutation({
+          path: "/a.ts",
+          before,
+          after,
+          survival: { kind: "replace", consumedRange: { first: 2, last: 2 } },
+        });
+
+        expect(store.getServedState("/a.ts", after.content)).toEqual({ stale: true });
+      } finally {
+        store.release();
+      }
+    });
+  });
+
+  it("rolls back every path when structural mutation evidence is invalid", async () => {
+    await withTempHome(async (home) => {
+      const store = await openStore(home);
+      try {
+        const before = { content: "a\nb\n", hashes: ["AAA", "BBB"] };
+        for (const path of ["/a.ts", "/alias.ts"]) {
+          store.publishRead({ path, ...before, servedHashes: [...before.hashes] });
+        }
+
+        expect(() => store.publishMutation({
+          path: "/a.ts",
+          aliases: ["/alias.ts"],
+          before,
+          after: { content: "a\nB\n", hashes: ["AAA", "CCC"] },
+          survival: { kind: "replace", consumedRange: { first: 2, last: 3 } },
+        })).toThrow(/consumed range is invalid/);
+
+        for (const path of ["/a.ts", "/alias.ts"]) {
+          expect(store.getServedState(path, before.content)).toEqual({ served: new Set(before.hashes) });
+          expect(store.getSnapshot(path, before.content)).toEqual(before.hashes);
+        }
+      } finally {
+        store.release();
+      }
+    });
+  });
+
+  it("rolls back earlier alias writes and publishes no candidate cache when a later SQL step fails", async () => {
+    await withTempHome(async (home) => {
+      const store = await openStore(home);
+      const before = { content: "a\nb\n", hashes: ["AAA", "BBB"] };
+      const after = { content: "a\nB\n", hashes: ["AAA", "CCC"] };
+      try {
+        for (const path of ["/a.ts", "/alias.ts"]) {
+          store.publishRead({ path, ...before, servedHashes: [...before.hashes] });
+        }
+
+        const internals = store as unknown as {
+          entry: {
+            stmts: {
+              mergeServedVersioned: (
+                owner: string,
+                path: string,
+                hashes: string[],
+                contentHash: string,
+                updatedAt: number,
+              ) => void;
+            };
+          };
+        };
+        const statements = internals.entry.stmts;
+        const mergeServedVersioned = statements.mergeServedVersioned;
+        statements.mergeServedVersioned = (...args) => {
+          if (args[1] === "/alias.ts") throw new Error("injected alias publication failure");
+          mergeServedVersioned(...args);
+        };
+        try {
+          expect(() => store.publishMutation({
+            path: "/a.ts",
+            aliases: ["/alias.ts"],
+            before,
+            after,
+            survival: { kind: "replace", consumedRange: { first: 2, last: 2 } },
+            servedHashes: ["CCC"],
+          })).toThrow(/injected alias publication failure/);
+        } finally {
+          statements.mergeServedVersioned = mergeServedVersioned;
+        }
+
+        for (const path of ["/a.ts", "/alias.ts"]) {
+          expect(store.getSnapshot(path, after.content), "no rolled-back candidate entered the cache").toBeUndefined();
+          expect(store.getSnapshot(path, before.content)).toEqual(before.hashes);
+          expect(store.getServedState(path, before.content)).toEqual({ served: new Set(before.hashes) });
+        }
+      } finally {
+        store.release();
+      }
+    });
+  });
+});
+
 describe("version-bound served state (#264)", () => {
   const ORIGINAL = "a\nb\nc\n";
   const CHANGED = "a\nB\nc\n";

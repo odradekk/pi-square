@@ -24,7 +24,7 @@ The redesign covers every renderer-owned operational surface:
 - Pi built-ins whose renderers are explicitly owned by pi-square;
 - third-party tools that explicitly opt in through the public display Adapter;
 - header, footer, extension status, todo widget, prompt manager, and display manager;
-- ask workflows, confirmation content, SSH masked-input content, and subagent manager, status, notifications, and Config Guide.
+- ask workflows, confirmation content, SSH masked-input content, and subagent manager, roster, notifications, and Config Guide.
 
 It does not cover:
 
@@ -106,7 +106,7 @@ Loc: {cwd / branch / session}                 {context usage / window}
 {optional overflow statuses}
 ```
 
-The highest-priority short status may occupy an available right-side hint position. Multiple or long statuses use the conditional third line. Subagent activity, required user action, security warnings, and renderer-ownership diagnostics have fixed priorities and use their own state markers instead of a blanket warning marker.
+The highest-priority short status may occupy an available right-side hint position. Multiple or long statuses use the conditional third line. Required user action, security warnings, and renderer-ownership diagnostics have fixed priorities and use their own state markers instead of a blanket warning marker. Subagent background activity is not a footer status: it renders in its own session-scoped `aboveEditor` roster (#303), one row per retained current-parent child.
 
 Narrow layouts retain the existing compact, regular, and wide responsive tiers and progressively omit low-priority footer details. No independent data polling or persisted usage accounting is introduced.
 

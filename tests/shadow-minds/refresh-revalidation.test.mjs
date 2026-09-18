@@ -4,6 +4,8 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import jiti from "jiti";
 
+import { addComposedEventHandler } from "../subagents/lib/test-helpers.mjs";
+
 // #191: file-driven refresh meets the scheduler. Reopening /shadow reloads
 // definition files and immediately revalidates pending activations against
 // the refreshed registry — deleted, disabled, invalid, or unsubscribed work
@@ -172,8 +174,9 @@ function queuePendingMutation(harness) {
 // ── Full user-owned lifecycle through the real wiring (#191) ─────────
 
 {
-  const { default: registerShadowMinds } = await load(join(packageRoot, "src", "shadow-minds", "index.ts"));
-  const { __testables } = await load(join(packageRoot, "src", "shadow-minds", "index.ts"));
+  // One load: the registration and its testable services must share the
+  // module instance so the services resolve the registration's result store.
+  const { default: registerShadowMinds, __testables } = await load(join(packageRoot, "src", "shadow-minds", "index.ts"));
   const { loadConfig } = await load(join(packageRoot, "src", "core", "config.ts"));
 
   const dir = mkdtempSync(join(tmpdir(), "pi-square-shadow-lifecycle-"));
@@ -220,7 +223,10 @@ function queuePendingMutation(harness) {
     const pi = {
       registerCommand: (name, definition) => harness.commands.set(name, definition),
       registerMessageRenderer: (name, renderer) => harness.renderers.set(name, renderer),
-      on: (event, handler) => harness.handlers.set(event, handler),
+      // Pi invokes every handler registered for one event, so a second
+      // subscriber (the delivery lifecycle subscription) never displaces
+      // the first.
+      on: (event, handler) => addComposedEventHandler(harness.handlers, event, handler),
       sendMessage: (message, options) => harness.events.push(["guide", message, options]),
       sendUserMessage: (message, options) => harness.events.push(["user", message, options]),
       appendEntry: (type, data) => harness.entries.push({ type, data }),

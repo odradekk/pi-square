@@ -24,10 +24,15 @@ record supersedes the affected decisions.
 `src/anchored-edit/operations.ts` owns target resolution, in-process queue
 participation, cross-process exclusion, disk observation or mutation, and the
 matching owner-scoped store transaction for parent and writable-child reads,
-replaces, and writes. Tool integrations delegate canonicalization to that
-module and never implement lock files, queue ordering, filesystem mechanics,
-cache ownership, or database transactions directly. The invariant stated in
-one place and tested there: model-visible anchors correspond to exact file
+inserts, replaces, and writes. Tool integrations delegate canonicalization to
+that module and never implement lock files, queue ordering, filesystem
+mechanics, cache ownership, or database transactions directly. `insert` is a
+first-class insertion mutation through the same boundary (odradekk/pi-square#285):
+it never constructs a replacement containing the anchor line, splices one
+literal ordered block at one before/after position of one observed anchor,
+and reports the number of inserted lines as added and zero removed. The
+invariant stated in one place and tested there: model-visible anchors
+correspond to exact file
 bytes, belong to one physical store and owner, and are published only for a
 completed operation.
 
@@ -35,9 +40,10 @@ completed operation.
 
 Pi's per-file mutation queue is the outer in-process serializer and the
 anchored cross-process lock is the inner serializer for **every** mutation.
-`replace` enters the queue explicitly; parent and child writes are still
-constructed from Pi's public write factory, but the anchored write operation
-is injected through the factory's supported filesystem-operation seam
+`replace` and the `insert` of both the parent and writable children enter the queue explicitly; parent and
+child writes are still constructed from Pi's public write factory, but the
+anchored write operation is injected through the factory's supported
+filesystem-operation seam
 (`WriteOperations.writeFile`), so the lock is acquired *inside* the native
 queue. This deliberately reopens ADR-0007's accepted same-process lock-order
 inversion: the audit showed that bounded waiting converts the internal
@@ -69,7 +75,17 @@ completed write was aborted. `[E_RANGE_STALE]` is reserved for validation
 performed after the lock is acquired against a file that no longer matches
 the served range; it keeps returning the current range with fresh anchors
 and serving those rows for the immediate retry. The child `requireServed`
-gate is unchanged.
+gate is unchanged. Insert is stricter than replace on one axis (#285): its
+served-anchor authorization is mandatory for every owner, the parent
+included — an insert adds content adjacent to a line the caller must have
+observed, so there is no edit-without-prior-read path — and every
+recoverable refusal (stale, ambiguous, or unserved) returns bounded
+current anchored context (the anchor row with its neighbours, the
+ambiguous candidates, or — when the anchor vanished entirely — the
+deterministic head of the current file) published against the observed
+version for the immediate retry. The anchor's public form is validated
+before any store, target, or file I/O, so a malformed anchor is rejected
+without entering the boundary.
 
 ### Replace: pure preparation, version-bound authorization, atomic publication
 
@@ -83,15 +99,54 @@ against rows recorded for the file's current version. Rows recorded for any
 other version authorize nothing — for every owner, parent included — so an
 external modification (or a mutation whose publication failed, or a process
 that died at that boundary) invalidates the previous authorization until a
-fresh read republishes current rows. Validation failures carry the observed
+fresh read republishes current rows. One refinement (#299): the acting
+owner's own successful structured mutation is a *trusted self-transition*.
+Mutation publication receives the pre-mutation content, the resolved
+consumed interval (replace) or insertion boundary and empty-file-initialization flag (insert),
+and the post-mutation content and hashes — all preparation evidence, no
+post-commit filesystem consultation — and in the same repository
+transaction, while the boundary is still held, it rebinds exactly the
+proven survivors from the pre-mutation version to the installed version:
+rows served to that owner for that version, outside a replace's consumed
+interval (an insertion consumes no observed row; the synthetic empty-file
+anchor is never a survivor), whose hash identity and logical bytes are
+unchanged in the installed snapshot. Survival is classified explicitly and
+defensively — never inferred from a hash-set intersection, because identical
+replacement content may reuse a consumed row's identity — and the store
+re-reads the owner's rows for the exact pre-mutation checksum inside the
+transaction, so a caller cannot smuggle another version's authorization
+forward. For a multi-link inode, the boundary supplies every currently
+resolvable path already known to the acting owner; the store advances those
+aliases together in the same transaction while replaying the transition from
+each alias's exact prior snapshot, so its own stable anchors survive even when
+its hash mapping differs from the invoked path. Other owners' aliases remain
+on their observed version. The next served set is the deduplicated union of carried survivors
+and the newly visible diff rows (auto-read on) or the carried survivors
+alone (auto-read off, which discloses and newly serves no diff rows while
+preserving already-observed survivors). When nothing is eligible, the
+previous version's rows remain as the stale barrier. Only the acting
+owner's rows transition; every other owner's rows stay bound to the version
+they observed and go stale. The transition completes before the boundary
+releases, so the next queued same-target operation — including one launched
+concurrently — validates against carried plus fresh authorization instead
+of a self-generated stale refusal; the linearizability claim is exactly
+that: non-conflicting operations all take effect, while a later operation
+whose anchor or range an earlier one consumed or changed is still refused.
+A model may therefore issue independent same-file mutations together from one
+read. Operations that overlap, consume another operation's anchor, or depend
+on newly created text remain ordered dependencies and must use the earlier
+result's anchors.
+A no-op replacement performs no transition. Whole-file writes keep their
+clearing publication: an unstructured rewrite supplies no consumed interval
+from which to prove row survival. Validation failures carry the observed
 content out of preparation (`ReplaceValidationError`) so the coordinator
 publishes the refusal's feedback rows version-bound from inside the
 boundary: the model's immediate retry with the fresh anchors verifies, while
 the older version stays unusable.
 
 The filesystem commit is the irreversible point. After it, the candidate
-snapshot and the diff's served rows are published in one repository
-transaction while the lock is still held. A post-commit publication failure
+snapshot, the diff's served rows, and the #299 survivor transition above are
+published in one repository transaction while the lock is still held. A post-commit publication failure
 never reports that the file was not changed: the result keeps the truthful
 mutation success, suppresses fresh anchors, emits a bounded
 `[E_STATE_UNAVAILABLE]` warning directing a fresh read, and — through the
@@ -266,6 +321,36 @@ resolution returns one discriminated success-or-failure result;
 normalization, duplicate-boundary correction, and application consume the
 already-resolved range without re-resolving.
 
+### Insert through the same boundary (#285)
+
+`insert` reuses this record's boundary, publication, and truthfulness rules
+without a second coordinator: the same queue-then-lock order, canonical
+target resolution with hard-link identity and frozen symlink targets, the
+same atomic write and abort checks, the same `publishMutation` transaction
+(serving the authoritative diff's visible rows under auto-read alongside the
+owner's carried survivors, publishing the new version's snapshot with only
+the carried survivors — or leaving the previous rows as the stale barrier
+when none are eligible — when auto-read is off), and
+the same truthful post-commit contract (`[E_STATE_UNAVAILABLE]` keeps the
+success and suppresses fresh anchors). The staged slice covered the parent,
+existing non-empty files, and non-empty logical lines; #286 completed the
+logical-line contract: an empty-string item is one real blank logical line
+(a blank row appended after an unterminated last row brings its own
+terminator, so the bytes gain two terminal newlines), and an empty file
+initializes through the synthetic anchor its read serves, with `before` and
+`after` as the same initialization and no insert-specific resource limits.
+The writable-child edit capability is no longer a later ticket: since #287 a
+writable child that declares `edit` receives the same renderer-free `insert`
+next to `replace` under the child's own owner partition, with the anchored
+names added to the effective child allowlist, capability-only (never
+requestable by name through the child extension catalog), and re-resolved
+identically on fresh and resumed sessions. Shadow Minds mutation observation
+is completed by #288 under the applied-only and
+path-only trajectory rules recorded in [ADR-0011](0011-shadow-minds.md).
+The parent registers
+`insert` under the same anchored-edit configuration, store-readiness,
+anchored-read ownership, and conflict gates as `replace`.
+
 ### Removed and unchanged
 
 The workspace-confinement mode is removed from the anchored-edit runtime
@@ -275,8 +360,12 @@ everywhere. The session-directory store placement, ephemeral
 workspace-keyed fallback, parent owner, child partitioning, partition
 bounds, corruption recovery, and busy retry behavior are unchanged.
 `replace` remains the only range-editing path with no persistent undo or
-revert state. The store's undo-free quarantine-and-rebuild policy from #187
-now simply covers one more incompatible layout.
+revert state — superseded in part by #285: `insert` now also edits files
+adjacent to one anchor through the same boundary, so the earlier
+replace-only phrasing of the anchored mutation surface applies to the pair.
+There is still no persistent undo or revert state. The store's undo-free
+quarantine-and-rebuild policy from #187 now simply covers one more
+incompatible layout.
 
 ## Superseded decisions
 
@@ -315,7 +404,12 @@ now simply covers one more incompatible layout.
    the replaced range, with unchanged anchor lines — is refused with
    `[E_RANGE_STALE]` until a fresh read. The refusal carries fresh anchors
    whose immediate retry applies, so the cost is one refused call, not a
-   lost edit.
+   lost edit. #299 narrows this strictly to untrusted changes: the owner's
+   own successful structured mutation carries its proven survivors forward
+   (see the replace section), so multi-edit batches and concurrent
+   non-conflicting same-target calls no longer produce false stale
+   refusals, while external writes, other owners, whole-file writes, and
+   failed publications keep the fail-closed behavior unchanged.
 6. The parent write's filesystem seam means an anchored session depends on
    the public `WriteOperations` contract of the pinned Pi version; the plain
    filesystem write performed when anchored editing is disabled or the

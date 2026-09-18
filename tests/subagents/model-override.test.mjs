@@ -116,7 +116,7 @@ function definition(overrides = {}) {
 }
 
 function freshInput(overrides = {}) {
-  return { ctx: ctx(), id: nextId(), mode: "fg", task: "task", thinkingLevel: "medium", definition: definition(), ...overrides };
+  return { ctx: ctx(), id: nextId(), task: "task", thinkingLevel: "medium", definition: definition(), ...overrides };
 }
 
 function lastCall() {
@@ -166,18 +166,6 @@ test("child layers immutable governance before the parent SYSTEM core and expose
   assert.deepEqual(lastCall().resourceLoader.getAgentsFiles().agentsFiles, sdkState.agentsFiles);
 });
 
-test("V2 policy layers after the parent core and before call-specific policy", async () => {
-  reset();
-  await runSubagentTask(freshInput({
-    inheritedSystemCore: "PARENT SYSTEM",
-    systemPrompt: "CALL-SPECIFIC POLICY",
-    definition: definition({ policy: "PROFILE POLICY" }),
-  }));
-  const system = lastCall().resourceLoader.getSystemPrompt();
-  assert.ok(system.indexOf("PARENT SYSTEM") < system.indexOf("PROFILE POLICY"));
-  assert.ok(system.indexOf("PROFILE POLICY") < system.indexOf("CALL-SPECIFIC POLICY"));
-});
-
 test("fresh sessions resolve and persist the portable shell capability", async () => {
   reset();
   const result = await runSubagentTask(freshInput({ definition: definition({ tools: ["read", "edit", "shell"] }) }));
@@ -189,22 +177,22 @@ test("fresh sessions resolve and persist the portable shell capability", async (
   assert.equal(lastCall().customTools, undefined);
 });
 
-test("none starts a child with only the requested GitHub custom tools", async () => {
+test("none starts a child with only the requested custom tools", async () => {
   reset();
   const result = await runSubagentTask(freshInput({
-    definition: definition({ tools: ["none"], extensionTools: ["github"], skills: ["none"] }),
+    definition: definition({ tools: ["none"], extensionTools: ["library_docs"], skills: ["none"] }),
   }));
-  assert.deepEqual(lastCall().tools, ["github"]);
-  assert.deepEqual(lastCall().customTools.map((tool) => tool.name), ["github"]);
+  assert.deepEqual(lastCall().tools, ["library_docs"]);
+  assert.deepEqual(lastCall().customTools.map((tool) => tool.name), ["library_docs"]);
   assert.deepEqual(result.details.agent.tools, ["none"]);
-  assert.deepEqual(result.details.agent.extensionTools, ["github"]);
+  assert.deepEqual(result.details.agent.extensionTools, ["library_docs"]);
   assert.deepEqual(result.details.agent.skills, ["none"]);
 });
 
 test("built-in names under extensionTools fail before child creation", async () => {
   reset();
   const result = await runSubagentTask(freshInput({ definition: definition({ tools: ["read"], extensionTools: ["read"] }) }));
-  assert.equal(result.details.phase, "error");
+  assert.equal(result.details.phase, "failed");
   assert.equal(result.details.errorInfo.code, "INVALID_ARGUMENT");
   assert.equal(sdkState.calls.length, 0);
 });
@@ -219,6 +207,22 @@ test("YAML defaults, inherited model and effort, and model registry compat remai
   assert.equal(lastCall().thinkingLevel, "medium");
   assert.equal(inherited.details.agent.model, "inherited/main-model");
   assert.equal(inherited.details.agent.effort, "medium");
+});
+
+test("Pi-native max effort works for profile defaults and parent inheritance", async () => {
+  reset();
+  const configured = await runSubagentTask(freshInput({ definition: definition({ effort: "max" }) }));
+  assert.equal(configured.details.phase, "completed");
+  assert.equal(lastCall().thinkingLevel, "max");
+  assert.equal(configured.details.agent.effort, "max");
+
+  const inherited = await runSubagentTask(freshInput({
+    thinkingLevel: "max",
+    definition: definition({ model: undefined, effort: undefined }),
+  }));
+  assert.equal(inherited.details.phase, "completed");
+  assert.equal(lastCall().thinkingLevel, "max");
+  assert.equal(inherited.details.agent.effort, "max");
 });
 
 test("a bare provider response cannot downgrade the qualified model frozen for resume", async () => {
@@ -270,7 +274,7 @@ test("retry events are counted while a recovered tool error remains non-terminal
     };
   };
   const result = await runSubagentTask(freshInput());
-  assert.equal(result.details.phase, "done");
+  assert.equal(result.details.phase, "completed");
   assert.equal(result.details.retries, 1);
   assert.equal(result.details.toolErrors.length, 1);
 });
@@ -316,7 +320,7 @@ test("retry exhaustion returns a structured retryable error", async () => {
     };
   };
   const result = await runSubagentTask(freshInput());
-  assert.equal(result.details.phase, "error");
+  assert.equal(result.details.phase, "failed");
   assert.equal(result.details.errorInfo.code, "RETRY_EXHAUSTED");
   assert.equal(result.details.errorInfo.retryable, true);
   assert.equal(result.details.errorInfo.retries, 3);

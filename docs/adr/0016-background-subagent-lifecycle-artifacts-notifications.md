@@ -1,0 +1,442 @@
+---
+status: accepted
+---
+
+# Background-only subagent lifecycle, V4 run artifacts, and V5 notifications
+
+> Status note: since #303 the compact subagent status row this ADR referenced
+> is retired. Subagent observability now publishes through the session-scoped
+> vertical child roster (`src/subagents/roster.ts`) above the editor — a
+> read-only projection of the background job store with no durable state, no
+> retention exemption, and no delivery interaction — and `undelivered`
+> visibility lives solely in the `/subagent` manager. Where this ADR says the
+> status row, read the roster. Since #304 the roster is also keyboard-selectable
+> from an exactly empty native editor, and Enter opens the selected child in a
+> centered, capturing, read-only transcript overlay (`src/subagents/viewer.ts`)
+> built on Pi 0.84.2 public components and the roster-grade allowlisted tool
+> projection. Raw arguments never render; since #307, an expanded tool row may
+> render one bounded, credential-sanitized result projection. Pi's native
+> assistant grouping stays intact before the shared operational display renders
+> its tool rows with the shared marker motion, outer-entry elapsed time, muted
+> structural target, and fixed terminal outcome; tool results update pending calls
+> in place. Unsupported parts
+> remain visible afterward through fixed fallbacks, and arbitrary provider
+> and artifact diagnostics remain outside the overlay in favor of closed
+> lifecycle/error-code states; viewing is
+> observational only and never touches the lifecycle, delivery, ownership, or
+> persistence contracts this ADR records. Since #305 the overlay pages the
+> child's complete persisted history on demand (`src/subagents/child-history.ts`):
+> bounded byte pages read tail-first from the validated native session file
+> through the same artifact identity boundary as resume — which requires a
+> directly named regular file and rejects symlinks even inside the artifacts
+> directory — byte-level stitching of only newline-terminated records in both
+> paging directions (an unterminated final line stays the running child's
+> incomplete append, and a record larger than one page stitches forward too),
+> per-read verification that pre-open path, opened descriptor, and post-open
+> path retain one regular-file dev/ino identity, minimal native-envelope
+> validation (non-empty `type`
+> and `id`, unique within the loaded window), independent older/newer bounded
+> retryable page errors that keep validated pages visible even when a page
+> projects no transcript rows, a hard 480-item and 64-parsed-page in-memory
+> window whose oversized pages keep a window into their own parse with
+> far-end trimming that stays reachable in both directions and whose
+> metadata-only pages compact without displacing the current visible anchor,
+> stable native-entry-identity plus entry-local-ordinal positioning, and
+> cross-page result consumption that survives either adjacent page's reload —
+> with no second transcript store, cache, index, sidecar, lock, journal, or
+> artifact version beside the native session file. Since #306 the overlay is
+> live while the child runs: the one-time child execution boundary derives
+> ordered bounded view events (assistant deltas as ordered text/thinking parts,
+> message completion, tool start/update/end, tool-result completion, and run
+> lifecycle) after its own run-state bookkeeping and hashes native call IDs
+> before they enter the feed. An unobserved child retains no events. For an
+> open observer, publication only enqueues into the session generation's hard-
+> bounded ordered FIFO; omission markers count inside the same cap. Ordinary
+> updates drain one per scheduler tick. Before a queued structural boundary,
+> superseded no-op tool updates are discarded and cumulative assistant deltas
+> reduce to their newest state; the remaining ordered prefix drains through
+> the newest boundary while a 25 ms total flush budget remains, and a slow
+> observer yields the remainder. The default two-stage scheduler gives the
+> child a continuation turn before viewer work and never invokes a subscriber
+> inside the child's event dispatch. A real 25 ms
+> JavaScript watchdog interrupts and evicts a throwing or blocked subscriber;
+> scheduler failure never falls back inline. Parent-session replacement
+> installs a new feed generation, and a running child keeps its publisher
+> captured to the old generation, so late events cannot enter the replacement.
+> The open overlay renders a bounded live tail below persisted history through
+> the same sanitized assistant and roster-grade tool projections, coalesces
+> ordinary repaint requests through one controller-owned timer (~110 ms), and
+> repaints structural events at their first flush. Immediately before Pi 0.84.2
+> persists each completed message, the event captures the native session JSONL
+> size; persisted projections carry their exact line-start byte offsets. A live
+> completion reconciles only against the same bounded content hash and native
+> timestamp whose line begins exactly at that pre-append floor. Pi persists
+> each message-end before emitting the next, so equal occurrences remain exact across delayed
+> delivery and demand paging without a lifetime consumed-occurrence ledger. A
+> missing floor or byte offset fails closed and leaves the bounded live row or
+> omission marker visible.
+> Live and persisted tool rows share the same non-reversible hash of the full
+> native call ID. Overflow sheds oldest-first, keeps unknown drops visibly
+> sticky, and clears a terminal-tool fingerprint only after its result appears.
+> A child that terminalizes while open stays open with final lifecycle and
+> content. Observer and renderer failures remain bounded presentation failures
+> and never touch the lifecycle, delivery, ownership, or persistence contracts
+> this ADR records.
+> Since #307 the overlay also carries cross-child navigation and per-child
+> reading state: while it is open, Up/Down move a roster candidate anchored on
+> the open child and Enter re-points the same overlay handle at the candidate
+> in place — no stacking, no return to main — while Escape cancels a changed
+> candidate before it ever closes. Transcript scrolling (PageUp/PageDown/Home/
+> End, plus the mouse wheel in fullscreen TUI mode where the alt screen defers
+> wheel events to the focused overlay) stays separate from roster navigation;
+> the first open follows the tail, upward scrolling suspends following with a
+> one-row footer new-output state that End clears while resuming follow; the
+> footer also names an off-screen candidate's role and unique short ID while a
+> candidate is tentative (budgeted so the unique ID is the last part to
+> shrink); the first open follows the tail through an explicit follow flag
+> that renders never overwrite with a finite offset, upward scrolling
+> suspends following with the position anchored on its stable transcript
+> entry, and End is the one key that resumes following; each child
+> independently retains its loaded history view, scroll position, follow
+> state, new-output notice, and tool-expansion state across direct switches
+> (retained only while the overlay session is open); and Pi's effective
+> expand-tools shortcut toggles only the open overlay's tool rows, never the
+> background main transcript — a collapsed row stays one line while an
+> expanded row reveals one bounded, credential-sanitized result projection,
+> including when the paired result crosses an adjacent history-page seam (raw
+> arguments never render). The mouse wheel scrolls only in fullscreen
+> TUI mode: pi-tui enables mouse tracking there and defers wheel events to
+> the focused overlay, while inline regular mode exposes no public API for
+> extension-visible wheel events under Pi 0.84.2. Every view-state transition
+> stays observational only — no lifecycle, delivery, ownership, claim, wait,
+> abort, resume, or persistence effect.
+> Since #308 the roster is also main-task scoped: the controller tracks a
+> session-scoped visibility epoch that advances only where main provably
+> accepted a real prompt — `before_agent_start` for an idle interactive or
+> rpc prompt (Pi emits it after preflight, once the message array is built)
+> and the user `message_start` for a steer or follow-up queued during a
+> streaming run — because the `input` event alone proves nothing: a later
+> extension may return `action: "handled"` from the input chain so
+> `session.prompt` never sends the prompt, a preflight failure never starts
+> a run, slash commands and local `!` shell commands never reach the chain,
+> and extension follow-ups such as the Config Guide carry
+> `source: "extension"` and never advance it. Because Pi 0.84.2 exposes no
+> post-chain streaming-input event, `src/subagents/main-task-input.ts`
+> correlates pre-chain observations with accepted user messages by text hash
+> and the native enqueue timestamp, keeps steer and follow-up order separate,
+> and uses Pi's public pending-message signal to discard observations that a
+> later handler consumed. The input observer remains synchronous because Pi
+> determines the event's streaming behavior before the chain and checks the
+> live streaming state again afterward; streaming observations cross that
+> settle boundary until Pi chooses either an idle start or a queued
+> continuation. Pi 0.84.2 exposes
+> neither a post-chain accepted-input event nor source metadata on queued user
+> messages. Same-text observations sharing one native millisecond timestamp —
+> including inputs that a later asynchronous handler reorders or consumes —
+> are therefore not losslessly distinguishable inside an extension. Ordinary
+> interactive submission is serial, and this unsupported collision resolves
+> deterministically to the latest eligible observation. Session replacement
+> and the next provably empty input reset stale observations, so a handled or
+> aborted input cannot contaminate a later run or replacement session.
+> Ordinary terminal
+> rows of the preceding task expire at that boundary, active children survive
+> it and join the current epoch when they later terminalize, a re-queued
+> public ID becomes visible again immediately, and the epoch is presentation
+> state only: the store's finished-job compaction and pending/claimed
+> delivery exemptions remain the single retention authority and the manager
+> keeps historical inspection. Parent replacement, reload, fork, resume, and
+> shutdown close the overlay, clear widget and view state, unsubscribe every
+> listener, and cancel repaint work, while the established shutdown path
+> keeps sole authority over aborting active children and resetting delivery;
+> opening and using the viewer never claims, takes, releases, confirms,
+> sends, drops, or reorders a result and never changes resume eligibility,
+> and non-interactive contexts create no roster, overlay, key listener,
+> timer, or output change. The release-facing documentation audit of the
+> parent viewer specification (#302) closed with #309: the user documentation,
+> the contributor architecture, and this record now describe the roster/viewer
+> boundary and its published limitations together — the main session is never
+> a roster row, opening a child is never a writable session switch, the whole
+> surface runs on Pi 0.84.2 public extension APIs alone (no private transcript
+> pipeline, no upstream fork), a third-party capturing overlay cannot be
+> detected through any public focus query, and parity with Pi's private
+> transcript features (transcript search, prompt jump, click selection,
+> third-party renderers, native image handling) is neither used nor promised —
+> with no new viewer behavior added by that slice.
+> Since #367 the transcript the overlay renders is owned by one module,
+> `src/subagents/transcript.ts`, whose interface answers exactly three questions —
+> read a page of persisted history, read the live tail, and subscribe to changes —
+> with `src/subagents/child-history.ts` and `src/subagents/live-events.ts` as its
+> implementation files, imported by the module alone. The occurrence
+> reconciliation described above is the module's internal invariant, asserted at the
+> module interface for every arrival order; the viewer is a pure rendering-and-input
+> surface over it, and since #371 the module also owns the wiring around it: the
+> session-scoped registry constructs the pager, retains one transcript per observed
+> child, and forwards the observed child's feed events into it — a contained
+> subscriber failure surfaces as the one bounded diagnostic row — while the
+> module also owns the overlay repaint seams (the coalesce throttle and the
+> timer pair behind the controller's one coalesced repaint timer) and the
+> background lifecycle publishes through the module's guarded publisher and the
+> child execution seam derives native events through it, so the implementation
+> files are imported by the module alone. The roster is a pure row projection over
+> the background store: it obtains each child's transcript from the registry,
+> schedules its repaints from the module's change notifications, and drives
+> terminal catch-ups through the module's reconcile, whose changed window notifies
+> so the view refreshes without any controller-side forward; the viewer's former
+> `applyLiveEvent`/`reconcileNow`/`setLiveDiagnostic` forwards are gone. Nothing
+> else in this record moves: the FIFO bounds, the flush budget, the generation
+> isolation, and every reconciliation rule stay exactly as described above.
+
+
+pi-square completes the subagent contract change begun with the
+`delegate_subagent`/`resume_subagent` rename: delegation is background-only,
+every surface speaks one lifecycle, and the persisted and delivered protocols
+are explicit current contracts with no compatibility surface for the retired
+foreground protocol.
+
+This ADR governs the background-only execution model, the lifecycle
+vocabulary, the run-artifact and prompt-snapshot persistence contracts, and
+the background completion notification contract. It supersedes:
+
+- **ADR-0004's `delegate`/`resume` naming decision.** The two tools are
+  `delegate_subagent` and `resume_subagent`; the bare names are retired
+  completely, with no aliases, migration wrappers, or retired-name
+  diagnostics. ADR-0004's reasoning about splitting resume's `id` field into
+  its own schema remains in force and is why the two tools stay separate.
+  ADR-0004's `fg`/`bg` execution-mode vocabulary is retired with them:
+  background is the only execution mode and is no longer a selectable or
+  persisted dimension.
+- **ADR-0009's lifecycle and delivery-notification portions:** the
+  `done`/`error` terminal vocabulary used in delivered results, the V4
+  notification payload, and its single-result V3 notification compatibility.
+  ADR-0009's reliable-delivery mechanics — the memory-only session-scoped
+  pending set, safe delivery timing, transcript confirmation, resend,
+  batching, budgets, and bounds — remain in force, extended by the atomic
+  result-ownership operations this ADR adds below (the single automatic
+  consumer becomes one automatic consumer plus explicitly claiming waiters;
+  adapters that never claim, such as Shadow Minds, keep their exact previous
+  semantics). The V4 run-artifact break below is this ADR's own decision;
+  ADR-0009 governed delivery, not run persistence.
+
+## Decision
+
+### One lifecycle vocabulary
+
+Active background states are `queued`, `running`, and `cancelling`. Terminal
+states are `completed`, `failed`, and `aborted`. The background job store,
+persisted run records, the `/subagent` manager, the roster (the former status
+row, retired by #303), inspection,
+retention, resume eligibility, and the calm operational display all interpret
+this one vocabulary. The immediate `delegate_subagent`/`resume_subagent`
+result is a detached snapshot of the queued record; the display renders it as
+the queued lifecycle with the short run ID, and it never reads as a completed
+run.
+
+The shared child-session executor keeps its own native outcome contract
+(`completed`/`aborted`/`timeout`/`error`), which Shadow Minds also consumes.
+The subagent boundary maps those outcomes into the domain states; the executor
+itself is unchanged.
+
+### V4 run artifacts
+
+`run.json` advances to version 4. The persisted record carries `operation:
+"delegate" | "resume"` instead of an execution `mode`; background execution is
+the only mode and is not persisted as a dimension. Only V4 artifacts are
+current: they are listed, inspected, rendered, retained, and resumable. A V3
+directory left on disk by an earlier version is neither read, listed,
+rendered, migrated, nor resumed — it fails the ordinary shape validation and
+disappears from every surface, but is never deleted or rewritten by pi-square.
+
+Since #368 the bounded timeline persists structured tool activity: each tool
+entry written by `session.ts` carries the tool name plus sanitized, bounded
+argument fields alongside the human-readable `text` line, and the true
+cardinalities of the counted list fields persist in the item's
+parent-authored `listCounts` field, computed at the construction point
+before sanitizing truncation — the child influences them only through the
+real array lengths it sent, so a model-crafted `{ count, items }` argument
+object can never project a fabricated number. No timeline string is ever
+re-parsed for structure: the roster-grade allowlisted projection is the
+default read, and the manager's wider bounded-summary projection is the
+explicitly named opt-in in `manager-tool-display.ts`. Entries persisted
+before #368 carry text only and degrade to anonymous `tool called` activity.
+
+Resume eligibility follows the effective activity lease, not the persisted
+phase: an inactive `completed`, `failed`, `aborted`, or stale active record
+with no live lease remains resumable under its frozen prompt, model, effort,
+tools, skills, cwd, and native history.
+
+### Prompt snapshot V3
+
+The prompt snapshot advances to version 3 and its manifest to contract
+version 3. Call-specific policy provenance and `callPolicyHash` are gone from
+the schema and the compiler, because the model-callable call-specific SYSTEM
+input no longer exists. Definition-owned policy, the inherited parent system
+core, governance, instructions, output, context, and field/file provenance
+remain.
+
+### V5 notifications
+
+Background completion notifications advance to version 5 and use the current
+terminal vocabulary (`completed`/`failed`) in every result entry. Generation,
+confirmation, and rendering handle V5 only; the single-result legacy
+notification shape and its parsing and rendering compatibility paths are
+removed. A V4 notification persisted by an earlier session therefore renders
+through the bounded content fallback rather than as a structured run, and
+confirms nothing.
+
+### Explicit result ownership (`wait_subagent`)
+
+The confirmed-delivery core gains atomic claim, take, and release operations,
+and the parent gains `wait_subagent` as the ordered, bounded consumer of
+claimed terminal results (#277). The core owns what is genuinely shared —
+synchronization with the automatic flush, the sent-state check, capacity, and
+the single-consumer guarantee — while the Subagent delivery policy (#372) owns
+job eligibility, terminal-state mapping, result formatting, and the
+aborted-result policy, bound to the core through its admission and
+release-policy hooks.
+
+- `wait_subagent` accepts a strict `ids` array of one to six public IDs,
+  deduplicates repeated IDs in first-occurrence order, and validates the
+  complete request before any state change: one malformed, unknown, foreign,
+  ineligible, already-claimed, or already-sent ID rejects the whole call.
+- Only runs of the current parent session are waitable — the boundary is the
+  parent session identity, so background jobs an earlier parent session left
+  in the process are as foreign as persisted records on disk. Current-session
+  queued, running, and cancelling jobs can be claimed before completion; an
+  unsent pending completed or failed result can be claimed and returned
+  immediately. A result already sent to Pi but not yet transcript-confirmed
+  cannot be withdrawn into a wait; a confirmed result and a run that finished
+  aborted before being claimed hold nothing to wait for.
+- Claimed results stay in the pending store but are excluded from automatic
+  delivery and from pending-set eviction. Claims are all-or-nothing, at most
+  one waiter owns one ID, and at most 50 reservations are held at once —
+  including reservations of active IDs whose results do not exist yet. The
+  pending set's 50-result bound stays total: claimed entries count toward it
+  but are never evicted, so an incoming unclaimed result is the one dropped
+  when every older entry is claimed. Deleting a run's history ends its
+  reservation as well; every claim operation is owner-checked, so the
+  previous holder wakes and ends deterministically and a stale handle can
+  never take or release a later waiter's claim on the same ID.
+- The waiter returns only after every claimed run reaches `completed`,
+  `failed`, or `aborted`, takes the complete claimed set atomically, and
+  returns every entry in requested-ID order. Output reuses the background
+  delivery formatter and its budgets with no `(resent)` marker; a failed or
+  aborted entry makes the tool result an error without discarding completed
+  siblings. The versioned wait details state the ordered IDs, each terminal
+  state, and the explicit pending-result consumption, and each entry is an
+  explicitly bounded projection: format-bounded identifiers (the public ID,
+  the operation, the terminal status), a 300-character task line, and
+  4,000-character head/tail-clipped result or error evidence. Every string in
+  the projection is bounded by one of those rules — the agent name and the
+  model string are omitted precisely because neither has a source-side
+  length limit, and the full run record with its prompt snapshot, session
+  paths, and unbounded texts never enters.
+- Interrupting the wait releases its claims without aborting any child.
+  Released completed and failed results rejoin the automatic delivery
+  schedule; released aborted results are removed from delivery storage, and
+  an aborted outcome enters the store at all only while a waiter already owns
+  the ID, so an ordinary aborted run still never notifies the parent.
+- Session replacement, reload, and shutdown terminate every outstanding wait
+  and clear the memory-only claims together with the pending set.
+- While a result is pending or claimed, `resume_subagent` and the `/subagent`
+  manager both reject a resume with distinct recovery-oriented errors
+  (`RESULT_PENDING`, `RESULT_CLAIMED`), because a new run under the same
+  public ID would overwrite unseen output.
+
+### Explicit abort (`abort_subagent`)
+
+The parent gains `abort_subagent` as the wait-aware way to stop selected
+background runs (#278), completing the four-tool background-only contract.
+
+- `abort_subagent` accepts the same strict `ids` array as `wait_subagent`
+  (one to six public IDs, deduplicated in first-occurrence order) and
+  validates the complete selection before any abort signal: one malformed,
+  unknown, or foreign ID rejects the whole call and nothing is aborted. Only
+  runs of the current parent session are abortable.
+- Queued and running targets receive this request's abort signal through the
+  same `cancelBackgroundJobs` seam the `/subagent` manager's Cancel action
+  uses, and the tool waits until every active target has actually reached the
+  `aborted` terminal state. A target that was already cancelling keeps the
+  signal of its earlier cancellation — the seam's cancelling branch sends no
+  new signal — so the request truthfully reports that it applied none and only
+  waits for that stop to complete. Once a signal has linearized against an
+  active job, abort wins a simultaneous natural-completion race — the
+  lifecycle's aborted check resolves a natural completion as `aborted` — while
+  a target that was already terminal before the request keeps its real state.
+- Already-terminal targets are valid targets and are only reported:
+  `completed` without repeating its successful result, `failed` with its
+  complete established bounded error, and `aborted` with its abort reason.
+  Aborting is not a second result-consumption path.
+- A successful abort request is a successful tool call even though its active
+  targets end `aborted`. Tool-level error marks a request that was rejected —
+  validation, ownership, or infrastructure failure — or one whose
+  terminal-state observation could not complete: an interrupted tool wait, or
+  one ended by a session replacement or shutdown, has not observed every
+  target's final state and reports that failure truthfully without fabricating
+  complete details. Abort signals already sent are never retracted; the
+  targets keep stopping on their own.
+- Abort never claims or consumes a result. A run claimed by `wait_subagent`
+  stays owned by that waiter, which receives the aborted terminal outcome
+  through the established claimed-aborted delivery policy, and an ordinary
+  aborted run still never enters the automatic completion delivery.
+- The versioned V1 abort details preserve request order and record each
+  target's state before the request, its terminal state, whether an abort
+  signal was applied, and its bounded failure or abort reason, under the same
+  bounded projection discipline as the wait details.
+- The `/subagent` manager keeps its Resume, Fresh, and Cancel interaction and
+  adds no Wait action; manager Cancel and `abort_subagent` share the
+  cancellation seam and the same lifecycle and safety rules, and the manager
+  lists and cancels only the current parent session's active jobs — the live
+  job record is re-checked for session ownership at action time, never trusted
+  from the rendered snapshot.
+- The display follows the calm operational grammar: the selected count while
+  stopping, a completed lifecycle for a successful request with truthful
+  per-target outcome counts, one ordered expanded row per target, and one
+  quiet evidence section for each failed or aborted target.
+
+## Why now
+
+The background-only rename left the domain carrying its retired vocabulary:
+`mode` fields with a dead `fg` value, `done`/`error` terminal phases, a
+notification version pinned to the batch shape introduced by ADR-0009, and
+display code that inferred "queued" from a running record of a background run
+kind. Every one of those was a compatibility path for a protocol the tool
+surface had already abandoned, and each made the lifecycle harder to state
+truthfully — the immediate tool result literally reported `phase: "running"`
+while presenting as queued.
+
+Publishing explicit versions lets the artifact and notification contracts
+carry exactly the current shape: no union types, no legacy parsing, no
+defensive spellings for values that can no longer occur.
+
+## Trade-offs accepted
+
+1. **A hard artifact break.** Records written by the previous release become
+   invisible to the manager and unresumable. This is deliberate: migrating
+   them would require inventing foreground semantics the current surface no
+   longer has. The directories stay on disk so a user can inspect or delete
+   them manually, and a fresh delegation replaces the lost continuity.
+2. **Undelivered V4 notifications confirm nothing after upgrade.** The
+   pending set is memory-only by design (ADR-0009), so at most the current
+   session's unconfirmed results are affected at the moment of upgrade.
+3. **The immediate tool result is a snapshot, not a live view.** The caller
+   observes the queued record as it was at return time; execution progress
+   flows through the roster (the former status row, retired by #303), the
+   manager, and the completion delivery.
+
+## Precedents
+
+- **ADR-0002** established the retirement mechanic this ADR reuses for the
+  bare `delegate`/`resume` names and the foreground protocol.
+- **ADR-0009** remains authoritative for the reliable-delivery core this ADR
+  builds on; only its lifecycle and delivery-notification portions are
+  superseded here.
+- **ADR-0015** recorded the same explicit-supersession style over ADR-0004's
+  GitHub-tool portion.
+
+## Completion
+
+With the explicit abort recorded above, the parent specification (#274) is
+complete: delegation and resume queue background-only, waiting is explicit and
+ownership-transferring, aborting is explicit and wait-aware, and the four
+parent-only tools — `delegate_subagent`, `resume_subagent`, `wait_subagent`,
+and `abort_subagent` — form one contract over one lifecycle vocabulary.

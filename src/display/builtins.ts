@@ -27,6 +27,7 @@ import {
 } from "../anchored-edit/read-tool";
 import type { DisplayController } from "./index";
 import { inspectWritePreview } from "./file-preview";
+import { getCatalogEntry } from "./catalog";
 import { decorateToolDefinition, type DisplayRuntimeProvider, type InternalToolDisplayAdapter } from "./tool-renderer";
 import { codeSection, formatBytes, formatDisplayPath, matchesSection, pathsSection, sections } from "./adapter-utils";
 import { sanitizeDisplayLine, truncateCodePoints } from "./sanitize";
@@ -35,7 +36,7 @@ import { DEFAULT_DISPLAY_POLICY } from "./types";
 
 const BUILTIN_NAMES = ["read", "grep", "find", "ls", "edit", "write", "bash"] as const;
 const NON_SHELL_NAMES = BUILTIN_NAMES.filter((name) => name !== "bash");
-const OWN_SOURCE_PROBES = ["pdf_search", "codegraph", "delegate", "todo"];
+const OWN_SOURCE_PROBES = ["web_search", "delegate_subagent", "todo"];
 const KNOWN_PI_TOOL_DISPLAY_SYMBOL = Symbol.for("pi-tool-display.api.v1");
 const STATUS_KEY = "pi-square.display";
 const MAX_DIAGNOSTIC_CHARS = 500;
@@ -66,19 +67,8 @@ function numberMetadata(label: string, value: unknown): DisplayMetadataEntry | u
 }
 
 
-/** C1 sentence-case titles; unique within each family (`ls` is `List`, `find` is `Find`). */
-const BUILTIN_TITLES: Readonly<Record<BuiltinName, string>> = Object.freeze({
-  read: "Read",
-  ls: "List",
-  edit: "Edit",
-  write: "Write",
-  find: "Find",
-  grep: "Grep",
-  bash: "Bash",
-});
-
 function builtinTitle(name: BuiltinName): string {
-  return BUILTIN_TITLES[name];
+  return getCatalogEntry(name)!.title;
 }
 
 /**
@@ -401,7 +391,7 @@ function bashResultDescription(
     tool: "bash",
     family: "execution",
     lifecycle: isErrorResult ? "failed" : partial ? "running" : "completed",
-    title: "Bash",
+    title: builtinTitle("bash"),
     ...builtinTarget("bash", args, cwd),
     truncated: (!isErrorResult && isTruncated) || undefined,
     sections: expanded
@@ -518,7 +508,7 @@ function resultDescription(
     ? builtinErrorSentence(name, text, args)
     : undefined;
   const summarySentence = isErrorResult ? undefined : builtinSummary(name, args, details, text, cwd, writeKind);
-  // Detect bounded results for the truncated badge.
+  // Detect bounded results; they carry the `truncated` qualifier.
   const readContinuation = name === "read" ? parseReadContinuation(text) : undefined;
   const readContentText = readContinuation ? text.slice(0, text.length - readContinuation.hintText.length).trimEnd() : text;
   const readReturnedLines = name === "read" ? countTextLines(readContentText) : undefined;
@@ -798,7 +788,7 @@ export default function registerDisplayBuiltins(
     ];
     const names = new Set(definitions.map((definition) => definition.name as BuiltinName));
     for (const definition of definitions) {
-      const anchoredRead = definition.name === "read" && anchoredReadEnabled;
+      const anchoredRead = definition.name === "read" && anchoredReadEnabled && anchoredStoreReady;
       // Native path authority (#185): the parent anchored read follows Pi
       // 0.84.2's native path semantics (absolute, ~, cwd-relative, ../, and
       // symlinked targets) instead of refusing workspace-external paths, while
@@ -821,6 +811,7 @@ export default function registerDisplayBuiltins(
     const expected = process.platform === "win32" ? NON_SHELL_NAMES : BUILTIN_NAMES;
     const losing = expected.filter((name) => names.has(name) && !sameSource(winners.get(name), owner));
     const anchoredReadAvailable = anchoredReadEnabled
+      && anchoredStoreReady
       && names.has("read")
       && !losing.includes("read");
     // The write's anchored behavior requires the complete anchored surface:

@@ -20,10 +20,14 @@ const packageRoot = resolve(import.meta.dirname, "..", "..");
 const load = jiti(import.meta.url, { moduleCache: false });
 const { discoverSubagents } = await load(join(packageRoot, "src", "subagents", "definitions.ts"));
 const { registerSubagentManager, __testables } = await load(join(packageRoot, "src", "subagents", "manager.ts"));
+const { attachDeliveryController, createBackgroundState, createQueuedJob } = await load(join(packageRoot, "src", "subagents", "background.ts"));
+const { createSubagentDeliveryCore } = await load(join(packageRoot, "src", "subagents", "delivery.ts"));
 const {
   SubagentManager,
+  createProductionServices,
   managerPanelWidth,
   managerRowBudget,
+  snapshot,
 } = __testables;
 const themeModulePath = pathToFileURL(join(
   packageRoot,
@@ -66,9 +70,9 @@ function promptSnapshot() {
 function runDetails(overrides = {}) {
   const id = "subagent_11111111-1111-4111-8111-111111111111";
   return {
-    version: 3,
+    version: 4,
     id,
-    mode: "bg",
+    operation: "delegate",
     artifactsDir: `/tmp/${id}`,
     sessionFile: `/tmp/${id}/session.jsonl`,
     sessionId: "child-session",
@@ -85,8 +89,8 @@ function runDetails(overrides = {}) {
     toolErrors: [],
     usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 1 },
     timeline: [
-      { kind: "tool", phase: "start", text: "ls src/components" },
-      { kind: "tool", phase: "end", text: "ls: SECRET TOOL OUTPUT" },
+      { kind: "tool", phase: "start", tool: "ls", args: { path: "src/components" }, text: "ls src/components" },
+      { kind: "tool", phase: "end", tool: "ls", text: "ls: SECRET TOOL OUTPUT" },
     ],
     ...overrides,
   };
@@ -96,9 +100,10 @@ function data(overrides = {}) {
   const details = runDetails();
   return {
     running: [{ id: details.id, status: "running", createdAt: 1, updatedAt: 2, details }],
-    session: [{ ...details, phase: "done", finalText: "done" }],
+    session: [{ ...details, phase: "completed", finalText: "done" }],
     activeSessionIds: [],
     definitions: discoverSubagents(packageRoot).definitions,
+    invalid: [],
     errors: [],
     ...overrides,
   };
@@ -122,7 +127,7 @@ function fakeServices(initialData, overrides = {}) {
     queueResume(id, task) {
       calls.push(["resume", id, task]);
       const source = current.session.find((item) => item.id === id);
-      const details = { ...source, phase: "running", mode: "resume", task };
+      const details = { ...source, phase: "running", operation: "resume", task };
       current = { ...current, running: [{ id, status: "queued", createdAt: 1, updatedAt: 1, details }] };
       return { ok: true, message: "Queued resume.", selectedId: id };
     },
@@ -160,21 +165,8 @@ test("manager is an adaptive non-card workbench and never exposes prompt or tool
   manager.dispose();
 });
 
-test("manager activity uses specialized GitHub summaries", () => {
-  const github = runDetails({
-    timeline: [{ kind: "tool", phase: "start", text: "github {\"operation\":\"read\",\"repo\":\"owner/name\",\"path\":\"README.md\",\"ref\":\"main\",\"token\":\"private\"}" }],
-  });
-  const githubManager = new SubagentManager(data({
-    running: [{ id: github.id, status: "running", createdAt: 1, updatedAt: 2, details: github }],
-  }), tui(), theme, keybindings, () => {});
-  const githubRendered = render(githubManager, 100);
-  assert.match(githubRendered, /Activity: github owner\/name:README.md @main/);
-  assert.doesNotMatch(githubRendered, /token|private/);
-  githubManager.dispose();
-});
-
 test("manager keeps resume task, review, and queueing inside one focused component", () => {
-  const finished = runDetails({ phase: "done", finalText: "done" });
+  const finished = runDetails({ phase: "completed", finalText: "done" });
   const initial = data({ running: [], session: [finished] });
   const fake = fakeServices(initial);
   let closed = 0;
@@ -282,7 +274,7 @@ test("parameterized command emits a custom guide then the raw user request as on
   const events = [];
   const state = {
     registry: discoverSubagents(packageRoot),
-    background: { jobs: new Map(), listeners: new Set() },
+    background: attachDeliveryController(createBackgroundState(), createSubagentDeliveryCore({ pi: { sendMessage() {} } })),
     refresh() {},
   };
   const pi = {
@@ -312,7 +304,7 @@ test("no-argument command opens one non-overlay manager for a stable parent sess
   let customOptions = "unset";
   const state = {
     registry: discoverSubagents(packageRoot),
-    background: { jobs: new Map(), listeners: new Set() },
+    background: attachDeliveryController(createBackgroundState(), createSubagentDeliveryCore({ pi: { sendMessage() {} } })),
     refresh() {},
   };
   const pi = {
@@ -475,15 +467,15 @@ test("list rows show operational lifecycle markers", () => {
 });
 
 test("session tab shows operational lifecycle markers for each phase", () => {
-  const done = runDetails({ id: "subagent_aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa", phase: "done", finalText: "done" });
-  const errored = runDetails({ id: "subagent_bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb", phase: "error", error: "failed" });
+  const done = runDetails({ id: "subagent_aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa", phase: "completed", finalText: "done" });
+  const errored = runDetails({ id: "subagent_bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb", phase: "failed", error: "failed" });
   const aborted = runDetails({ id: "subagent_cccccccc-3333-4333-8333-cccccccccccc", phase: "aborted" });
   const initial = data({ running: [], session: [done, errored, aborted], activeSessionIds: [] });
   const manager = new SubagentManager(initial, tui(), theme, keybindings, () => {});
   manager.handleInput("\x1b[C");
   const text = render(manager, 120);
-  assert.match(text, /\u2713 done/);
-  assert.match(text, /\u2717 error/);
+  assert.match(text, /\u2713 completed/);
+  assert.match(text, /\u2717 failed/);
   assert.match(text, /\u00d7 aborted/);
   manager.dispose();
 });
@@ -496,6 +488,207 @@ test("inactive stale running session shows marker with inactive suffix", () => {
   const text = render(manager, 120);
   assert.match(text, /\u2192 running \(inactive\)/);
   manager.dispose();
+});
+
+test("manager blocks resume while a result is claimed or undelivered with distinct messages", () => {
+  const finished = runDetails({ phase: "completed", finalText: "done" });
+
+  const claimedData = data({ running: [], session: [finished], claimedIds: [finished.id], undeliveredIds: [finished.id] });
+  const claimedFake = fakeServices(claimedData);
+  const claimedManager = new SubagentManager(claimedData, tui(), theme, keybindings, () => {}, claimedFake.services);
+  claimedManager.handleInput("\x1b[C");
+  claimedManager.handleInput("\r");
+  const claimedRendered = render(claimedManager, 120);
+  assert.match(claimedRendered, /claimed by an active wait_subagent/);
+  assert.doesNotMatch(claimedRendered, /SESSION \/ RESUME/);
+  assert.equal(claimedFake.calls.some((call) => call[0] === "resume"), false);
+  claimedManager.dispose();
+
+  const pendingData = data({ running: [], session: [finished], claimedIds: [], undeliveredIds: [finished.id] });
+  const pendingFake = fakeServices(pendingData);
+  const pendingManager = new SubagentManager(pendingData, tui(), theme, keybindings, () => {}, pendingFake.services);
+  pendingManager.handleInput("\x1b[C");
+  pendingManager.handleInput("\r");
+  const pendingRendered = render(pendingManager, 120);
+  assert.match(pendingRendered, /has an undelivered result/);
+  assert.match(pendingRendered, /wait_subagent/);
+  assert.doesNotMatch(pendingRendered, /SESSION \/ RESUME/);
+  assert.equal(pendingFake.calls.some((call) => call[0] === "resume"), false);
+  pendingManager.dispose();
+});
+
+// ─── Parent-session ownership of the RUNNING list and Cancel (#278) ──
+
+test("the manager lists and cancels only current-parent-session active jobs", () => {
+  const currentId = "subagent_11111111-1111-4111-8111-111111111111";
+  const foreignId = "subagent_22222222-2222-4222-8222-222222222222";
+  const state = {
+    registry: { definitions: [], invalid: [], errors: [], projectDir: null },
+    background: attachDeliveryController(createBackgroundState(), createSubagentDeliveryCore({ pi: { sendMessage() {} } })),
+  };
+  createQueuedJob({
+    state: state.background,
+    id: currentId,
+    task: "current session work",
+    cwd: "/tmp",
+    parentSessionId: "parent-session",
+    promptSnapshot: promptSnapshot(),
+  });
+  const foreign = createQueuedJob({
+    state: state.background,
+    id: foreignId,
+    task: "earlier session work",
+    cwd: "/tmp",
+    parentSessionId: "earlier-parent-session",
+    promptSnapshot: promptSnapshot(),
+  });
+
+  const snap = snapshot(state, "parent-session");
+  assert.deepEqual(
+    snap.running.map((job) => job.id),
+    [currentId],
+    "an active job carried from an earlier parent session is not listed",
+  );
+
+  const services = createProductionServices({ sendMessage() {} }, { cwd: "/tmp" }, state, "parent-session");
+  const rejected = services.cancel(foreignId);
+  assert.equal(rejected.ok, false);
+  assert.match(rejected.message, /no longer active in this session/);
+  assert.equal(foreign.status, "queued", "the foreign job was not cancelled");
+  assert.equal(foreign.abortController.signal.aborted, false);
+
+  const accepted = services.cancel(currentId);
+  assert.equal(accepted.ok, true);
+  assert.equal(state.background.jobs.get(currentId).status, "aborted");
+});
+
+test("manager cancel re-reads the live job and refuses a finished one", () => {
+  const currentId = "subagent_33333333-3333-4333-8333-333333333333";
+  const state = {
+    registry: { definitions: [], invalid: [], errors: [], projectDir: null },
+    background: attachDeliveryController(createBackgroundState(), createSubagentDeliveryCore({ pi: { sendMessage() {} } })),
+  };
+  const job = createQueuedJob({
+    state: state.background,
+    id: currentId,
+    task: "work",
+    cwd: "/tmp",
+    parentSessionId: "parent-session",
+    promptSnapshot: promptSnapshot(),
+  });
+  job.status = "completed";
+  job.details.phase = "completed";
+
+  const services = createProductionServices({ sendMessage() {} }, { cwd: "/tmp" }, state, "parent-session");
+  const result = services.cancel(currentId);
+  assert.equal(result.ok, false);
+  assert.match(result.message, /already finished as completed/);
+});
+
+// ─── Invalid and hidden definitions in the definitions list (#333) ──
+
+function invalidEntry() {
+  return {
+    id: "broken",
+    sources: ["/repo/.pi/subagents/broken.yaml"],
+    errors: [
+      "/repo/.pi/subagents/broken.yaml: line 3: inline comments are not supported — quote the value to keep a literal '#' or move the comment to its own line",
+      "/repo/.pi/subagents/broken.yaml: line 4: 'NULL' — null spellings are case-sensitive; write lowercase null or ~",
+    ],
+  };
+}
+
+// Self-made definitions keep these tests independent of the package layer's
+// bundled roles, which #334 removes.
+function validDefinition(name, overrides = {}) {
+  const filePath = `/repo/.pi/subagents/${name}.yaml`;
+  return {
+    promptVersion: 2,
+    name,
+    description: `The ${name} role.`,
+    inheritParentSystem: true,
+    visible: true,
+    source: "project",
+    filePath,
+    fieldSources: {},
+    layers: [{ source: "project", filePath, contentHash: "0".repeat(64), patch: { promptVersion: 2, name } }],
+    ...overrides,
+  };
+}
+
+test("invalid definitions stay listed with an error marker beside valid definitions", () => {
+  const initial = data({ running: [], session: [], definitions: [validDefinition("worker")], invalid: [invalidEntry()] });
+  const manager = new SubagentManager(initial, tui(), theme, keybindings, () => {});
+  manager.handleInput("\x1b[C");
+  manager.handleInput("\x1b[C");
+  const text = render(manager, 120);
+
+  assert.match(text, /! broken/, "the invalid entry is listed and marked");
+  assert.match(text, /● worker/, "valid definitions stay listed beside it");
+
+  const markingTheme = {
+    fg(color, text_) { return `⟦${color}⟧${String(text_)}⟦/${color}⟧`; },
+    bold(text_) { return String(text_); },
+  };
+  const marked = new SubagentManager(initial, tui(), markingTheme, keybindings, () => {});
+  marked.handleInput("\x1b[C");
+  marked.handleInput("\x1b[C");
+  const markedInvalid = marked.render(120).filter((line) => line.includes("broken"));
+  assert.equal(markedInvalid.length, 1);
+  assert.match(markedInvalid[0], /⟦error⟧!⟦\/error⟧/, "the marker carries the error color");
+  marked.dispose();
+
+  // Enter explains the invalid selection instead of opening the overlay editor.
+  manager.handleInput("\x1b[B");
+  manager.handleInput("\r");
+  assert.match(render(manager, 120), /'broken' is invalid/);
+  assert.doesNotMatch(render(manager, 120), /DEFINITIONS \/ SCOPE/);
+  manager.dispose();
+});
+
+test("selecting an invalid definition shows its source, every error, and a repair hint", () => {
+  const initial = data({ running: [], session: [], definitions: [validDefinition("worker")], invalid: [invalidEntry()] });
+  const manager = new SubagentManager(initial, tui(), theme, keybindings, () => {});
+  manager.handleInput("\x1b[C");
+  manager.handleInput("\x1b[C");
+  manager.handleInput("\x1b[B");
+  const text = render(manager, 120);
+  assert.match(text, /State: invalid — excluded from delegation/);
+  assert.match(text, /Sources:/);
+  assert.match(text, /\/repo\/\.pi\/subagents\/broken\.yaml/);
+  assert.match(text, /Errors:/);
+  assert.match(text, /comments are not supported/, "every error is shown");
+  assert.match(text, /spellings are case-sensitive/);
+  assert.match(text, /Repair:/);
+  manager.dispose();
+});
+
+test("hidden definitions keep a neutral dim marker and stay listed", () => {
+  const initial = data({
+    running: [],
+    session: [],
+    definitions: [validDefinition("worker"), validDefinition("archived-role", { visible: false })],
+  });
+  const manager = new SubagentManager(initial, tui(), theme, keybindings, () => {});
+  manager.handleInput("\x1b[C");
+  manager.handleInput("\x1b[C");
+  const text = render(manager, 120);
+  assert.match(text, /◦ archived-role/, "hidden definitions remain listed");
+  assert.match(text, /● worker/, "visible definitions use the solid marker");
+  manager.dispose();
+
+  const markingTheme = {
+    fg(color, text_) { return `⟦${color}⟧${String(text_)}⟦/${color}⟧`; },
+    bold(text_) { return String(text_); },
+  };
+  const marked = new SubagentManager(initial, tui(), markingTheme, keybindings, () => {});
+  marked.handleInput("\x1b[C");
+  marked.handleInput("\x1b[C");
+  const hiddenLines = marked.render(120).filter((line) => line.includes("archived-role"));
+  assert.equal(hiddenLines.length, 1);
+  assert.doesNotMatch(hiddenLines[0], /⟦error⟧/, "the hidden marker carries no hue");
+  assert.match(hiddenLines[0], /⟦dim⟧◦⟦\/dim⟧/, "the hidden marker is dim");
+  marked.dispose();
 });
 
 await run();

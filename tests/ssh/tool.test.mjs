@@ -87,8 +87,9 @@ class FakeManager {
     assert.equal(profileName, "ops");
     return { profile, target: profile.targets.find((target) => target.name === (targetName ?? profile.defaultTarget)) };
   }
-  async connect(profileName, targetName, label) {
+  async connect(profileName, targetName, label, requestSecret) {
     this.connectCalls.push({ profileName, targetName, label });
+    if (this.requirePassphrase) this.passphrase = await requestSecret("SSH private key passphrase");
     const session = new FakeSession(`ssh-${this.connectCalls.length}`, profile.targets.find((target) => target.name === targetName));
     this.sessions.set(session.id, session);
     return session;
@@ -117,6 +118,7 @@ assert.deepEqual(tool.parameters.properties.operation.enum, ["connect", "command
 assert.equal(tool.parameters.additionalProperties, false);
 
 let confirmations = [];
+let secretRenders = [];
 const ui = {
   async confirm(title, message) {
     confirmations.push({ title, message });
@@ -129,7 +131,9 @@ const ui = {
     const keybindings = { matches() { return false; } };
     const component = await factory(tui, theme, keybindings, (value) => { completed = value; });
     component.handleInput("top-secret");
-    assert.doesNotMatch(component.render(80).join("\n"), /top-secret/);
+    const rendered = component.render(80).join("\n");
+    secretRenders.push(rendered);
+    assert.doesNotMatch(rendered, /top-secret/);
     component.handleInput("\n");
     component.dispose?.();
     return completed;
@@ -178,6 +182,26 @@ ui.confirm = async () => { throw new Error("remote commands must bypass confirma
 response = await tool.execute("5", { operation: "command", session: sessionId, command: "rm file" }, undefined, undefined, ctx);
 assert.equal(parse(response).code, "COMMAND_COMPLETED");
 
+// Schema rejection paths: declared bounds are enforced before any handler runs.
+response = await tool.execute("5-schema-command", { operation: "command", session: sessionId, command: "x".repeat(20_001) }, undefined, undefined, ctx);
+assert.equal(response.isError, true);
+assert.equal(parse(response).code, "INVALID_ARGUMENT");
+assert.match(parse(response).message, /command/);
+response = await tool.execute("5-schema-wait", { operation: "read", session: sessionId, waitMs: 60_001 }, undefined, undefined, ctx);
+assert.equal(response.isError, true);
+assert.equal(parse(response).code, "INVALID_ARGUMENT");
+assert.match(parse(response).message, /waitMs/);
+response = await tool.execute("5-schema-cursor", { operation: "read", session: sessionId, cursor: Number.MAX_SAFE_INTEGER + 2 }, undefined, undefined, ctx);
+assert.equal(response.isError, true);
+assert.equal(parse(response).code, "INVALID_ARGUMENT");
+assert.match(parse(response).message, /cursor/);
+response = await tool.execute("5-schema-cursor-max", { operation: "read", session: sessionId, cursor: Number.MAX_SAFE_INTEGER }, undefined, undefined, ctx);
+assert.equal(response.isError, undefined, "the cursor bound is inclusive");
+response = await tool.execute("5-schema-newline", { operation: "input", session: sessionId, data: "yes", newline: "yes" }, undefined, undefined, ctx);
+assert.equal(response.isError, true);
+assert.equal(parse(response).code, "INVALID_ARGUMENT");
+assert.match(parse(response).message, /newline/);
+
 const session = manager.get(sessionId);
 session.isRunning = true;
 response = await tool.execute("6", { operation: "secret_input", session: sessionId, prompt: "sudo password" }, undefined, undefined, ctx);
@@ -209,6 +233,42 @@ const noTuiSession = new FakeSession("ssh-no-tui");
 manager.sessions.set(noTuiSession.id, noTuiSession);
 response = await tool.execute("12", { operation: "secret_input", session: noTuiSession.id }, undefined, undefined, { hasUI: true, mode: "rpc", ui });
 assert.equal(parse(response).code, "SECRET_INPUT_UNAVAILABLE");
+
+// secret_input refuses a non-TUI caller before it looks at the running
+// command, and only reports the missing command once the TUI is available.
+// Both orderings matter: the refusal and the command check report different
+// codes, so folding the refusal into the request would swap them here.
+const idleSecretSession = new FakeSession("ssh-idle-secret");
+idleSecretSession.isRunning = false;
+manager.sessions.set(idleSecretSession.id, idleSecretSession);
+response = await tool.execute("13", { operation: "secret_input", session: idleSecretSession.id }, undefined, undefined, { hasUI: true, mode: "rpc", ui });
+assert.equal(response.isError, true);
+assert.equal(parse(response).code, "SECRET_INPUT_UNAVAILABLE", "a non-TUI secret_input must be refused before the running-command check");
+response = await tool.execute("14", { operation: "secret_input", session: idleSecretSession.id }, undefined, undefined, ctx);
+assert.equal(response.isError, true);
+assert.equal(parse(response).code, "NO_ACTIVE_COMMAND", "inside the TUI secret_input must report the missing foreground command");
+
+// connect shares that requester, but only reaches it when the key needs a
+// passphrase, so an encrypted key is refused outside the TUI while agent auth
+// and unencrypted keys stay available there.
+const keyManager = new FakeManager();
+keyManager.requirePassphrase = true;
+const keyTool = createSshToolController(keyManager).definition;
+response = await keyTool.execute("15", { operation: "connect", profile: "ops" }, undefined, undefined, { hasUI: true, mode: "rpc", ui });
+assert.equal(response.isError, true);
+assert.equal(parse(response).code, "SECRET_INPUT_UNAVAILABLE");
+assert.match(parse(response).message, /Encrypted SSH keys require the interactive TUI/);
+
+const keyTuiManager = new FakeManager();
+keyTuiManager.requirePassphrase = true;
+const keyTuiTool = createSshToolController(keyTuiManager).definition;
+secretRenders = [];
+response = await keyTuiTool.execute("16", { operation: "connect", profile: "ops" }, undefined, undefined, ctx);
+assert.equal(parse(response).code, "CONNECTED");
+assert.equal(keyTuiManager.passphrase?.toString(), "top-secret", "the passphrase must reach the manager");
+assert.match(secretRenders.join("\n"), /deploy@one\.test:22/, "the passphrase prompt must name the target it unlocks");
+assert.doesNotMatch(response.content[0].text, /top-secret/, "a passphrase must never reach model content");
+
 controller.resetApprovals();
 
 const concurrentManager = new FakeManager();

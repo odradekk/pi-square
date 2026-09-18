@@ -31,16 +31,16 @@ function root() {
 function baseDetails(agentRoot, overrides = {}) {
   const artifactsDir = join(agentRoot, "state", "subagents", ID);
   return {
-    version: 3,
+    version: 4,
     id: ID,
-    mode: "fg",
+    operation: "delegate",
     artifactsDir,
     sessionFile: join(artifactsDir, "session.jsonl"),
     sessionId: SESSION_ID,
     originParentSessionId: "parent-session",
     lastParentSessionId: "parent-session",
     promptSnapshot: createPromptSnapshot(),
-    phase: "error",
+    phase: "failed",
     task: "task",
     cwd: "/tmp/project",
     startedAt: 1,
