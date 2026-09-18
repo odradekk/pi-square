@@ -363,7 +363,11 @@ test("the feed is ephemeral: no subscribers means no work and no buffering", () 
 });
 
 test("delivery is ordered, isolated, asynchronous, and structural-boundary aware", () => {
-  const { feed, deliver } = manualFeed();
+  // Regression (#404): a deterministic clock keeps the flush budget from
+  // shrinking with real elapsed time, so evicting the throwing subscriber
+  // cannot spend the budget the healthy subscriber's delivery needs on a
+  // loaded machine. Delivery then depends only on what was queued.
+  const { feed, deliver } = manualFeed(undefined, () => 0);
   const healthy = [];
   let syncPublish = true;
   feed.subscribe("child-1", () => { throw new Error("broken subscriber"); });
