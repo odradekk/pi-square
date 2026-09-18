@@ -5,6 +5,7 @@ import type { SshProfileConfig, SshTargetConfig } from "../core/config";
 import {
   SSH_SESSION_BUFFER_BYTES,
   type SshCommandResult,
+  type SshCommandState,
   type SshSessionState,
   type SshSessionSummary,
 } from "./contracts";
@@ -67,9 +68,9 @@ function waitForPromise(promise: Promise<void>, timeoutMs: number, signal?: Abor
 
 export class SshSession {
   readonly createdAt = Date.now();
-  lastActivityAt = this.createdAt;
-  state: SshSessionState = "connected";
-  disconnectReason?: string;
+  private activityAt = this.createdAt;
+  private currentState: SshSessionState = "connected";
+  private terminationReason?: string;
   private readonly output = new SshOutputBuffer(SSH_SESSION_BUFFER_BYTES);
   private readonly decoder = new StringDecoder("utf8");
   private active?: ActiveCommand;
@@ -99,8 +100,24 @@ export class SshSession {
     });
   }
 
+  get state(): SshSessionState {
+    return this.currentState;
+  }
+
+  get disconnectReason(): string | undefined {
+    return this.terminationReason;
+  }
+
+  get lastActivityAt(): number {
+    return this.activityAt;
+  }
+
   get isRunning(): boolean {
     return this.active !== undefined;
+  }
+
+  get commandState(): SshCommandState {
+    return this.active ? "running" : this.currentState === "connected" ? "idle" : "disconnected";
   }
 
   summary(): SshSessionSummary {
@@ -110,13 +127,13 @@ export class SshSession {
       profile: this.profile.name,
       target: this.target.name,
       endpoint: `${this.target.username}@${this.target.host}:${this.target.port}`,
-      state: this.state,
-      commandState: this.active ? "running" : this.state === "connected" ? "idle" : "disconnected",
+      state: this.currentState,
+      commandState: this.commandState,
       createdAt: this.createdAt,
-      lastActivityAt: this.lastActivityAt,
+      lastActivityAt: this.activityAt,
       oldestCursor: this.output.oldestCursor,
       newestCursor: this.output.newestCursor,
-      ...(this.disconnectReason ? { disconnectReason: this.disconnectReason } : {}),
+      ...(this.terminationReason ? { disconnectReason: this.terminationReason } : {}),
     };
   }
 
@@ -180,7 +197,7 @@ export class SshSession {
     }
     const page = this.output.read(requested);
     return {
-      state: this.active ? "running" : this.state === "connected" ? "idle" : "disconnected",
+      state: this.commandState,
       page,
     };
   }
@@ -206,15 +223,9 @@ export class SshSession {
   }
 
   close(reason = "SSH session closed"): void {
-    if (this.state === "closed" || this.state === "closing") return;
-    this.state = "closing";
-    this.disconnectReason = reason;
-    this.endChannel();
-    this.endTransport();
-    this.state = "closed";
-    this.flushDecoder();
-    this.finishActive(true);
-    this.emitChange();
+    if (this.currentState === "closed" || this.currentState === "closing") return;
+    this.currentState = "closing";
+    this.teardown("closed", reason);
   }
 
   private handleData(chunk: Buffer | string): void {
@@ -250,11 +261,20 @@ export class SshSession {
   }
 
   private markDisconnected(reason: string): void {
-    if (this.state === "closed" || this.state === "closing" || this.state === "disconnected") return;
-    this.state = "disconnected";
-    this.disconnectReason = reason;
+    if (this.currentState === "closed" || this.currentState === "closing" || this.currentState === "disconnected") return;
+    this.teardown("disconnected", reason);
+  }
+
+  /**
+   * The one teardown sequence shared by an explicit close and an observed
+   * disconnect. The terminal state is already in place when the channel and
+   * transport are ended, so their close events re-enter `markDisconnected` as a
+   * no-op; the session decoder and any running command are drained first.
+   */
+  private teardown(state: "disconnected" | "closed", reason: string): void {
+    this.currentState = state;
+    this.terminationReason = reason;
     this.flushDecoder();
-    this.output.end();
     this.finishActive(true);
     this.endChannel();
     this.endTransport();
@@ -297,7 +317,7 @@ export class SshSession {
   }
 
   private touch(): void {
-    this.lastActivityAt = Date.now();
+    this.activityAt = Date.now();
   }
 
   private emitChange(): void {

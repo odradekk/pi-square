@@ -167,7 +167,7 @@ assert.equal(clients[0].channel.writes.filter((value) => value.includes("__PI_SS
 command = await session.command("hold", 1);
 assert.equal(command.state, "running");
 assert.equal(session.summary().commandState, "running");
-assert.rejects(() => session.command("second", 1), /already has a running foreground command/);
+await assert.rejects(() => session.command("second", 1), /already has a running foreground command/);
 session.input("yes", true);
 assert.deepEqual(clients[0].channel.writes.slice(-2), ["yes", "\n"]);
 session.interrupt();
@@ -194,8 +194,7 @@ const limited = new SshSessionManager(() => {
 limited.configure(config({ maxSessions: 1, profileMax: 1 }));
 const only = await limited.connect("ops", undefined, undefined, async () => undefined);
 await assert.rejects(() => limited.connect("ops", undefined, undefined, async () => undefined), /session limit/);
-only.lastActivityAt = 0;
-assert.deepEqual(limited.sweepIdle(31 * 60_000), [only.id]);
+assert.deepEqual(limited.sweepIdle(only.lastActivityAt + 31 * 60_000), [only.id]);
 assert.equal(limited.list().length, 0);
 limited.dispose();
 
