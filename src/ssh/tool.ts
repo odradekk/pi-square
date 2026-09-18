@@ -126,6 +126,13 @@ function readOutputMessage(hasOutput: boolean | undefined): string {
  * whether its page carried text, a command reports its lifecycle, and the
  * streaming update published while waiting is worded differently from the
  * final wait.
+ *
+ * The type covers every `SshCommandState`, but the manager only produces a
+ * subset per caller: `command` resolves to `completed | disconnected |
+ * running`, `read` to `running | idle | disconnected`. `idle` under
+ * `command` and `completed` under `read` are therefore unreachable today —
+ * if the manager ever widened either caller's result to include its missing
+ * state, revisit the message for that row before relying on it.
  */
 const COMMAND_OUTCOMES: Record<CommandOutcomeState, {
   status: SshDetails["status"];
@@ -299,8 +306,8 @@ export function createSshToolController(
           const omitted = omissions.profiles + omissions.targets + omissions.sessions;
           const details: SshDetails = {
             ...baseDetails("list", "success", "OK", `${profiles.length} SSH profiles; ${sessions.length} sessions${omitted > 0 ? `; ${omitted} entries omitted by output limits` : ""}`),
-            profiles,
             sessions,
+            profiles,
             omissions,
           };
           return result(details);
