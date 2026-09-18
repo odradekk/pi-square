@@ -28,5 +28,5 @@ export default function registerSshTool(
   });
 }
 
-export { createSshToolController, createSshToolDefinition } from "./tool";
+export { createSshToolController } from "./tool";
 export { SshSessionManager } from "./manager";
