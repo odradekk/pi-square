@@ -230,4 +230,97 @@ await assert.rejects(stalledConnect, /cancelled/);
 stalled.dispose();
 manager.dispose();
 
+// An in-flight connection (#405) has started its handshake but is not yet a
+// session. It must already consume a slot, so a connection that never reaches
+// "connected" cannot let concurrent attempts overshoot a limit.
+class HandshakeStuckClient extends FakeClient {
+  constructor() {
+    super();
+    this.connectCalls = 0;
+  }
+
+  connect(config) {
+    this.connectCalls += 1;
+    this.config = config;
+  }
+}
+
+function inflightSetup(overrides) {
+  const inflightClients = [];
+  const inflight = new SshSessionManager(() => {
+    const client = inflightClients.length === 0 ? new HandshakeStuckClient() : new FakeClient();
+    inflightClients.push(client);
+    return client;
+  });
+  inflight.configure(config(overrides));
+  return { clients: inflightClients, manager: inflight };
+}
+
+const attemptConnect = (sessionManager, signal) =>
+  sessionManager.connect("ops", undefined, undefined, async () => undefined, signal);
+
+async function waitForHandshake(client) {
+  for (let attempt = 0; attempt < 50 && client.connectCalls === 0; attempt += 1) {
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  assert.equal(client.connectCalls, 1, "the stuck client must have entered its handshake");
+}
+
+// The in-flight connection consumes the global slot, so the next connection is
+// refused while the first client is still handshaking. The profile cap is
+// higher than one, so only the global check can refuse it.
+{
+  const { clients, manager: inflight } = inflightSetup({ maxSessions: 1, profileMax: 2 });
+  const first = attemptConnect(inflight);
+  await waitForHandshake(clients[0]);
+  await assert.rejects(attemptConnect(inflight), { code: "GLOBAL_SESSION_LIMIT", message: /global session limit/ });
+  inflight.dispose();
+  await assert.rejects(first, { code: "CONNECTION_CLOSED", message: /closed before authentication completed/ });
+}
+
+// The in-flight connection also consumes its profile's slot, and cancelling the
+// handshake releases that slot for the next connection.
+{
+  const { clients, manager: inflight } = inflightSetup({ maxSessions: 3, profileMax: 1 });
+  const abort = new AbortController();
+  const first = attemptConnect(inflight, abort.signal);
+  await waitForHandshake(clients[0]);
+  await assert.rejects(attemptConnect(inflight), { code: "PROFILE_SESSION_LIMIT", message: /profile 'ops' session limit/ });
+  abort.abort();
+  await assert.rejects(first, { code: "ABORTED", message: /cancelled/ });
+  const afterCancel = await attemptConnect(inflight);
+  assert.equal(afterCancel.summary().state, "connected");
+  inflight.dispose();
+}
+
+// A handshake that completes hands its slot over to the connected session, and
+// closing that session frees the slot for the next connection.
+{
+  const { clients, manager: inflight } = inflightSetup({ maxSessions: 1, profileMax: 1 });
+  const first = attemptConnect(inflight);
+  await waitForHandshake(clients[0]);
+  await assert.rejects(attemptConnect(inflight), { code: "GLOBAL_SESSION_LIMIT", message: /global session limit/ });
+  clients[0].emit("ready");
+  const session = await first;
+  assert.equal(session.summary().state, "connected", "the in-flight connection must complete into a session");
+  inflight.close(session.id);
+  const afterSuccess = await attemptConnect(inflight);
+  assert.equal(afterSuccess.summary().state, "connected");
+  inflight.dispose();
+}
+
+// A handshake that fails releases the slot rather than leaving the failed
+// client counted as in-flight.
+{
+  const { clients, manager: inflight } = inflightSetup({ maxSessions: 1, profileMax: 1 });
+  const first = attemptConnect(inflight);
+  await waitForHandshake(clients[0]);
+  await assert.rejects(attemptConnect(inflight), { code: "GLOBAL_SESSION_LIMIT", message: /global session limit/ });
+  clients[0].emit("error", new Error("handshake failed"));
+  await assert.rejects(first, { code: "CONNECTION_FAILED", message: /handshake failed/ });
+  const afterFailure = await attemptConnect(inflight);
+  assert.equal(afterFailure.summary().state, "connected");
+  inflight.dispose();
+}
+
 console.log("ssh manager tests: OK");
