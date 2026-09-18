@@ -178,6 +178,26 @@ ui.confirm = async () => { throw new Error("remote commands must bypass confirma
 response = await tool.execute("5", { operation: "command", session: sessionId, command: "rm file" }, undefined, undefined, ctx);
 assert.equal(parse(response).code, "COMMAND_COMPLETED");
 
+// Schema rejection paths: declared bounds are enforced before any handler runs.
+response = await tool.execute("5-schema-command", { operation: "command", session: sessionId, command: "x".repeat(20_001) }, undefined, undefined, ctx);
+assert.equal(response.isError, true);
+assert.equal(parse(response).code, "INVALID_ARGUMENT");
+assert.match(parse(response).message, /command/);
+response = await tool.execute("5-schema-wait", { operation: "read", session: sessionId, waitMs: 60_001 }, undefined, undefined, ctx);
+assert.equal(response.isError, true);
+assert.equal(parse(response).code, "INVALID_ARGUMENT");
+assert.match(parse(response).message, /waitMs/);
+response = await tool.execute("5-schema-cursor", { operation: "read", session: sessionId, cursor: Number.MAX_SAFE_INTEGER + 2 }, undefined, undefined, ctx);
+assert.equal(response.isError, true);
+assert.equal(parse(response).code, "INVALID_ARGUMENT");
+assert.match(parse(response).message, /cursor/);
+response = await tool.execute("5-schema-cursor-max", { operation: "read", session: sessionId, cursor: Number.MAX_SAFE_INTEGER }, undefined, undefined, ctx);
+assert.equal(response.isError, undefined, "the cursor bound is inclusive");
+response = await tool.execute("5-schema-newline", { operation: "input", session: sessionId, data: "yes", newline: "yes" }, undefined, undefined, ctx);
+assert.equal(response.isError, true);
+assert.equal(parse(response).code, "INVALID_ARGUMENT");
+assert.match(parse(response).message, /newline/);
+
 const session = manager.get(sessionId);
 session.isRunning = true;
 response = await tool.execute("6", { operation: "secret_input", session: sessionId, prompt: "sudo password" }, undefined, undefined, ctx);

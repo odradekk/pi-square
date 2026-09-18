@@ -1,6 +1,7 @@
 import { StringEnum } from "@earendil-works/pi-ai";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { Value } from "typebox/value";
 import { ConfirmationCoordinator } from "../core/confirmation";
 import { withOwnedInputSurface } from "../core/input-surface";
 import {
@@ -43,7 +44,7 @@ const parameters = Type.Object({
   data: Type.Optional(Type.String({ maxLength: SSH_INPUT_MAX_CHARS, description: "Non-secret stdin text; input only" })),
   newline: Type.Optional(Type.Boolean({ default: true, description: "Append a newline to input (default true)" })),
   prompt: Type.Optional(Type.String({ minLength: 1, maxLength: 500, description: "Purpose shown to the user by secure secret input; never contains the secret" })),
-  cursor: Type.Optional(Type.Integer({ minimum: 0, description: "Output cursor returned by a previous call; read only" })),
+  cursor: Type.Optional(Type.Integer({ minimum: 0, maximum: Number.MAX_SAFE_INTEGER, description: "Output cursor returned by a previous call; read only" })),
   waitMs: Type.Optional(Type.Integer({ minimum: 0, maximum: SSH_WAIT_MAX_MS, description: "Bounded wait in milliseconds; command/read only" })),
 }, {
   additionalProperties: false,
@@ -66,29 +67,27 @@ function cleanDisplay(value: unknown, max = 4_000): string {
 }
 
 function validateParams(params: SshToolParams): void {
-  if (!OPERATIONS.includes(params?.operation)) throw new SshError("INVALID_ARGUMENT", `Unsupported SSH operation '${String(params?.operation)}'`);
+  if (!Value.Check(parameters, params)) {
+    const first = [...Value.Errors(parameters, params)][0];
+    const errorPath = first ? String((first as any).path ?? (first as any).instancePath ?? "/") : "/";
+    throw new SshError("INVALID_ARGUMENT", first ? `${errorPath}: ${first.message}` : "schema validation failed");
+  }
   const unexpected = Object.keys(params).filter((key) => !allowedFields[params.operation].has(key));
   if (unexpected.length > 0) throw new SshError("INVALID_ARGUMENT", `${params.operation} does not accept: ${unexpected.join(", ")}`);
   if (params.operation === "connect") {
-    if (typeof params.profile !== "string" || !new RegExp(NAME_PATTERN).test(params.profile)) throw new SshError("INVALID_ARGUMENT", "connect requires a valid profile name");
-    if (params.target !== undefined && !new RegExp(NAME_PATTERN).test(params.target)) throw new SshError("INVALID_ARGUMENT", "target is invalid");
-    if (params.label !== undefined && (params.label.length < 1 || params.label.length > SSH_LABEL_MAX_CHARS)) throw new SshError("INVALID_ARGUMENT", "label is invalid");
+    if (params.profile === undefined) throw new SshError("INVALID_ARGUMENT", "connect requires a valid profile name");
     return;
   }
   if (params.operation === "list") return;
-  if (typeof params.session !== "string" || params.session.length < 5 || params.session.length > 64) throw new SshError("INVALID_ARGUMENT", `${params.operation} requires a session ID`);
+  if (params.session === undefined) throw new SshError("INVALID_ARGUMENT", `${params.operation} requires a session ID`);
   if (params.operation === "command") {
-    if (typeof params.command !== "string" || params.command.length < 1 || params.command.length > SSH_COMMAND_MAX_CHARS) throw new SshError("INVALID_ARGUMENT", `command must contain 1-${SSH_COMMAND_MAX_CHARS} characters`);
+    if (params.command === undefined) throw new SshError("INVALID_ARGUMENT", `command must contain 1-${SSH_COMMAND_MAX_CHARS} characters`);
     if (/[\u0000-\u0008\u000b-\u000d\u000e-\u001f\u007f]/.test(params.command)) throw new SshError("INVALID_ARGUMENT", "command cannot contain terminal control characters");
-    if (params.waitMs !== undefined && (!Number.isInteger(params.waitMs) || params.waitMs < 0 || params.waitMs > SSH_WAIT_MAX_MS)) throw new SshError("INVALID_ARGUMENT", `waitMs must be an integer from 0-${SSH_WAIT_MAX_MS}`);
   } else if (params.operation === "read") {
-    if (params.cursor !== undefined && (!Number.isSafeInteger(params.cursor) || params.cursor < 0)) throw new SshError("INVALID_ARGUMENT", "cursor must be a non-negative safe integer");
-    if (params.waitMs !== undefined && (!Number.isInteger(params.waitMs) || params.waitMs < 0 || params.waitMs > SSH_READ_WAIT_MAX_MS)) throw new SshError("INVALID_ARGUMENT", `read waitMs must be an integer from 0-${SSH_READ_WAIT_MAX_MS}`);
+    if (params.waitMs !== undefined && params.waitMs > SSH_READ_WAIT_MAX_MS) throw new SshError("INVALID_ARGUMENT", `read waitMs must be at most ${SSH_READ_WAIT_MAX_MS}`);
   } else if (params.operation === "input") {
-    if (typeof params.data !== "string" || params.data.length > SSH_INPUT_MAX_CHARS) throw new SshError("INVALID_ARGUMENT", `data must be at most ${SSH_INPUT_MAX_CHARS} characters`);
+    if (params.data === undefined) throw new SshError("INVALID_ARGUMENT", `data must be at most ${SSH_INPUT_MAX_CHARS} characters`);
     if (/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(params.data)) throw new SshError("INVALID_ARGUMENT", "input data cannot contain terminal control characters");
-  } else if (params.operation === "secret_input" && params.prompt !== undefined && (params.prompt.length < 1 || params.prompt.length > 500)) {
-    throw new SshError("INVALID_ARGUMENT", "prompt must contain 1-500 characters");
   }
 }
 
