@@ -94,6 +94,8 @@ Dispatching a `ready-for-agent` ticket to a worktree agent, accepting the pull r
 - Prefer existing dependencies and platform APIs. Inspect `package.json` and `package-lock.json` before adding a dependency, and keep the lockfile synchronized.
 - Preserve unrelated working-tree changes. Keep each change focused and review the final diff before completion.
 
+- At Context Memory's native expected-sequence boundary, exclude only terminal `error` or `aborted` assistants whose content array is literally empty: Pi may omit that zero-evidence bookkeeping entry after an interrupted run, and strict equality resumes at the next message. Non-empty and partial failed assistants remain strict; their omission or modification must refuse the whole application.
+
 ## Quality Gates
 
 Apply the current gates according to the change risk:

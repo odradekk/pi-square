@@ -132,8 +132,13 @@ part before the trailing part and leaves every carried part byte-identical.
 The application is fail-safe: it aligns every incoming message to the native
 session projection by strict equality, and any upstream deletion or
 modification that breaks the mapping refuses the whole application — the
-unmodified request is sent instead, with protocol history intact. Nothing is
-half-applied and no filtered history is resurrected.
+unmodified request is sent instead, with protocol history intact. The one
+exception is a terminal `error` or `aborted` assistant with a literally empty
+content array: Pi can omit that zero-evidence bookkeeping entry after an
+interrupted run, so the native expectation skips it and alignment resumes at
+the next exact message. Any non-empty or partial failed assistant remains
+strict and its omission still refuses the application. Nothing is half-applied
+and no filtered history is resurrected.
 
 A Memory block is at most 16 KiB of canonical UTF-8, non-empty, and free of
 NUL and C0 control characters except tab, newline, and carriage return.
@@ -336,9 +341,11 @@ real-user run, and it takes effect on the next request — not at run end:
    carrier exists; rejected arguments and diagnostic feedback stay intact. The
    application needs reliable message-to-entry alignment; an upstream
    transform that removed or modified an eviction target refuses the whole
-   application for that request. `/context` distinguishes `recorded · not yet
-   applied` from `applied to requests`; a tool result can never claim the
-   future.
+   application for that request. A zero-content terminal `error` or `aborted`
+   assistant is the narrow exception because Pi may omit that bookkeeping
+   entry after interruption; non-empty and partial failed assistants are not
+   ignored. `/context` distinguishes `recorded · not yet applied` from
+   `applied to requests`; a tool result can never claim the future.
 
 A failure before recording changes nothing; after recording, the state entry
 is real history and stays recorded even if the tool result is interrupted.

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai";
-import { ModelRuntime, createAgentSession, DefaultResourceLoader, SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
+import { ModelRuntime, buildContextEntries, createAgentSession, DefaultResourceLoader, SessionManager, SettingsManager, sessionEntryToContextMessages } from "@earendil-works/pi-coding-agent";
 import jiti from "jiti";
 
 import { setMaxListeners } from "node:events";
@@ -77,6 +77,7 @@ const MAIN_MEMORY = [
   "The early reads established the build entry points and the login flow.",
   `The digest also carries the one vault fact: ${DIGEST_FACT}`,
 ].join("\n");
+const POST_ABORT_MEMORY = "# Post-abort digest\n\n- later successful work was recorded after the interruption";
 
 function messageText(message) {
   if (typeof message.content === "string") return message.content;
@@ -196,7 +197,7 @@ let previousAgentDir = process.env.PI_CODING_AGENT_DIR;
  * exercise the real recovery path. Sequential callers only: Pi resolves the
  * agent configuration through a process-wide path.
  */
-async function openSession({ runtime, faux, environment, manager, startReason = "startup", previousSessionFile }) {
+async function openSession({ runtime, faux, environment, manager, startReason = "startup", previousSessionFile, additionalExtensionPaths }) {
   const requests = [];
   faux.setResponses(Array.from({ length: 120 }, () => (context) => {
     requests.push({
@@ -208,6 +209,7 @@ async function openSession({ runtime, faux, environment, manager, startReason = 
   const settingsManager = SettingsManager.create(environment.cwd, environment.agentDir);
   const resourceLoader = new DefaultResourceLoader({
     cwd: environment.cwd, agentDir: environment.agentDir, settingsManager, noSkills: true,
+    ...(additionalExtensionPaths ? { additionalExtensionPaths } : {}),
   });
   await resourceLoader.reload();
   const { session } = await createAgentSession({
@@ -1016,7 +1018,29 @@ try {
   const abortFaux = createFaux();
   runtime.registerNativeProvider(abortFaux.faux.provider);
   const abortManager = SessionManager.create(abortEnv.cwd, abortEnv.sessionsDir);
-  const abortSession = await openSession({ runtime, faux: abortFaux.faux, environment: abortEnv, manager: abortManager });
+  const omitEmptyAbortPath = join(abortEnv.root, "omit-empty-abort.ts");
+  writeFileSync(omitEmptyAbortPath, [
+    "export default function register(pi) {",
+    "  pi.on(\"context\", (event, ctx) => {",
+    "    const recorded = ctx.sessionManager.getBranch().filter((entry) => entry.type === \"custom\"",
+    "      && entry.customType === \"pi-square.context-memory/memory\").length;",
+    "    if (recorded < 2) return undefined;",
+    "    return {",
+    "      messages: event.messages.filter((message) => !(message?.role === \"assistant\"",
+    "        && message.stopReason === \"error\" && Array.isArray(message.content)",
+    "        && message.content.length === 0 && /abort/i.test(message.errorMessage ?? \"\"))),",
+    "    };",
+    "  });",
+    "}",
+    "",
+  ].join("\n"));
+  const abortSession = await openSession({
+    runtime,
+    faux: abortFaux.faux,
+    environment: abortEnv,
+    manager: abortManager,
+    additionalExtensionPaths: [omitEmptyAbortPath],
+  });
   let abortOnCompactResult = false;
   const abortUnsubscribe = abortSession.session.subscribe((event) => {
     if (event.type === "message_end" && event.message.role === "toolResult"
@@ -1041,19 +1065,80 @@ try {
   assert.equal(stateEntriesOf(abortManager).length, 1, "the recording before the cancellation is real history");
   assert.match(resultText(compactToolResultsOf(abortManager).at(-1)), /Memory block recorded\./,
     "the interrupted tool result stays the truthful acknowledgement");
+
+  const emptyAbortEntry = abortManager.getBranch().find((entry) => entry.type === "message"
+    && entry.message.role === "assistant" && entry.message.stopReason === "error"
+    && /abort/i.test(entry.message.errorMessage ?? ""));
+  assert.ok(emptyAbortEntry, "Pi records the abort-flavored error assistant on the branch");
+  assert.deepEqual(emptyAbortEntry.message.content, [], "the relevant abort assistant has empty content");
+
+  const nativeAfterAbort = buildContextEntries(abortManager.getBranch(), abortManager.getLeafId())
+    .flatMap(sessionEntryToContextMessages);
+  assert.ok(nativeAfterAbort.some((message) => message.role === "assistant"
+    && message.stopReason === "error" && Array.isArray(message.content) && message.content.length === 0),
+  "Pi's native expected projection includes the empty abort assistant");
+
+  script(({ lastToolName, lastText }) => {
+    if (lastToolName === "read" && lastText.includes("FILE-C-NEEDLE")) {
+      return fauxAssistantMessage(fauxToolCall("read", { path: "file-d.txt" }), { stopReason: "toolUse" });
+    }
+    if (lastToolName === "read" && lastText.includes("FILE-D-NEEDLE")) {
+      return fauxAssistantMessage(fauxToolCall("compact_to_memory_block", {
+        markdown: POST_ABORT_MEMORY,
+      }), { stopReason: "toolUse" });
+    }
+    if (lastToolName === "compact_to_memory_block") {
+      return fauxAssistantMessage("continued and recorded after the abort", { stopReason: "stop" });
+    }
+    return fauxAssistantMessage(fauxToolCall("read", { path: "file-c.txt" }), { stopReason: "toolUse" });
+  });
+  await prompt(abortSession.session,
+    "Continue ordinary work in this same session: read file-c.txt and file-d.txt, record the later work, then answer. ");
+  const sameSessionRequest = abortSession.requests.at(-1);
+  assert.ok(carrierOf(sameSessionRequest.messages),
+    "the recorded Memory applies on the first ordinary request after an abort without reopening");
+  assert.deepEqual(carrierParts(sameSessionRequest.messages), [
+    MEMORY_SUMMARY_WRAPPER,
+    "\n---\n\n# Abort digest\n\n- recorded before the abort",
+    `\n---\n\n${POST_ABORT_MEMORY}`,
+  ], "the complete ordered Memory carrier survives the abort without reopening");
+  assert.ok(!requestText(sameSessionRequest.messages).includes("FILE-A-NEEDLE"),
+    "covered originals leave the first ordinary request after an abort");
+  assert.ok(!requestText(sameSessionRequest.messages).includes("FILE-C-NEEDLE"),
+    "post-abort covered originals leave the first request after the later recording");
+  assert.ok(requestText(sameSessionRequest.messages).includes("FILE-D-NEEDLE"),
+    "the retained working set remains raw after the abort");
+  assert.ok(requestText(sameSessionRequest.messages).includes("Continue ordinary work in this same session"),
+    "the retained user instruction remains raw after the abort");
+  assert.ok(!sameSessionRequest.messages.some((message) => message.role === "assistant"
+    && message.stopReason === "error" && Array.isArray(message.content) && message.content.length === 0),
+  "Pi omits the empty abort assistant from the subsequent provider request");
+  const sameSessionCallIds = new Set(sameSessionRequest.messages
+    .filter((message) => message.role === "assistant" && Array.isArray(message.content))
+    .flatMap((message) => message.content.filter((part) => part?.type === "toolCall").map((part) => part.id)));
+  for (const result of sameSessionRequest.messages.filter((message) => message.role === "toolResult")) {
+    assert.ok(sameSessionCallIds.has(result.toolCallId),
+      `the post-abort request keeps every tool result paired (${result.toolCallId})`);
+  }
+  const postAbortSource = await abortSession.session.getToolDefinition("read_memory_source").execute(
+    "lifecycle:abort-source", { block: 2, page: 1 }, undefined, undefined,
+    abortSession.session.createReplacedSessionContext(),
+  );
+  assert.ok(postAbortSource.content[1].text.includes("FILE-C-NEEDLE"),
+    "the covered post-abort source fact remains recoverable from the recorded block");
   await abortSession.session.dispose();
   opened.length = 0;
 
   const abortReopen = SessionManager.open(abortManager.getSessionFile(), abortEnv.sessionsDir);
   const abortResumed = await openSession({
     runtime, faux: abortFaux.faux, environment: abortEnv, manager: abortReopen,
-    startReason: "resume", previousSessionFile: abortManager.getSessionFile(),
+    startReason: "resume", previousSessionFile: abortManager.getSessionFile(), additionalExtensionPaths: [omitEmptyAbortPath],
   });
   script(() => fauxAssistantMessage("resumed after the abort", { stopReason: "stop" }));
   await prompt(abortResumed.session, "Acknowledge after the interrupted run. ");
   assert.ok(carrierOf(abortResumed.requests[0].messages),
     "the record survived the cancellation and restart as real Memory");
-  assert.equal(stateEntriesOf(abortReopen).length, 1, "the restart neither re-recorded nor rolled back");
+  assert.equal(stateEntriesOf(abortReopen).length, 2, "the restart neither re-recorded nor rolled back");
   await abortResumed.session.dispose();
   opened.length = 0;
 

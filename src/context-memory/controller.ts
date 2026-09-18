@@ -260,6 +260,22 @@ function deepEqual(left: unknown, right: unknown): boolean {
 }
 
 /**
+ * Pi may omit a terminal assistant with no content from a later request after
+ * an interrupted run. Such an entry carries no model-visible evidence, so it
+ * is the one native-sequence gap alignment can skip safely. Non-empty error
+ * and aborted assistants remain strict: their partial text, thinking, or tool
+ * calls must still match exactly or the Memory application refuses.
+ */
+function isOmittableEmptyTerminalAssistant(message: unknown): boolean {
+  if (message === null || typeof message !== "object") return false;
+  const candidate = message as { role?: unknown; content?: unknown; stopReason?: unknown };
+  return candidate.role === "assistant"
+    && (candidate.stopReason === "error" || candidate.stopReason === "aborted")
+    && Array.isArray(candidate.content)
+    && candidate.content.length === 0;
+}
+
+/**
  * The one-request Memory projection input derived from the session tree
  * (#319): the native context entries, their projected messages, and the
  * derived Memory whose replacement set the projection applies.
@@ -279,6 +295,7 @@ function nativeProjection(session: MemorySessionReader): NativeProjection {
   const expected: { message: unknown; entryId: string }[] = [];
   for (const entry of entries) {
     for (const message of sessionEntryToContextMessages(entry)) {
+      if (isOmittableEmptyTerminalAssistant(message)) continue;
       expected.push({ message, entryId: entry.id });
     }
   }
