@@ -14,6 +14,7 @@ import {
   SSH_TOOL_VERSION,
   SSH_WAIT_DEFAULT_MS,
   SSH_WAIT_MAX_MS,
+  type SshCommandState,
   type SshDetails,
   type SshOperation,
   type SshOutputPage,
@@ -91,24 +92,106 @@ function validateParams(params: SshToolParams): void {
   }
 }
 
-function pageMetadata(page: SshOutputPage): Omit<SshOutputPage, "text"> {
-  const { text: _text, ...metadata } = page;
-  return metadata;
+/** The model-facing outcome of one observed command state. */
+interface CommandOutcome {
+  status: SshDetails["status"];
+  code: string;
+  message: string;
 }
 
-function result(details: SshDetails, output?: string, isError = false) {
+/** A command state plus the aborted wait that can end a command or a read. */
+type CommandOutcomeState = SshCommandState | "aborted";
+
+/** What an operation observed when it resolved a command state. */
+interface CommandObservation {
+  /** The operation reporting the state. */
+  operation: "command" | "read";
+  /** The projected page carries text; a read reports this in its message. */
+  hasOutput?: boolean;
+  /** Exit code of a completed command. */
+  exitCode?: number;
+  /** A throttled streaming update published while the command is still running. */
+  streaming?: boolean;
+}
+
+/** The message a read reports about its projected page. */
+function readOutputMessage(hasOutput: boolean | undefined): string {
+  return hasOutput ? "SSH output read" : "No new SSH output";
+}
+
+/**
+ * The single mapping from command state to the model-facing status, code, and
+ * message shared by `command` and `read`, so the two operations cannot derive
+ * the same state differently. The message follows the observer: a read reports
+ * whether its page carried text, a command reports its lifecycle, and the
+ * streaming update published while waiting is worded differently from the
+ * final wait.
+ */
+const COMMAND_OUTCOMES: Record<CommandOutcomeState, {
+  status: SshDetails["status"];
+  code: string;
+  message: (observation: CommandObservation) => string;
+}> = {
+  idle: {
+    status: "success",
+    code: "OK",
+    message: ({ hasOutput }) => readOutputMessage(hasOutput),
+  },
+  running: {
+    status: "running",
+    code: "COMMAND_RUNNING",
+    message: (observation) => {
+      if (observation.operation === "read") return readOutputMessage(observation.hasOutput);
+      return observation.streaming ? "Remote command is running" : "Remote command is still running";
+    },
+  },
+  completed: {
+    status: "success",
+    code: "COMMAND_COMPLETED",
+    message: ({ exitCode }) => `Remote command exited with code ${exitCode}`,
+  },
+  disconnected: {
+    status: "error",
+    code: "SESSION_DISCONNECTED",
+    message: (observation) => {
+      if (observation.operation === "read") return readOutputMessage(observation.hasOutput);
+      return "SSH session disconnected before the command completed";
+    },
+  },
+  aborted: {
+    status: "aborted",
+    code: "ABORTED",
+    message: ({ operation }) => operation === "read"
+      ? "SSH output wait was cancelled"
+      : "Remote command wait was cancelled and an interrupt was sent",
+  },
+};
+
+function commandOutcome(state: CommandOutcomeState, observation: CommandObservation): CommandOutcome {
+  const row = COMMAND_OUTCOMES[state];
+  return { status: row.status, code: row.code, message: row.message(observation) };
+}
+
+/** Build the model-facing details for one observed page. */
+function pageDetails(
+  operation: SshOperation,
+  session: SshSessionSummary,
+  page: SshOutputPage,
+  outcome: CommandOutcome,
+  exitCode?: number,
+): SshDetails {
+  const { text: _text, ...outputPage } = page;
+  return {
+    ...baseDetails(operation, outcome.status, outcome.code, outcome.message),
+    session,
+    outputPage,
+    ...(exitCode !== undefined ? { exitCode } : {}),
+  };
+}
+
+function result(details: SshDetails, output?: string) {
   const body = {
-    version: SSH_TOOL_VERSION,
-    status: details.status,
-    operation: details.operation,
-    code: details.code,
-    message: details.message,
-    ...(details.session ? { session: details.session } : {}),
-    ...(details.sessions ? { sessions: details.sessions } : {}),
-    ...(details.profiles ? { profiles: details.profiles } : {}),
-    ...(details.omissions ? { omissions: details.omissions } : {}),
-    ...(details.output ? { outputPage: details.output } : {}),
-    ...(details.exitCode !== undefined ? { exitCode: details.exitCode } : {}),
+    ...details,
     ...(output !== undefined ? { output: cleanDisplay(output, SSH_MODEL_OUTPUT_CHARS) } : {}),
   };
   const serialized = JSON.stringify(body);
@@ -117,19 +200,19 @@ function result(details: SshDetails, output?: string, isError = false) {
   }
   return {
     content: [{ type: "text" as const, text: serialized }],
-    ...(isError ? { isError: true } : {}),
+    ...(details.status === "error" || details.status === "aborted" ? { isError: true } : {}),
     details,
   };
 }
 
 function baseDetails(operation: SshOperation, status: SshDetails["status"], code: string, message: string): SshDetails {
-  return { version: SSH_TOOL_VERSION, operation, status, code, message };
+  return { version: SSH_TOOL_VERSION, status, operation, code, message };
 }
 
 function failure(operation: SshOperation, error: unknown) {
   const code = sshErrorCode(error);
   const message = cleanDisplay(sshErrorMessage(error), 1_000);
-  return result(baseDetails(operation, code === "ABORTED" ? "aborted" : "error", code, message), undefined, true);
+  return result(baseDetails(operation, code === "ABORTED" ? "aborted" : "error", code, message));
 }
 
 function confirmationAvailable(ctx: any): boolean {
@@ -253,11 +336,11 @@ export function createSshToolController(
           };
           const session = await manager.connect(profile.name, target.name, params.label, requestSecret, signal);
           const page = await session.read(undefined, 0, signal);
-          const details: SshDetails = {
-            ...baseDetails("connect", "success", "CONNECTED", `Connected ${session.id} to ${session.summary().endpoint}`),
-            session: session.summary(),
-            output: pageMetadata(page.page),
-          };
+          const details = pageDetails("connect", session.summary(), page.page, {
+            status: "success",
+            code: "CONNECTED",
+            message: `Connected ${session.id} to ${session.summary().endpoint}`,
+          });
           return result(details, page.page.text);
         }
 
@@ -270,11 +353,12 @@ export function createSshToolController(
             updateTimer = setTimeout(() => {
               updateTimer = undefined;
               void session.read(startCursor, 0).then((snapshot) => {
-                const partialDetails: SshDetails = {
-                  ...baseDetails("command", "running", "COMMAND_RUNNING", "Remote command is running"),
-                  session: session.summary(),
-                  output: pageMetadata(snapshot.page),
-                };
+                const partialDetails = pageDetails(
+                  "command",
+                  session.summary(),
+                  snapshot.page,
+                  commandOutcome("running", { operation: "command", streaming: true }),
+                );
                 onUpdate?.(result(partialDetails, snapshot.page.text));
               }).catch(() => {});
             }, UPDATE_INTERVAL_MS);
@@ -282,22 +366,16 @@ export function createSshToolController(
           const unsubscribe = session.subscribe(publish);
           try {
             const commandResult = await session.command(params.command!, params.waitMs ?? SSH_WAIT_DEFAULT_MS, signal);
-            if (signal?.aborted) {
-              const details: SshDetails = {
-                ...baseDetails("command", "aborted", "ABORTED", "Remote command wait was cancelled and an interrupt was sent"),
-                session: session.summary(),
-                output: pageMetadata(commandResult.page),
-              };
-              return result(details, commandResult.page.text, true);
-            }
-            const completed = commandResult.state === "completed";
-            const details: SshDetails = {
-              ...baseDetails("command", completed ? "success" : commandResult.state === "disconnected" ? "error" : "running", completed ? "COMMAND_COMPLETED" : commandResult.state === "disconnected" ? "SESSION_DISCONNECTED" : "COMMAND_RUNNING", completed ? `Remote command exited with code ${commandResult.exitCode}` : commandResult.state === "disconnected" ? "SSH session disconnected before the command completed" : "Remote command is still running"),
-              session: session.summary(),
-              output: pageMetadata(commandResult.page),
-              ...(commandResult.exitCode !== undefined ? { exitCode: commandResult.exitCode } : {}),
-            };
-            return result(details, commandResult.page.text, commandResult.state === "disconnected");
+            const aborted = Boolean(signal?.aborted);
+            const exitCode = aborted ? undefined : commandResult.exitCode;
+            const details = pageDetails(
+              "command",
+              session.summary(),
+              commandResult.page,
+              commandOutcome(aborted ? "aborted" : commandResult.state, { operation: "command", exitCode }),
+              exitCode,
+            );
+            return result(details, commandResult.page.text);
           } finally {
             unsubscribe();
             if (updateTimer) clearTimeout(updateTimer);
@@ -306,12 +384,16 @@ export function createSshToolController(
 
         if (params.operation === "read") {
           const readResult = await session.read(params.cursor, Math.min(params.waitMs ?? 0, SSH_READ_WAIT_MAX_MS), signal);
-          const details: SshDetails = {
-            ...baseDetails("read", signal?.aborted ? "aborted" : readResult.state === "disconnected" ? "error" : readResult.state === "running" ? "running" : "success", signal?.aborted ? "ABORTED" : readResult.state === "disconnected" ? "SESSION_DISCONNECTED" : readResult.state === "running" ? "COMMAND_RUNNING" : "OK", signal?.aborted ? "SSH output wait was cancelled" : readResult.page.text ? "SSH output read" : "No new SSH output"),
-            session: session.summary(),
-            output: pageMetadata(readResult.page),
-          };
-          return result(details, readResult.page.text, readResult.state === "disconnected" || Boolean(signal?.aborted));
+          const details = pageDetails(
+            "read",
+            session.summary(),
+            readResult.page,
+            commandOutcome(signal?.aborted ? "aborted" : readResult.state, {
+              operation: "read",
+              hasOutput: Boolean(readResult.page.text),
+            }),
+          );
+          return result(details, readResult.page.text);
         }
 
         if (params.operation === "input") {
