@@ -127,7 +127,7 @@ for (const file of ["pi-square-theme-dark.json", "pi-square-theme-light.json"]) 
 // ─── Wide Loc under width pressure: right-most field drops, right side keeps ─
 {
   const theme = loadThemeFromPath(join(packageRoot, "themes", "pi-square-theme-dark.json"));
-  const longCwd = "/home/example/orca/workspaces/pi-square/232-path-independence-wrap-coverage";
+  const longCwd = "/home/example/.paseo/worktrees/pi-square/232-path-independence-wrap-coverage";
   const lines = renderEnhancedFooter(theme, 100, snapshot({ cwd: longCwd }));
   const row2 = stripVTControlCharacters(lines[1]);
   assert.ok(visibleWidth(lines[1]) <= 100, "pressured row 2 stays within 100 columns");

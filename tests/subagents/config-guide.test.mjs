@@ -46,7 +46,7 @@ const plainTheme = {
 // Rewrite the real root to a fixed synthetic one short enough that the current
 // assertions hold with margin, and keep a deliberately long one for wrap cases.
 const syntheticGuideRoot = "/opt/pi-square";
-const longGuideRoot = "/home/example/orca/workspaces/pi-square/232-path-independence-wrap-coverage";
+const longGuideRoot = "/home/example/.paseo/worktrees/pi-square/232-path-independence-wrap-coverage";
 
 function withPackageRoot(registry, root) {
   const rewrite = (filePath) => (
