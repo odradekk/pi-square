@@ -70,6 +70,7 @@ const suites = [
   "shell/pwsh.test.mjs",
   "ssh/buffer.test.mjs",
   "ssh/terminal-output.test.mjs",
+  "ssh/marker-scanner.test.mjs",
   "ssh/manager.test.mjs",
   "ssh/tool.test.mjs",
   "ssh/secret-input.test.mjs",
