@@ -23,9 +23,8 @@ const DISCONNECTED_RECORD_LIMIT = 64;
 export class SshSessionManager {
   private config: SshConfig = { maxSessions: 8, profiles: [] };
   private readonly sessions = new Map<string, SshSession>();
-  private pendingConnections = 0;
-  private readonly pendingByProfile = new Map<string, number>();
-  private readonly pendingClients = new Set<SshClientLike>();
+  // In-flight connections, keyed by client with the owning profile name as the value.
+  private readonly pendingClients = new Map<SshClientLike, string>();
   private readonly timer: NodeJS.Timeout;
 
   constructor(private readonly createClient: SshClientFactory = () => new Client()) {
@@ -59,21 +58,19 @@ export class SshSessionManager {
   ): Promise<SshSession> {
     const { profile, target } = this.resolve(profileName, targetName);
     const connected = [...this.sessions.values()].filter((session) => session.state === "connected");
-    if (connected.length + this.pendingConnections >= this.config.maxSessions) {
+    if (connected.length + this.pendingClients.size >= this.config.maxSessions) {
       throw new SshError("GLOBAL_SESSION_LIMIT", `SSH global session limit (${this.config.maxSessions}) reached`);
     }
     const profileCount = connected.filter((session) => session.profile.name === profile.name).length;
-    const profilePending = this.pendingByProfile.get(profile.name) ?? 0;
+    const profilePending = [...this.pendingClients.values()].filter((name) => name === profile.name).length;
     if (profileCount + profilePending >= profile.maxSessions) {
       throw new SshError("PROFILE_SESSION_LIMIT", `SSH profile '${profile.name}' session limit (${profile.maxSessions}) reached`);
     }
 
-    this.pendingConnections += 1;
-    this.pendingByProfile.set(profile.name, profilePending + 1);
     const client = this.createClient();
     const clientErrorGuard = guardClientErrorsUntilClose(client);
     let session: SshSession | undefined;
-    this.pendingClients.add(client);
+    this.pendingClients.set(client, profile.name);
     try {
       const config = await connectConfig(profile, target, requestSecret);
       await waitForReady(client, config, signal);
@@ -110,10 +107,6 @@ export class SshSessionManager {
       throw new SshError("CONNECTION_FAILED", safeReason(error));
     } finally {
       this.pendingClients.delete(client);
-      this.pendingConnections -= 1;
-      const remaining = (this.pendingByProfile.get(profile.name) ?? 1) - 1;
-      if (remaining > 0) this.pendingByProfile.set(profile.name, remaining);
-      else this.pendingByProfile.delete(profile.name);
     }
   }
 
@@ -138,7 +131,7 @@ export class SshSessionManager {
   }
 
   reset(reason = "Pi session reset"): void {
-    for (const client of this.pendingClients) {
+    for (const client of this.pendingClients.keys()) {
       try { client.destroy(); } catch { /* best effort */ }
     }
     for (const session of this.sessions.values()) session.close(reason);
