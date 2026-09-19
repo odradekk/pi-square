@@ -3,6 +3,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { truncateToWidth } from "@earendil-works/pi-tui";
 import { FooterSnapshotProvider } from "./data";
 import { renderEnhancedFooter } from "./render";
+import { bindFooterRender, invalidateFooterTrailer, renderFooterTrailer } from "./trailer";
 
 function installEnhancedFooter(
   ctx: ExtensionContext,
@@ -11,26 +12,34 @@ function installEnhancedFooter(
   const provider = new FooterSnapshotProvider();
   ctx.ui.setFooter((tui, theme, footerData) => {
     const unsubscribeBranch = footerData.onBranchChange(() => tui.requestRender());
+    const unbindRender = bindFooterRender(() => tui.requestRender());
     return {
       dispose() {
         unsubscribeBranch();
+        unbindRender();
       },
-      invalidate() {},
+      // The footer's own rows hold no cache, but the trailer's producer may.
+      invalidate() {
+        invalidateFooterTrailer();
+      },
       render(width: number): string[] {
         const safeWidth = Math.max(1, width);
+        let lines: string[];
         try {
-          return renderEnhancedFooter(
+          lines = renderEnhancedFooter(
             theme,
             safeWidth,
             provider.snapshot(ctx, pi, footerData),
           );
         } catch {
           const project = basename(ctx.cwd) || ctx.cwd || "project";
-          return [
+          lines = [
             truncateToWidth(theme.fg("accent", project), safeWidth, theme.fg("dim", "...")),
             truncateToWidth(theme.fg("error", "! footer unavailable"), safeWidth, theme.fg("dim", "...")),
           ];
         }
+        const trailer = renderFooterTrailer(theme, safeWidth, Math.max(1, tui.terminal.rows));
+        return trailer.length === 0 ? lines : [...lines, "", ...trailer];
       },
     };
   });

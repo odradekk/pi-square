@@ -6,7 +6,7 @@ status: accepted
 
 > Status note: since #303 the compact subagent status row this ADR referenced
 > is retired. Subagent observability now publishes through the session-scoped
-> vertical child roster (`src/subagents/roster.ts`) above the editor — a
+> vertical child roster (`src/subagents/roster.ts`) below the footer — a
 > read-only projection of the background job store with no durable state, no
 > retention exemption, and no delivery interaction — and `undelivered`
 > visibility lives solely in the `/subagent` manager. Where this ADR says the
@@ -145,7 +145,7 @@ status: accepted
 > state only: the store's finished-job compaction and pending/claimed
 > delivery exemptions remain the single retention authority and the manager
 > keeps historical inspection. Parent replacement, reload, fork, resume, and
-> shutdown close the overlay, clear widget and view state, unsubscribe every
+> shutdown close the overlay, clear the roster and view state, unsubscribe every
 > listener, and cancel repaint work, while the established shutdown path
 > keeps sole authority over aborting active children and resetting delivery;
 > opening and using the viewer never claims, takes, releases, confirms,

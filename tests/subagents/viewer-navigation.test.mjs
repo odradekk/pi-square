@@ -20,7 +20,7 @@ const { createPromptSnapshot } = await load(join(packageRoot, "tests", "subagent
 const { DEFAULT_CONFIG } = await load(join(packageRoot, "src", "core", "config.ts"));
 const { DisplayRuntime } = await load(join(packageRoot, "src", "display", "runtime.ts"));
 
-const { createSubagentRosterController, rosterRowBudget, SUBAGENT_ROSTER_KEY } = rosterModule;
+const { createSubagentRosterController, rosterRowBudget } = rosterModule;
 const { createBackgroundState } = backgroundModule;
 const { ensureArtifactsDir, initializeSessionFile, writeRunState } = artifactsModule;
 const { createChildViewFeed } = liveEventsModule;
@@ -169,7 +169,17 @@ function navigationHarness({
   const live = manualFeed();
   state.viewFeed = live.feed;
   const editor = { text: "" };
-  const calls = { customs: [], pastes: [], widgets: [] };
+  const calls = { customs: [], pastes: [], publications: 0 };
+  // The roster renders below the footer, through the footer's trailer slot.
+  let trailer;
+  const footer = {
+    setTrailer(next) {
+      trailer = next;
+      return () => { if (trailer === next) trailer = undefined; };
+    },
+    requestRender() { calls.publications += 1; },
+    registered: () => trailer !== undefined,
+  };
   let inputHandler;
   const tui = { terminal: { columns, rows }, requestRender() {} };
   const effectiveTheme = theme ?? plainTheme();
@@ -180,12 +190,6 @@ function navigationHarness({
   const ui = {
     theme: effectiveTheme,
     onTerminalInput(handler) { inputHandler = handler; return () => {}; },
-    setWidget(key, content, options) {
-      calls.widgets.push({ key, content, options });
-      if (typeof content === "function") {
-        calls.widgets.at(-1).component = content(tui, effectiveTheme);
-      }
-    },
     getEditorText: () => editor.text,
     setEditorText(value) { editor.text = value; },
     pasteToEditor(text) { calls.pastes.push(text); editor.text = text; },
@@ -204,7 +208,7 @@ function navigationHarness({
   };
   const options = { now: () => 500_000 };
   if (display !== undefined) options.display = () => display;
-  const controller = createSubagentRosterController(state, options);
+  const controller = createSubagentRosterController(state, { footer, ...options });
   controller.start(ctx);
 
   const addChild = (fixture) => {
@@ -222,10 +226,9 @@ function navigationHarness({
     for (const listener of state.listeners) listener();
   };
   const input = (data) => inputHandler?.(data);
-  const widgetLines = (width = 80) => {
-    const last = [...calls.widgets].reverse().find((call) => call.key === SUBAGENT_ROSTER_KEY && call.component);
-    return last ? last.component.render(width).map(stripVTControlCharacters) : [];
-  };
+  const widgetLines = (width = 80) => (
+    trailer ? trailer.render(effectiveTheme, width, tui.terminal.rows).map(stripVTControlCharacters) : []
+  );
   const overlay = () => {
     const last = [...calls.customs].reverse().find((entry) => entry.component);
     return last?.component;
@@ -248,6 +251,7 @@ function navigationHarness({
     tui,
     editor,
     calls,
+    footer,
     live,
     input,
     addChild,

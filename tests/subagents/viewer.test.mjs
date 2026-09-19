@@ -40,7 +40,6 @@ const {
   createSubagentRosterController,
   renderSubagentRoster,
   rosterRowBudget,
-  SUBAGENT_ROSTER_KEY,
 } = rosterModule;
 const { createBackgroundState } = backgroundModule;
 const { ensureArtifactsDir, initializeSessionFile, writeRunState } = artifactsModule;
@@ -1159,7 +1158,17 @@ function job(id, status, createdAt, name, overrides = {}) {
 
 function fakeUiHarness({ columns = 80, rows = 30 } = {}) {
   const editor = { text: "" };
-  const calls = { widgets: [], customs: [], pastes: [], inputUnsubscribed: 0, renders: 0 };
+  const calls = { publications: 0, customs: [], pastes: [], inputUnsubscribed: 0, renders: 0 };
+  // The roster renders below the footer, through the footer's trailer slot.
+  let trailer;
+  const footer = {
+    setTrailer(next) {
+      trailer = next;
+      return () => { if (trailer === next) trailer = undefined; };
+    },
+    requestRender() { calls.publications += 1; },
+    registered: () => trailer !== undefined,
+  };
   let inputHandler;
   let rejectCustom;
   const tui = { terminal: { columns, rows }, requestRender() { calls.renders += 1; } };
@@ -1169,13 +1178,6 @@ function fakeUiHarness({ columns = 80, rows = 30 } = {}) {
     onTerminalInput(handler) {
       inputHandler = handler;
       return () => { calls.inputUnsubscribed += 1; inputHandler = undefined; };
-    },
-    setWidget(key, content, options) {
-      calls.widgets.push({ key, content, options });
-      if (typeof content === "function") {
-        const component = content(tui, plainTheme());
-        calls.widgets.at(-1).component = component;
-      }
     },
     getEditorText: () => editor.text,
     setEditorText(value) { editor.text = value; },
@@ -1197,17 +1199,21 @@ function fakeUiHarness({ columns = 80, rows = 30 } = {}) {
     ctx, calls, editor, tui,
     input: (data) => inputHandler?.(data),
     rejectCustom: (error = new Error("custom surface failed")) => rejectCustom?.(error),
-    widgetLines: (width = 80) => {
-      const last = [...calls.widgets].reverse().find((call) => call.key === SUBAGENT_ROSTER_KEY && call.component);
-      return last ? last.component.render(width).map(stripVTControlCharacters) : [];
-    },
+    footer,
+    widgetLines: (width = 80) => (
+      trailer ? trailer.render(plainTheme(), width, tui.terminal.rows).map(stripVTControlCharacters) : []
+    ),
   };
 }
 
 function controllerHarness({ columns = 80, rows = 30, options = {} } = {}) {
   const harness = fakeUiHarness({ columns, rows });
   const state = createBackgroundState();
-  const controller = createSubagentRosterController(state, { now: () => 500_000, ...options });
+  const controller = createSubagentRosterController(state, {
+    now: () => 500_000,
+    footer: harness.footer,
+    ...options,
+  });
   controller.start(harness.ctx);
   const addJob = (fixture) => { state.jobs.set(fixture.id, fixture); for (const listener of state.listeners) listener(); };
   return { ...harness, state, controller, addJob };
@@ -1547,8 +1553,7 @@ test("the roster viewport follows the candidate beyond the visible rows", () => 
   assert.match(lines.find((line) => line.startsWith("●")), /role11/, "the candidate row is visible");
   assert.match(lines[0], new RegExp(`\\+${total - budget} earlier`), "the leading indicator counts the rows above the window");
   assert.ok(!lines.at(-1).includes("more"), "no trailing accounting when the window reaches the end");
-  const last = [...calls.widgets].reverse().find((call) => call.component);
-  assert.ok(last.component.render(80).length <= budget + 1);
+  assert.ok(widgetLines().length <= budget + 1);
 
   assert.equal(input(UP).consume, true);
   assert.match(widgetLines().find((line) => line.startsWith("●")), /role10/, "movement inside the window keeps the row visible");
@@ -1558,33 +1563,38 @@ test("the roster viewport follows the candidate beyond the visible rows", () => 
 test("non-interactive contexts register no listener and teardown is clean", () => {
   const state = createBackgroundState();
   const controller = createSubagentRosterController(state);
-  const calls = { widgets: [], input: 0 };
+  const calls = { input: 0, publications: 0 };
+  let trailer;
+  const footer = {
+    setTrailer(next) { trailer = next; return () => { trailer = undefined; }; },
+    requestRender() { calls.publications += 1; },
+  };
+  const printController = createSubagentRosterController(state, { footer });
   const ctx = {
     mode: "print",
     hasUI: true,
     ui: {
       theme: plainTheme(),
       onTerminalInput() { calls.input += 1; return () => {}; },
-      setWidget(key, content) { calls.widgets.push({ key, content }); },
       getEditorText: () => "",
     },
     sessionManager: { getSessionId: () => "parent-1" },
   };
-  controller.start(ctx);
+  printController.start(ctx);
   assert.equal(calls.input, 0, "print mode registers no terminal listener");
-  assert.equal(calls.widgets.length, 0);
-  controller.stop();
+  assert.equal(trailer, undefined, "print mode registers no trailer");
+  assert.equal(calls.publications, 0);
+  printController.stop();
 
-  const { input, calls: tuiCalls, addJob, controller: tuiController } = controllerHarness();
+  const { input, calls: tuiCalls, addJob, controller: tuiController, footer: tuiFooter, widgetLines } = controllerHarness();
   addJob(job("subagent_11111111-1111-4111-8111-111111111111", "running", 1, "explorer"));
   input(DOWN);
   input(ENTER);
   tuiController.stop();
   assert.equal(tuiCalls.inputUnsubscribed, 1, "stop unsubscribes the terminal listener");
   assert.equal(tuiCalls.customs[0].resolved, true, "stop closes an open overlay");
-  const last = tuiCalls.widgets.at(-1);
-  assert.equal(last.key, SUBAGENT_ROSTER_KEY);
-  assert.equal(last.content, undefined, "stop clears the roster widget");
+  assert.equal(tuiFooter.registered(), false, "stop releases the footer trailer");
+  assert.deepEqual(widgetLines(), [], "stop drops the roster rows");
 });
 
 test("the render layer marks the focus row solid and windows by start", () => {
