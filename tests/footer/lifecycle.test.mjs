@@ -63,7 +63,7 @@ function setup() {
       return () => { unsubscribed = true; };
     },
   };
-  const component = calls.at(-1)({ requestRender() { renders += 1; } }, plainTheme(), footerData);
+  const component = calls.at(-1)({ requestRender() { renders += 1; }, terminal: { rows: 40 } }, plainTheme(), footerData);
   const lines = component.render(80);
   assert.equal(lines.length, 3);
   assert.match(lines[0], /GPT Test/);
@@ -102,7 +102,7 @@ function setup() {
 {
   const { handlers, calls, ctx } = setup();
   await handlers.get("session_start")({}, ctx);
-  const component = calls.at(-1)({ requestRender() {} }, plainTheme(), {
+  const component = calls.at(-1)({ requestRender() {}, terminal: { rows: 40 } }, plainTheme(), {
     getGitBranch() { return "main"; },
     getExtensionStatuses() { return new Map(); },
     getAvailableProviderCount() { return 1; },

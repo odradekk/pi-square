@@ -10,9 +10,7 @@ const load = (await import("jiti")).default(import.meta.url, { moduleCache: fals
 const rosterModule = await load(join(packageRoot, "src", "subagents", "roster.ts"));
 const backgroundModule = await load(join(packageRoot, "src", "subagents", "background.ts"));
 const {
-  SUBAGENT_ROSTER_KEY,
   createSubagentRosterController,
-  createSubagentRosterWidget,
   formatRosterDuration,
   renderSubagentRoster,
   rosterRowBudget,
@@ -82,16 +80,31 @@ function toolTimeline(tool, args, result = "SECRET TOOL RESULT") {
 
 function uiContext({ sessionId = "parent-1", mode = "tui" } = {}) {
   const calls = [];
+  const footer = fakeFooterSlot(calls);
   const ctx = {
     mode,
     hasUI: true,
-    ui: {
-      theme: plainTheme(),
-      setWidget(key, content, options) { calls.push({ key, content, options }); },
-    },
+    ui: { theme: plainTheme() },
     sessionManager: { getSessionId: () => sessionId },
   };
-  return { ctx, calls };
+  return { ctx, calls, footer };
+}
+
+/**
+ * The footer's trailer slot as the roster sees it. Every publication records
+ * one entry carrying the provider registered at that moment, so a test reads
+ * the roster the way the footer does.
+ */
+function fakeFooterSlot(calls) {
+  let provider;
+  return {
+    setTrailer(next) {
+      provider = next;
+      return () => { if (provider === next) provider = undefined; };
+    },
+    requestRender() { calls.push({ trailer: provider }); },
+    registered: () => provider !== undefined,
+  };
 }
 
 function motionHarness(mode) {
@@ -127,18 +140,41 @@ function fakeClock() {
 
 function renderCalls(calls) {
   const last = calls.at(-1);
-  assert.ok(last, "widget call recorded");
-  assert.equal(last.key, SUBAGENT_ROSTER_KEY);
-  assert.deepEqual(last.options, { placement: "aboveEditor" });
+  assert.ok(last, "publication recorded");
   return last;
 }
 
 function renderLast(calls, width = 80, terminalRows = 30, theme = plainTheme()) {
-  const last = renderCalls(calls);
-  assert.equal(typeof last.content, "function", "widget content is a component factory");
-  return last.content({ terminal: { rows: terminalRows } }, theme)
-    .render(width)
-    .map(stripVTControlCharacters);
+  return renderRaw(calls, width, terminalRows, theme).map(stripVTControlCharacters);
+}
+
+/**
+ * What the footer would render at the moment of the last publication:
+ * unmapped, so cache identity stays observable, and empty once the roster has
+ * released the slot.
+ */
+function renderRaw(calls, width = 80, terminalRows = 30, theme = plainTheme()) {
+  const { trailer } = renderCalls(calls);
+  return trailer ? trailer.render(theme, width, terminalRows) : [];
+}
+
+/** A started controller holding `count` running children on its roster. */
+function publishedRoster(count) {
+  const state = createBackgroundState();
+  const { ctx, calls, footer } = uiContext();
+  const controller = createSubagentRosterController(state, { footer });
+  controller.start(ctx);
+  for (let index = 0; index < count; index += 1) {
+    const child = job(
+      `subagent_${String(index).padStart(8, "0")}-1111-4111-8111-111111111111`,
+      "running",
+      index,
+      `role${index}`,
+    );
+    state.jobs.set(child.id, child);
+  }
+  for (const listener of state.listeners) listener();
+  return { state, calls, controller };
 }
 
 const LIFECYCLES = [
@@ -201,8 +237,8 @@ test("prefixes start at eight characters and extend only as far as needed", () =
 
 test("rows keep roster-creation order across lifecycle changes; createdAt orders, full ID ties", () => {
   const state = createBackgroundState();
-  const { ctx, calls } = uiContext();
-  const controller = createSubagentRosterController(state);
+  const { ctx, calls, footer } = uiContext();
+  const controller = createSubagentRosterController(state, { footer });
   controller.start(ctx);
 
   const earlier = job("subagent_dddddddd-dddd-4ddd-8ddd-dddddddddddd", "queued", 1, "crawler");
@@ -248,8 +284,8 @@ test("rows keep roster-creation order across lifecycle changes; createdAt orders
 
 test("equal-createdAt jobs arriving in separate notifications tie-break by full ID", () => {
   const state = createBackgroundState();
-  const { ctx, calls } = uiContext();
-  const controller = createSubagentRosterController(state);
+  const { ctx, calls, footer } = uiContext();
+  const controller = createSubagentRosterController(state, { footer });
   controller.start(ctx);
 
   // Each insertion is its own notification, like createQueuedJob emits.
@@ -282,8 +318,8 @@ test("equal-createdAt jobs arriving in separate notifications tie-break by full 
 
 test("a resumed public ID keeps one row and its roster slot", () => {
   const state = createBackgroundState();
-  const { ctx, calls } = uiContext();
-  const controller = createSubagentRosterController(state);
+  const { ctx, calls, footer } = uiContext();
+  const controller = createSubagentRosterController(state, { footer });
   controller.start(ctx);
 
   const id = "subagent_cccccccc-cccc-4ccc-8ccc-cccccccccccc";
@@ -438,28 +474,22 @@ test("narrow collisions stay distinguishable down to the smallest feasible width
 });
 
 test("height-only resize immediately recomputes the row budget", () => {
-  const rows = Array.from({ length: 13 }, (_, index) => row({
-    id: `subagent_${String(index).padStart(8, "0")}-1111-4111-8111-111111111111`,
-  }));
-  const tui = { terminal: { rows: 40 } };
-  const widget = createSubagentRosterWidget(tui, plainTheme(), rows, 0);
+  const { calls, controller } = publishedRoster(13);
 
-  const tall = widget.render(80);
-  assert.equal(tall.length, 11, "40-row terminal shows ten rows plus accounting");
+  assert.equal(renderLast(calls, 80, 40).length, 11, "40-row terminal shows ten rows plus accounting");
 
-  tui.terminal.rows = 12;
-  const short = widget.render(80);
+  const short = renderLast(calls, 80, 12);
   assert.equal(short.length, rosterRowBudget(12) + 1, "height-only resize shrinks the budget at once");
-  assert.match(stripVTControlCharacters(short.at(-1)), /\+\d+ more/);
+  assert.match(short.at(-1), /\+\d+ more/);
 
-  tui.terminal.rows = 40;
-  assert.equal(widget.render(80).length, 11, "growing back recomputes too");
+  assert.equal(renderLast(calls, 80, 40).length, 11, "growing back recomputes too");
+  controller.stop();
 });
 
 test("roster activity shows shell tools as called and never exposes command text", () => {
   const state = createBackgroundState();
-  const { ctx, calls } = uiContext();
-  const controller = createSubagentRosterController(state);
+  const { ctx, calls, footer } = uiContext();
+  const controller = createSubagentRosterController(state, { footer });
   controller.start(ctx);
 
   const command = [
@@ -538,8 +568,8 @@ test("terminal children without tool calls show no activity; active children sho
   assert.doesNotMatch(line, /working/);
 
   const state = createBackgroundState();
-  const { ctx, calls } = uiContext();
-  const controller = createSubagentRosterController(state);
+  const { ctx, calls, footer } = uiContext();
+  const controller = createSubagentRosterController(state, { footer });
   controller.start(ctx);
   const active = job("subagent_11111111-1111-4111-8111-111111111111", "queued", 1, "explorer", []);
   state.jobs.set(active.id, active);
@@ -550,8 +580,8 @@ test("terminal children without tool calls show no activity; active children sho
 
 test("roster activity never adopts an untrusted timeline head, including legacy resume text", () => {
   const state = createBackgroundState();
-  const { ctx, calls } = uiContext();
-  const controller = createSubagentRosterController(state);
+  const { ctx, calls, footer } = uiContext();
+  const controller = createSubagentRosterController(state, { footer });
   controller.start(ctx);
 
   const hostile = job(
@@ -606,13 +636,12 @@ test("row budget caps at ten on normal heights and shrinks on short terminals", 
   assert.equal(lines.length, 11, "ten child rows plus one accounting line");
   assert.match(lines.at(-1), /^\… \+3 more$/);
 
-  const widget = createSubagentRosterWidget({ terminal: { rows: 24 } }, plainTheme(), rows, 0);
-  const short = widget.render(80);
+  const short = renderSubagentRoster(plainTheme(), rows, { width: 80, rowBudget: rosterRowBudget(24), now: 0 });
   assert.equal(short.length, rosterRowBudget(24) + 1, "short terminal shows fewer rows plus accounting");
   assert.match(stripVTControlCharacters(short.at(-1)), /\+\d+ more/);
 
   // Even a tiny terminal keeps every physical line within its width.
-  const tiny = widget.render(9);
+  const tiny = renderSubagentRoster(plainTheme(), rows, { width: 9, rowBudget: rosterRowBudget(24), now: 0 });
   for (const line of tiny) {
     const plain = stripVTControlCharacters(line);
     assert.ok(visibleWidth(plain) <= 9, `tiny-width line bounded: ${JSON.stringify(plain)}`);
@@ -622,8 +651,8 @@ test("row budget caps at ten on normal heights and shrinks on short terminals", 
 
 test("sanitizes controls and credentials and never exposes tool results", () => {
   const state = createBackgroundState();
-  const { ctx, calls } = uiContext();
-  const controller = createSubagentRosterController(state);
+  const { ctx, calls, footer } = uiContext();
+  const controller = createSubagentRosterController(state, { footer });
   controller.start(ctx);
 
   const secret = job(
@@ -646,8 +675,8 @@ test("sanitizes controls and credentials and never exposes tool results", () => 
 
 test("roster activity renders no free-form argument values from known tools", () => {
   const state = createBackgroundState();
-  const { ctx, calls } = uiContext();
-  const controller = createSubagentRosterController(state);
+  const { ctx, calls, footer } = uiContext();
+  const controller = createSubagentRosterController(state, { footer });
   controller.start(ctx);
 
   const hostile = [
@@ -686,27 +715,27 @@ test("roster activity renders no free-form argument values from known tools", ()
 
 test("controller clears the widget when no current-parent children remain", () => {
   const state = createBackgroundState();
-  const { ctx, calls } = uiContext();
-  const controller = createSubagentRosterController(state);
+  const { ctx, calls, footer } = uiContext();
+  const controller = createSubagentRosterController(state, { footer });
   controller.start(ctx);
   assert.equal(calls.length, 1);
-  assert.equal(calls[0].content, undefined, "empty session publishes no widget");
+  assert.deepEqual(renderLast(calls), [], "an empty session publishes no rows");
 
   const running = job("subagent_11111111-1111-4111-8111-111111111111", "running", 1, "explorer");
   state.jobs.set(running.id, running);
   for (const listener of state.listeners) listener();
-  assert.equal(typeof calls.at(-1).content, "function");
+  assert.ok(renderLast(calls).length > 0);
 
   state.jobs.delete(running.id);
   for (const listener of state.listeners) listener();
-  assert.equal(calls.at(-1).content, undefined, "widget removed with the last child");
+  assert.deepEqual(renderLast(calls), [], "the rows go with the last child");
   controller.stop();
 });
 
 test("foreign parent-session jobs never render", () => {
   const state = createBackgroundState();
-  const { ctx, calls } = uiContext({ sessionId: "parent-1" });
-  const controller = createSubagentRosterController(state);
+  const { ctx, calls, footer } = uiContext({ sessionId: "parent-1" });
+  const controller = createSubagentRosterController(state, { footer });
   controller.start(ctx);
 
   const mine = job("subagent_11111111-1111-4111-8111-111111111111", "running", 1, "explorer");
@@ -732,8 +761,9 @@ test("duration ticking follows the session motion scheduler while a child is act
   const state = createBackgroundState();
   const harness = motionHarness("reduced");
   let current = 1_000;
-  const { ctx, calls } = uiContext();
+  const { ctx, calls, footer } = uiContext();
   const controller = createSubagentRosterController(state, {
+    footer,
     now: () => current,
     motion: () => harness.motion,
   });
@@ -767,8 +797,9 @@ test("motion off never schedules a timer; durations advance only through state c
   const state = createBackgroundState();
   const harness = motionHarness("off");
   let current = 1_000;
-  const { ctx, calls } = uiContext();
+  const { ctx, calls, footer } = uiContext();
   const controller = createSubagentRosterController(state, {
+    footer,
     now: () => current,
     motion: () => harness.motion,
   });
@@ -799,8 +830,9 @@ test("full-motion ticks are throttled to the duration cadence", () => {
   const state = createBackgroundState();
   const harness = motionHarness("full");
   let current = 1_000;
-  const { ctx, calls } = uiContext();
+  const { ctx, calls, footer } = uiContext();
   const controller = createSubagentRosterController(state, {
+    footer,
     now: () => current,
     motion: () => harness.motion,
   });
@@ -829,39 +861,42 @@ test("full-motion ticks are throttled to the duration cadence", () => {
 
 test("a roster without a motion source still presents but owns no ticking path", () => {
   const state = createBackgroundState();
-  const { ctx, calls } = uiContext();
-  const controller = createSubagentRosterController(state);
+  const { ctx, calls, footer } = uiContext();
+  const controller = createSubagentRosterController(state, { footer });
   controller.start(ctx);
   const running = activeJob();
   state.jobs.set(running.id, running);
   for (const listener of state.listeners) listener();
-  assert.equal(typeof calls.at(-1).content, "function", "state changes still publish");
+  assert.ok(renderLast(calls).length > 0, "state changes still publish");
   controller.stop();
-  assert.equal(calls.at(-1).content, undefined, "teardown clears the widget");
+  assert.deepEqual(renderLast(calls), [], "teardown drops the rows");
 });
 
-test("teardown unsubscribes, clears the widget, and survives session replacement", () => {
+test("teardown unsubscribes, drops the rows, and survives session replacement", () => {
   const state = createBackgroundState();
-  const first = uiContext({ sessionId: "parent-1" });
-  const controller = createSubagentRosterController(state);
-  controller.start(first.ctx);
+  // One slot across both sessions: the footer owns a single trailer, so a
+  // session replacement re-registers into the same place.
+  const calls = [];
+  const footer = fakeFooterSlot(calls);
+  const controller = createSubagentRosterController(state, { footer });
+  controller.start(uiContext({ sessionId: "parent-1" }).ctx);
 
   const running = job("subagent_11111111-1111-4111-8111-111111111111", "running", 1, "explorer");
   state.jobs.set(running.id, running);
   for (const listener of state.listeners) listener();
-  assert.equal(typeof first.calls.at(-1).content, "function");
+  assert.ok(renderLast(calls).length > 0);
 
-  // Replacement: a new parent session clears the old session's widget first.
-  const second = uiContext({ sessionId: "parent-2" });
-  controller.start(second.ctx);
-  assert.equal(first.calls.at(-1).content, undefined, "prior session's widget cleared");
-  assert.equal(second.calls.at(-1).content, undefined, "new session with no children publishes nothing");
+  // Replacement: a new parent session starts with the prior session's rows gone.
+  controller.start(uiContext({ sessionId: "parent-2" }).ctx);
+  assert.deepEqual(renderLast(calls), [], "a replaced session publishes no rows");
+  assert.equal(footer.registered(), true, "the new session holds the slot");
   assert.equal(state.listeners.size, 1, "exactly one active subscription");
 
   // Shutdown teardown.
   controller.stop();
   assert.equal(state.listeners.size, 0);
-  assert.equal(second.calls.at(-1).content, undefined, "widget cleared on stop");
+  assert.equal(footer.registered(), false, "stop releases the slot");
+  assert.deepEqual(renderLast(calls), [], "stop drops the rows");
 });
 
 test("controller never touches the UI without an interactive TUI context", () => {
@@ -872,31 +907,42 @@ test("controller never touches the UI without an interactive TUI context", () =>
     { mode: "print", hasUI: false },
   ]) {
     const calls = [];
-    const controller = createSubagentRosterController(state);
+    const footer = fakeFooterSlot(calls);
+    const controller = createSubagentRosterController(state, { footer });
     controller.start({
       ...ctx,
-      ui: { setWidget(...args) { calls.push(args); } },
+      ui: {},
       sessionManager: { getSessionId: () => "parent-1" },
     });
     const running = job("subagent_11111111-1111-4111-8111-111111111111", "running", 1, "explorer");
     state.jobs.set(running.id, running);
     for (const listener of state.listeners) listener();
     assert.equal(state.listeners.size, 0, `no subscription in ${ctx.mode} mode without an interactive TUI`);
-    assert.equal(calls.length, 0, `no widget in ${ctx.mode} mode`);
+    assert.equal(footer.registered(), false, `no trailer in ${ctx.mode} mode`);
+    assert.equal(calls.length, 0, `no publication in ${ctx.mode} mode`);
     controller.refresh();
     controller.stop();
   }
 });
 
-test("widget caches rendered lines by width and drops them on invalidate", () => {
-  const rows = [row()];
-  const widget = createSubagentRosterWidget({ terminal: { rows: 30 } }, plainTheme(), rows, 5_000);
-  const first = widget.render(80);
-  assert.strictEqual(widget.render(80), first, "same width returns cached lines");
-  const wider = widget.render(120);
-  assert.notStrictEqual(wider, first, "new width recomputes");
-  widget.invalidate();
-  assert.notStrictEqual(widget.render(80), first, "invalidate drops the cache");
+test("the trailer caches rendered lines by width and height and drops them on publication", () => {
+  const { state, calls, controller } = publishedRoster(1);
+  const first = renderRaw(calls, 80, 30);
+  assert.strictEqual(renderRaw(calls, 80, 30), first, "the same viewport returns cached lines");
+  assert.notStrictEqual(renderRaw(calls, 120, 30), first, "a new width recomputes");
+  assert.notStrictEqual(renderRaw(calls, 80, 12), first, "a new terminal height recomputes");
+
+  // Two publications can land in the same millisecond, so the cache version
+  // counts publications rather than reading the clock.
+  for (const listener of state.listeners) listener();
+  const republished = renderRaw(calls, 80, 30);
+  assert.notStrictEqual(republished, first, "a new publication drops the cache");
+
+  // Pi drops cached lines on a theme change by invalidating every component;
+  // the footer forwards that here, and the colours are baked into the lines.
+  calls.at(-1).trailer.invalidate();
+  assert.notStrictEqual(renderRaw(calls, 80, 30), republished, "invalidate drops the cache");
+  controller.stop();
 });
 
 test("real themes render bounded output at every display boundary width", async () => {
@@ -916,9 +962,8 @@ test("real themes render bounded output at every display boundary width", async 
     const theme = loadThemeFromPath(join(packageRoot, "themes", file));
     for (const terminalRows of [18, 24, 40, 80]) {
       const budget = rosterRowBudget(terminalRows);
-      const widget = createSubagentRosterWidget({ terminal: { rows: terminalRows } }, theme, rows, 65_000);
       for (const width of [30, 39, 40, 63, 64, 80, 99, 100, 120]) {
-        const lines = widget.render(width);
+        const lines = renderSubagentRoster(theme, rows, { width, rowBudget: budget, now: 65_000 });
         assert.ok(lines.length <= budget + 1, `${file} rows=${terminalRows} w=${width} bounded to budget`);
         for (const line of lines) {
           assert.ok(visibleWidth(line) <= width, `${file} rows=${terminalRows} w=${width} line bounded`);

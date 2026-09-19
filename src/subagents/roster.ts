@@ -1,6 +1,7 @@
 import type { ExtensionContext, Theme, ThemeColor } from "@earendil-works/pi-coding-agent";
-import { matchesKey, truncateToWidth, visibleWidth, type Component } from "@earendil-works/pi-tui";
+import { matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { isOwnedInputSurfaceActive } from "../core/input-surface";
+import { requestFooterRender, setFooterTrailer, type FooterTrailer } from "../footer/trailer";
 import type { DisplayRuntime } from "../display/runtime";
 import { listBackgroundJobs, subscribeBackgroundState, type BackgroundJobStore } from "./background";
 import { sanitizeSubagentDisplay } from "./display";
@@ -21,8 +22,6 @@ import {
   ChildTranscriptOverlay,
 } from "./viewer";
 
-export const SUBAGENT_ROSTER_KEY = "pi-square.subagents.roster";
-
 /** Public-ID prefixes start at eight characters and extend only to disambiguate. */
 const MIN_ID_PREFIX = 8;
 /** Child rows shown at normal terminal heights. */
@@ -42,10 +41,6 @@ const ACTIVE_STATUSES = new Set<BackgroundJobSnapshot["status"]>(["queued", "run
 /** Motion source the roster subscribes to; satisfied by the display runtime. */
 export interface RosterMotion {
   readonly subscribe: (listener: () => void) => () => void;
-}
-
-interface WidgetTui {
-  terminal: { rows: number };
 }
 
 /** One projected roster row: a sanitized, read-only view of a background child. */
@@ -299,40 +294,6 @@ export function renderSubagentRoster(
   return lines;
 }
 
-/**
- * The roster widget component. The projection is immutable per publication, so
- * rendered lines cache by width and terminal height like the other pi-square
- * frame components; the row budget shrinks on a height-only resize.
- */
-export function createSubagentRosterWidget(
-  tui: WidgetTui,
-  theme: Theme,
-  rows: readonly RosterRow[],
-  now: number,
-  focusId?: string,
-  start?: number,
-): Component {
-  let cache: { width: number; rows: number; lines: string[] } | undefined;
-  return {
-    render(width: number): string[] {
-      const terminalRows = Math.max(1, tui.terminal.rows);
-      if (cache && cache.width === width && cache.rows === terminalRows) return cache.lines;
-      const lines = renderSubagentRoster(theme, rows, {
-        width,
-        rowBudget: rosterRowBudget(terminalRows),
-        now,
-        ...(focusId !== undefined ? { focusId } : {}),
-        ...(start !== undefined ? { start } : {}),
-      });
-      cache = { width, rows: terminalRows, lines };
-      return lines;
-    },
-    invalidate(): void {
-      cache = undefined;
-    },
-  };
-}
-
 function rosterRole(job: BackgroundJobSnapshot): string {
   return sanitizeSubagentDisplay(job.details.agent?.name ?? "generic").replace(/\s+/g, " ").trim() || "generic";
 }
@@ -391,6 +352,18 @@ export interface SubagentRosterOptions {
    * repaint at most, injected as a clock in tests.
    */
   readonly timers?: PaintTimers;
+  /**
+   * Footer trailer seam: Pi's dock ends at the footer, so the roster renders
+   * below it through the footer's slot instead of as an editor widget. Tests
+   * inject the slot to capture what a publication actually offers.
+   */
+  readonly footer?: FooterSlot;
+}
+
+/** The footer's trailer slot, as the roster uses it. */
+export interface FooterSlot {
+  readonly setTrailer: (provider: FooterTrailer) => () => void;
+  readonly requestRender: () => void;
 }
 
 /**
@@ -552,7 +525,58 @@ export function createSubagentRosterController(
     });
   };
   let viewportStart = 0;
-  let tuiRef: WidgetTui | undefined;
+  /**
+   * Terminal height as of the last trailer render. The roster no longer holds
+   * a TUI handle, so the row budget the viewport follows is the one the most
+   * recent render actually used; before the first render there is none, and
+   * the window stays at the top.
+   */
+  let lastTerminalRows = 0;
+  /**
+   * The projection the trailer renders. Immutable per publication, replaced
+   * whole on the next one, and absent while no child is on the roster.
+   */
+  let publication:
+    | { rows: readonly RosterRow[]; focusId?: string; start: number; at: number; seq: number }
+    | undefined;
+  let publishSeq = 0;
+  let renderCache: { width: number; terminalRows: number; seq: number; lines: string[] } | undefined;
+  let releaseTrailer: (() => void) | undefined;
+  const footer: FooterSlot = options.footer
+    ?? { setTrailer: setFooterTrailer, requestRender: requestFooterRender };
+
+  /**
+   * Rendered lines cache by width, terminal height, and publication sequence,
+   * the last of which stands in for the immutability a per-publication widget
+   * instance used to give: motion repaints the footer several times a second
+   * while the projection changes at most once. The sequence counts rather than
+   * timestamps, so two publications within one millisecond still invalidate.
+   */
+  const trailer: FooterTrailer = {
+    render(theme, width, terminalRows) {
+      lastTerminalRows = terminalRows;
+      const view = publication;
+      if (view === undefined) return [];
+      if (renderCache
+        && renderCache.width === width
+        && renderCache.terminalRows === terminalRows
+        && renderCache.seq === view.seq) return renderCache.lines;
+      const lines = renderSubagentRoster(theme, view.rows, {
+        width,
+        rowBudget: rosterRowBudget(terminalRows),
+        now: view.at,
+        ...(view.focusId !== undefined ? { focusId: view.focusId } : {}),
+        start: view.start,
+      });
+      renderCache = { width, terminalRows, seq: view.seq, lines };
+      return lines;
+    },
+    /** A theme change reaches here through the footer; the colours are baked
+     * into the cached lines, so they must be recomputed. */
+    invalidate() {
+      renderCache = undefined;
+    },
+  };
   const stopMotion = () => {
     motionUnsubscribe?.();
     motionUnsubscribe = undefined;
@@ -632,7 +656,7 @@ export function createSubagentRosterController(
 
   /** Shifts the visible window the minimum needed to keep the focus row on screen. */
   const followViewport = (rows: readonly RosterRow[]) => {
-    const terminalRows = tuiRef ? Math.max(1, tuiRef.terminal.rows) : 0;
+    const terminalRows = lastTerminalRows;
     if (terminalRows < 1) {
       viewportStart = 0;
       return;
@@ -708,7 +732,9 @@ export function createSubagentRosterController(
       stopMotion();
       candidateId = undefined;
       syncOverlayCandidate([]);
-      context.ui.setWidget(SUBAGENT_ROSTER_KEY, undefined);
+      publication = undefined;
+      renderCache = undefined;
+      footer.requestRender();
       return;
     }
 
@@ -727,14 +753,15 @@ export function createSubagentRosterController(
     const focus = focusId();
     const snapshotAt = now();
     lastPublishAt = snapshotAt;
-    context.ui.setWidget(
-      SUBAGENT_ROSTER_KEY,
-      (tui, theme) => {
-        tuiRef = tui;
-        return createSubagentRosterWidget(tui, theme, rows, snapshotAt, focus, viewportStart);
-      },
-      { placement: "aboveEditor" },
-    );
+    publishSeq += 1;
+    publication = {
+      rows,
+      ...(focus !== undefined ? { focusId: focus } : {}),
+      start: viewportStart,
+      at: snapshotAt,
+      seq: publishSeq,
+    };
+    footer.requestRender();
     // Only still-active children have a moving duration; a settled roster
     // keeps its final timestamps without ticking.
     if (jobs.some((job) => ACTIVE_STATUSES.has(job.status))) ensureMotion();
@@ -1096,7 +1123,16 @@ export function createSubagentRosterController(
     childEntries.clear();
     transcripts.releaseAll();
     viewportStart = 0;
-    tuiRef = undefined;
+    lastTerminalRows = 0;
+    publication = undefined;
+    renderCache = undefined;
+    if (releaseTrailer !== undefined) {
+      releaseTrailer();
+      releaseTrailer = undefined;
+      // The old widget removal forced a frame; releasing the slot does not,
+      // so ask for the repaint that drops the rows from the screen.
+      footer.requestRender();
+    }
     // The visibility epoch is session-scoped presentation state: teardown
     // returns the next session to its first main task with no expiry carried
     // over (#308). Store retention and the established shutdown path are not
@@ -1104,7 +1140,6 @@ export function createSubagentRosterController(
     taskEpoch = 1;
     terminalEpochs.clear();
     lastPaintAt = -Infinity;
-    if (context?.hasUI) context.ui.setWidget(SUBAGENT_ROSTER_KEY, undefined);
     context = undefined;
     parentSessionId = "";
   };
@@ -1121,6 +1156,7 @@ export function createSubagentRosterController(
       motion = options.motion?.()
         ?? (activeDisplay ? { subscribe: (listener) => activeDisplay.subscribeMotion(listener) } : undefined);
       parentSessionId = String(ctx.sessionManager?.getSessionId?.() ?? "").trim();
+      releaseTrailer = footer.setTrailer(trailer);
       unsubscribe = subscribeBackgroundState(state, refresh);
       if (typeof ctx.ui.onTerminalInput === "function") {
         unsubscribeInput = ctx.ui.onTerminalInput(handleTerminalInput);

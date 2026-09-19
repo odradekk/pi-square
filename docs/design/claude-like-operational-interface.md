@@ -106,7 +106,7 @@ Loc: {cwd / branch / session}                 {context usage / window}
 {optional overflow statuses}
 ```
 
-The highest-priority short status may occupy an available right-side hint position. Multiple or long statuses use the conditional third line. Required user action, security warnings, and renderer-ownership diagnostics have fixed priorities and use their own state markers instead of a blanket warning marker. Subagent background activity is not a footer status: it renders in its own session-scoped `aboveEditor` roster (#303), one row per retained current-parent child.
+The highest-priority short status may occupy an available right-side hint position. Multiple or long statuses use the conditional third line. Required user action, security warnings, and renderer-ownership diagnostics have fixed priorities and use their own state markers instead of a blanket warning marker. Subagent background activity is not a footer status: it renders in its own session-scoped roster (#303), one row per retained current-parent child. Pi's dock ends at the footer, so the roster renders through the footer's trailer slot (#410) — below the footer's own rows, separated by one blank line, and reserving nothing when no child is on it.
 
 Narrow layouts retain the existing compact, regular, and wide responsive tiers and progressively omit low-priority footer details. No independent data polling or persisted usage accounting is introduced.
 

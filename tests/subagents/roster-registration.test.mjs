@@ -5,9 +5,12 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
-const load = (await import("jiti")).default(import.meta.url, { moduleCache: false });
+// The registrar builds the controller itself, so this file observes the real
+// footer trailer slot the roster publishes into. That needs one shared module
+// instance, hence jiti's module cache.
+const load = (await import("jiti")).default(import.meta.url);
 const { default: registerSubagents } = await load(join(packageRoot, "src", "subagents", "index.ts"));
-const { SUBAGENT_ROSTER_KEY } = await load(join(packageRoot, "src", "subagents", "roster.ts"));
+const { bindFooterRender, renderFooterTrailer } = await load(join(packageRoot, "src", "footer", "trailer.ts"));
 
 const tests = [];
 function test(name, fn) { tests.push({ name, fn }); }
@@ -34,7 +37,6 @@ function fakePi() {
 }
 
 function uiContext({ sessionId, sessionDir }) {
-  const calls = [];
   let inputUnsubscribed = false;
   const ctx = {
     mode: "tui",
@@ -42,7 +44,6 @@ function uiContext({ sessionId, sessionDir }) {
     cwd: sessionDir,
     ui: {
       theme: plainTheme(),
-      setWidget(key, content, options) { calls.push({ key, content, options }); },
       getEditorText: () => "",
       onTerminalInput() {
         return () => { inputUnsubscribed = true; };
@@ -56,7 +57,7 @@ function uiContext({ sessionId, sessionDir }) {
       getSessionDir: () => sessionDir,
     },
   };
-  return { ctx, calls, inputUnsubscribed: () => inputUnsubscribed };
+  return { ctx, inputUnsubscribed: () => inputUnsubscribed };
 }
 
 test("session replacement tears down and restarts the roster before any await", async () => {
@@ -64,6 +65,11 @@ test("session replacement tears down and restarts the roster before any await", 
   const root = mkdtempSync(join(tmpdir(), "pi-square-roster-registration-"));
   process.env.PI_AGENT_DIR = join(root, "agent");
   try {
+    // Stands in for a mounted footer so publications are countable.
+    let publications = 0;
+    bindFooterRender(() => { publications += 1; });
+    const rosterLines = () => renderFooterTrailer(plainTheme(), 80, 30);
+
     // Anchored editing enabled forces the session_start handler through the
     // slow `await reconcileChildPartitions` path after the roster handling.
     const pi = fakePi();
@@ -75,32 +81,29 @@ test("session replacement tears down and restarts the roster before any await", 
 
     const first = uiContext({ sessionId: "parent-1", sessionDir: join(root, "session-1") });
     await pi.handlers.get("session_start")({}, first.ctx);
-    assert.equal(first.calls.length, 1, "first session start publishes the roster state");
+    assert.equal(publications, 1, "first session start publishes the roster state");
+    assert.deepEqual(rosterLines(), [], "a session with no children publishes no rows");
 
     const second = uiContext({ sessionId: "parent-2", sessionDir: join(root, "session-2") });
+    publications = 0;
     const pending = pi.handlers.get("session_start")({}, second.ctx);
 
     // Before the reconciliation await resolves, the replacement must already
-    // have torn the old session's widget down and started the new session's.
-    assert.equal(
-      first.calls.at(-1).key === SUBAGENT_ROSTER_KEY && first.calls.at(-1).content === undefined,
-      true,
-      "prior session's roster widget cleared synchronously",
-    );
-    assert.equal(second.calls.length, 1, "new session's roster started before the await");
-    assert.equal(second.calls[0].key, SUBAGENT_ROSTER_KEY);
-    assert.equal(second.calls[0].content, undefined, "new session with no children publishes no widget");
+    // have torn the old session's roster down and started the new session's.
+    assert.equal(publications, 2, "teardown and restart both ran before the await");
+    assert.deepEqual(rosterLines(), [], "the replacement starts with no rows");
 
     await pending;
-    assert.equal(second.calls.length, 1, "the awaited reconcile adds no further roster churn");
+    assert.equal(publications, 2, "the awaited reconcile adds no further roster churn");
 
     // Shutdown teardown still clears through the session_shutdown handler and
     // releases the terminal-input listener the roster installed.
     assert.ok(pi.handlers.has("session_shutdown"));
     await pi.handlers.get("session_shutdown")({}, second.ctx);
-    assert.equal(second.calls.at(-1).content, undefined, "shutdown clears the roster widget");
+    assert.deepEqual(rosterLines(), [], "shutdown drops the roster rows");
     assert.equal(second.inputUnsubscribed(), true, "shutdown unsubscribes the roster input listener");
   } finally {
+    bindFooterRender(undefined);
     if (previousAgentDir === undefined) delete process.env.PI_AGENT_DIR;
     else process.env.PI_AGENT_DIR = previousAgentDir;
     rmSync(root, { recursive: true, force: true });

@@ -23,7 +23,7 @@ const liveEventsModule = await load(join(packageRoot, "src", "subagents", "live-
 const mainTaskInputModule = await load(join(packageRoot, "src", "subagents", "main-task-input.ts"));
 const { createPromptSnapshot } = await load(join(packageRoot, "tests", "subagents", "lib", "test-helpers.mjs"));
 
-const { SUBAGENT_ROSTER_KEY, createSubagentRosterController } = rosterModule;
+const { createSubagentRosterController } = rosterModule;
 const {
   abortAllBackgroundJobs,
   attachDeliveryController,
@@ -252,7 +252,17 @@ function lifecycleHarness({ columns = 80, rows = 30, tuiMode = "regular", idle =
   // The session delivery core enters only through the single creation path
   // (#373), attached exactly as the registration root attaches it.
   attachDeliveryController(state.background, delivery);
-  const roster = createSubagentRosterController(state.background, {});
+  // The roster renders below the footer, through the footer's trailer slot.
+  let trailer;
+  const footer = {
+    setTrailer(next) {
+      trailer = next;
+      return () => { if (trailer === next) trailer = undefined; };
+    },
+    requestRender() { ui.publications += 1; },
+    registered: () => trailer !== undefined,
+  };
+  const roster = createSubagentRosterController(state.background, { footer });
 
   registerSubagentTool(pi, state, undefined, blockingCallRegistry);
   registerSubagentManager(pi, state, undefined);
@@ -281,9 +291,8 @@ function lifecycleHarness({ columns = 80, rows = 30, tuiMode = "regular", idle =
 
   const ui = {
     theme,
-    widgetCalls: [],
+    publications: 0,
     notify(message, level) { notifications.push({ message, level }); },
-    setWidget(key, content, options) { ui.widgetCalls.push({ key, content, options }); },
     getEditorText: () => editor.text,
     setEditorText(value) { editor.text = value; },
     pasteToEditor(text) { pastes.push(text); editor.text = text; },
@@ -352,11 +361,9 @@ function lifecycleHarness({ columns = 80, rows = 30, tuiMode = "regular", idle =
   };
 
   const input = (data) => inputHandler?.(data);
-  const widgetLines = (width = columns) => {
-    const last = [...ui.widgetCalls].reverse().find((call) => call.key === SUBAGENT_ROSTER_KEY);
-    if (!last || typeof last.content !== "function") return [];
-    return last.content(tui, theme).render(width).map(stripVTControlCharacters);
-  };
+  const widgetLines = (width = columns) => (
+    trailer ? trailer.render(theme, width, tui.terminal.rows).map(stripVTControlCharacters) : []
+  );
   const overlay = () => {
     const last = [...customs].reverse().find((entry) => entry.component !== undefined);
     return last?.component;
@@ -438,6 +445,7 @@ function lifecycleHarness({ columns = 80, rows = 30, tuiMode = "regular", idle =
     ctx,
     toolCtx,
     ui,
+    footer,
     state,
     delivery,
     blockingCallRegistry,
@@ -1149,7 +1157,6 @@ test("print, JSON, RPC, and headless contexts create no roster, overlay, listene
   for (const mode of ["print", "json", "rpc"]) {
     const harness = lifecycleHarness();
     try {
-      const widgetCalls = [];
       let listenerRegistered = false;
       const ctx = {
         mode,
@@ -1157,7 +1164,6 @@ test("print, JSON, RPC, and headless contexts create no roster, overlay, listene
         cwd: harness.root,
         ui: {
           theme: plainTheme(),
-          setWidget(key, content, options) { widgetCalls.push({ key, content, options }); },
           getEditorText: () => "",
           notify() { throw new Error("no output change in no-UI contexts"); },
           onTerminalInput() { listenerRegistered = true; return () => {}; },
@@ -1166,7 +1172,8 @@ test("print, JSON, RPC, and headless contexts create no roster, overlay, listene
         sessionManager: { getSessionId: () => SESSION_ID, getSessionDir: () => harness.root },
       };
       await harness.startSession(ctx);
-      assert.equal(widgetCalls.length, 0, `${mode}: no widget published`);
+      assert.equal(harness.ui.publications, 0, `${mode}: nothing published`);
+      assert.equal(harness.footer.registered(), false, `${mode}: no trailer registered`);
       assert.equal(listenerRegistered, false, `${mode}: no terminal-input listener registered`);
       assert.equal(harness.customs.length, 0, `${mode}: no overlay was created`);
 
@@ -1175,7 +1182,7 @@ test("print, JSON, RPC, and headless contexts create no roster, overlay, listene
       await harness.mainInput("interactive");
       await harness.mainInput("extension");
       harness.roster.refresh();
-      assert.equal(widgetCalls.length, 0, `${mode}: store changes and input events change nothing`);
+      assert.equal(harness.ui.publications, 0, `${mode}: store changes and input events change nothing`);
     } finally {
       harness.cleanup();
     }
@@ -1262,16 +1269,13 @@ test("parent replacement closes the overlay, clears widget and view state, and l
     const overlay = harness.openChildAt(0);
     assert.ok(overlay);
 
-    const secondWidgets = [];
+    harness.ui.publications = 0;
     const secondCtx = {
       mode: "tui",
       hasUI: true,
       cwd: harness.root,
       isIdle: () => true,
-      ui: {
-        ...harness.ctx.ui,
-        setWidget(key, content, options) { secondWidgets.push({ key, content, options }); },
-      },
+      ui: { ...harness.ctx.ui },
       sessionManager: { getSessionId: () => "parent-2", getSessionDir: () => harness.root },
     };
     const oldFeed = harness.state.background.viewFeed;
@@ -1281,12 +1285,12 @@ test("parent replacement closes the overlay, clears widget and view state, and l
 
     assert.equal(harness.customs[0].resolved, true, "the overlay was closed by teardown");
     assert.equal(
-      [...harness.ui.widgetCalls].reverse().find((call) => call.key === SUBAGENT_ROSTER_KEY)?.content,
-      undefined,
+      harness.widgetLines().length,
+      0,
       "the prior session's widget was cleared",
     );
-    assert.equal(secondWidgets.length, 1, "the new session publishes its own state");
-    assert.equal(secondWidgets[0].content, undefined, "the replacement session has no current children");
+    assert.equal(harness.ui.publications, 2, "teardown drops the prior rows, then the new session publishes");
+    assert.deepEqual(harness.widgetLines(), [], "the replacement session has no current children");
     // The viewer teardown never aborts children: the job stays exactly as it
     // was, now foreign to the new session like every old-session record.
     assert.equal(harness.state.background.jobs.get(id(1)).status, "running");
@@ -1308,22 +1312,22 @@ test("every replacement reason tears the roster down through the same session_st
       harness.addChild(jobFixture(id(1), "running", 1, "explorer"));
       assert.equal(harness.widgetLines().length, 1);
 
-      const widgets = [];
+      harness.ui.publications = 0;
       const nextCtx = {
         mode: "tui",
         hasUI: true,
         cwd: harness.root,
         isIdle: () => true,
-        ui: { ...harness.ctx.ui, setWidget(key, content, options) { widgets.push({ key, content, options }); } },
+        ui: { ...harness.ctx.ui },
         sessionManager: { getSessionId: () => `parent-${reason}`, getSessionDir: () => harness.root },
       };
       await harness.startSession(nextCtx);
       assert.equal(
-        [...harness.ui.widgetCalls].reverse().find((call) => call.key === SUBAGENT_ROSTER_KEY)?.content,
-        undefined,
+        harness.widgetLines().length,
+        0,
         `${reason}: prior widget cleared`,
       );
-      assert.equal(widgets.length, 1, `${reason}: the new session starts clean`);
+      assert.equal(harness.ui.publications, 2, `${reason}: teardown then a clean restart`);
     } finally {
       harness.cleanup();
     }
@@ -1359,8 +1363,8 @@ test("session shutdown closes the overlay and keeps abort and delivery reset in 
 
     assert.equal(harness.customs[0].resolved, true, "shutdown closed the overlay");
     assert.equal(
-      [...harness.ui.widgetCalls].reverse().find((call) => call.key === SUBAGENT_ROSTER_KEY)?.content,
-      undefined,
+      harness.widgetLines().length,
+      0,
       "shutdown cleared the widget",
     );
     assert.equal(harness.inputUnsubscribed, true, "the terminal-input listener was released");
@@ -1393,8 +1397,8 @@ test("the viewer's own teardown never aborts children or resets delivery", async
     assert.equal(harness.state.background.jobs.get(id(1)).status, "running", "viewer teardown never aborts");
     assert.equal(harness.state.background.delivery.pendingCount(), pendingBefore, "viewer teardown never resets delivery");
     assert.equal(
-      [...harness.ui.widgetCalls].reverse().find((call) => call.key === SUBAGENT_ROSTER_KEY)?.content,
-      undefined,
+      harness.widgetLines().length,
+      0,
       "the widget is still cleared",
     );
   } finally {
@@ -1430,7 +1434,13 @@ test("teardown cancels a pending coalesced repaint and never repaints afterwards
     const steps = [];
     const state = createBackgroundState();
     state.viewFeed = createChildViewFeed({ schedule: (callback) => steps.push(callback) });
-    const widgets = [];
+    let trailer;
+    let publications = 0;
+    const footer = {
+      setTrailer(next) { trailer = next; return () => { if (trailer === next) trailer = undefined; }; },
+      requestRender() { publications += 1; },
+    };
+    const rosterLines = (width = 80) => (trailer ? trailer.render(plainTheme(), width, tui.terminal.rows) : []);
     const customs = [];
     let inputHandler;
     let inputUnsubscribed = false;
@@ -1441,7 +1451,6 @@ test("teardown cancels a pending coalesced repaint and never repaints afterwards
       cwd: root,
       ui: {
         theme: plainTheme(),
-        setWidget(key, content, options) { widgets.push({ key, content, options }); },
         getEditorText: () => "",
         onTerminalInput(handler) {
           inputHandler = handler;
@@ -1456,6 +1465,7 @@ test("teardown cancels a pending coalesced repaint and never repaints afterwards
       sessionManager: { getSessionId: () => SESSION_ID, getSessionDir: () => root },
     };
     const controller = createSubagentRosterController(state, {
+      footer,
       now: () => 500_000,
       motion: () => ({
         subscribe: (listener) => {
@@ -1469,7 +1479,7 @@ test("teardown cancels a pending coalesced repaint and never repaints afterwards
     controller.start(ctx);
     state.jobs.set(id(1), jobFixture(id(1), "running", 1, "explorer"));
     for (const listener of state.listeners) listener();
-    assert.equal(typeof widgets.at(-1).content, "function", "the running child published a widget");
+    assert.ok(publications > 0 && rosterLines().length > 0, "the running child published a row");
 
     // Open the overlay through the real keyboard seam.
     inputHandler(DOWN);
@@ -1500,7 +1510,7 @@ test("teardown cancels a pending coalesced repaint and never repaints afterwards
     assert.equal(state.listeners.size, 0, "background subscription released");
     assert.equal(inputUnsubscribed, true, "terminal-input listener released");
     assert.equal(motionSubscribers, 0, "motion subscription released");
-    assert.equal(widgets.at(-1).content, undefined, "widget cleared");
+    assert.deepEqual(rosterLines(), [], "the rows are gone");
 
     // Let every timer fire as though it had expired: only non-cancelled
     // entries may run, and none remain, so nothing repaints after teardown.
@@ -1515,11 +1525,7 @@ test("teardown cancels a pending coalesced repaint and never repaints afterwards
     controller.start(ctx);
     state.jobs.set(second.id, second);
     for (const listener of state.listeners) listener();
-    assert.equal(
-      typeof widgets.at(-1).content,
-      "function",
-      "the new session's terminal rows start visible",
-    );
+    assert.ok(rosterLines().length > 0, "the new session's terminal rows start visible");
   } finally {
     if (previousAgentDir === undefined) delete process.env.PI_AGENT_DIR;
     else process.env.PI_AGENT_DIR = previousAgentDir;
